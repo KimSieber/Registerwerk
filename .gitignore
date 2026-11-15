@@ -1,0 +1,51 @@
+# --- Interna und Zugangsdaten: niemals versionieren ---
+docs/intern/
+config.local*
+*.local.toml
+*.local.json
+.env
+.env.*
+
+# --- Daten des Programms: Register-DB, Vorschauen, Inventur-Ergebnisse ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+/daten/
+/inventur/
+/inventur_ergebnis/
+
+# --- Webseite (Konvention in allen Repos) ---
+/Webseite/
+
+# --- Rust / Tauri ---
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# --- Node / Frontend ---
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# --- Python (Analyse-Skripte) ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- macOS, Dropbox, Editoren ---
+.DS_Store
+._*
+.dropbox
+.dropbox.attr
+*(Konflikt*
+*conflicted copy*
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.log
