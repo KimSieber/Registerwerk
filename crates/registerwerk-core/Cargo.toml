@@ -8,6 +8,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# PDFium wird zur Laufzeit als dynamische Bibliothek geladen (tools/pdfium_holen.sh).
+# Die Funktionsversion ist an die Version der Bibliothek gebunden.
+pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfium_8125", "thread_safe"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

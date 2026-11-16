@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/registerwerk-core", "src-tauri"]
+members = ["crates/registerwerk-core", "src-tauri", "tools/pdf_pruefen"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 authors = ["Kim Sieber"]
 license = "UNLICENSED"

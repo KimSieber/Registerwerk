@@ -1,0 +1,11 @@
+[package]
+name = "pdf_pruefen"
+description = "Prüft PDFs mit dem Kern von Registerwerk, ohne das Register anzufassen."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+registerwerk-core = { path = "../../crates/registerwerk-core" }

@@ -310,3 +310,46 @@ tbody tr:last-child td {
   border-radius: 4px;
   background: var(--balken);
 }
+
+.fortschritt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fortschritt-balken {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--grund);
+  overflow: hidden;
+}
+
+.fortschritt-balken span {
+  display: block;
+  height: 100%;
+  background: var(--orange);
+  transition: width 0.15s linear;
+}
+
+.fortschritt-datei {
+  margin-left: 8px;
+}
+
+.fehlerliste summary {
+  cursor: pointer;
+  color: var(--akzent);
+}
+
+.fehlerliste table {
+  margin: 8px 0;
+}
+
+.fehlerliste td {
+  padding-right: 12px;
+  vertical-align: top;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}

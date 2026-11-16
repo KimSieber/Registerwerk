@@ -19,3 +19,7 @@ export const alsZeitpunkt = (sekunden: number) => zeit.format(new Date(sekunden 
 
 export const alsDauer = (ms: number) =>
   ms < 1000 ? `${ms} ms` : `${(ms / 1000).toLocaleString("de-DE", { maximumFractionDigits: 1 })} s`;
+
+/** Anteil in ganzen Prozent, "–" wenn die Gesamtzahl 0 ist. */
+export const alsAnteil = (teil: number, gesamt: number) =>
+  gesamt > 0 ? `${Math.round((teil / gesamt) * 100)} %` : "–";

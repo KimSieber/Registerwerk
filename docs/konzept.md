@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 16.11.2026 (ergänzt um die Festlegungen aus v0.0.1). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 16.11.2026 (ergänzt um die Festlegungen aus v0.0.1 und v0.0.2). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -97,6 +97,7 @@ Folgen:
 
 - Eine Datei mit 0 Byte gilt als "nur online oder leer".
 - Zum Indizieren öffnet der Indexer die Datei. Der Cloud-Client lädt sie dabei automatisch.
+- Bis zum Delta-Lauf (Stufe 4) öffnet der Indexer nur lokal vorhandene Dateien. "Nur online"-Dateien bleiben ausstehend. Für die Erstindizierung werden die Ordner von Hand offline verfügbar gemacht. Umgesetzt in v0.0.2.
 - Das Gesamtvolumen von "nur online"-Dateien lässt sich über das Dateisystem nicht ermitteln.
 - Wechselt eine Datei bei gleichem Änderungsdatum zwischen lokal und "nur online", gilt sie als unverändert. Das Register behält die letzte bekannte Größe und merkt sich nur den Zustand. Erst ein anderes Änderungsdatum bedeutet einen neuen Inhalt. Umgesetzt in v0.0.1. **Annahme**: Der Cloud-Client lässt das Änderungsdatum beim Auslagern und Laden unverändert. Das wird im Pilot beobachtet.
 - Eine Datei, die bisher nur als Platzhalter gesehen wurde, hat im Register keine Größe.
@@ -147,6 +148,8 @@ Alle Scans liegen als PDF vor: Das Scanbild ist als Bild gespeichert, der per OC
 
 Die Güte eines Textes ist der Anteil wortartiger Tokens: Wörter aus mindestens zwei Buchstaben sowie Zahlen- und Betragsmuster, bezogen auf alle Tokens. Das Maß ist grob, trennt aber brauchbaren von unbrauchbarem Text. Die Schwelle liegt bei **60 %**.
 
+Eine Seite gilt als Scan, wenn Bilder mindestens 70 % ihrer Fläche abdecken. Gütemaß und Seitenart werden je Seite im Register gespeichert. Umgesetzt in v0.0.2.
+
 ### Drei Fälle
 
 | Fall | Erkennung | Behandlung |
@@ -157,7 +160,7 @@ Die Güte eines Textes ist der Anteil wortartiger Tokens: Wörter aus mindestens
 
 Erläuterungen:
 
-- Der dritte Fall betrifft zum Beispiel Kontoauszüge, deren Text sich wegen der Schriftkodierung nicht auslesen lässt. Die Textebene lässt sich dort nicht ersetzen, ohne die Seite in ein Bild umzuwandeln. Das wäre ein Qualitätsverlust und ist ausgeschlossen. Der OCR-Text im Register ist ein Auszug und lässt sich jederzeit neu erzeugen, der Grundsatz 2 bleibt gewahrt. Ob diese PDFs tatsächlich unlesbaren Text liefern, wird im Pilotlauf an einer Datei geprüft.
+- Der dritte Fall betrifft zum Beispiel Kontoauszüge, deren Text sich wegen der Schriftkodierung nicht auslesen lässt. Die Textebene lässt sich dort nicht ersetzen, ohne die Seite in ein Bild umzuwandeln. Das wäre ein Qualitätsverlust und ist ausgeschlossen. Der OCR-Text im Register ist ein Auszug und lässt sich jederzeit neu erzeugen, der Grundsatz 2 bleibt gewahrt. Im Pilot (v0.0.2) hatte ein Kontoauszug von 2017 gar keine Textebene, vermutlich weil die Schrift beim Drucken in ein PDF zu Kurven wurde. Die Behandlung ist dieselbe. Ob andere Auszüge Zeichensalat liefern, zeigt das Gütemaß.
 - "Messbar besser" heißt: Die Güte des neuen Textes liegt mindestens 10 Prozentpunkte über der des alten. **Annahme**
 - Es wird nicht das ganze Archiv neu erkannt. In der Stichprobe lagen 15 % der PDFs unter der Schwelle, 1,6 % hatten gar keinen Text.
 
@@ -200,7 +203,7 @@ Für Sortierung und Priorisierung gilt diese Reihenfolge:
 2. Erstellungsdatum in den PDF-Metadaten
 3. Änderungsdatum der Datei
 
-Erkannt werden am Anfang des Dateinamens die Formen `JJJJ-MM-TT`, `JJJJ-MM`, `JJJJMMTT` und `JJJJ`. Das Datum wird so genau gespeichert, wie es angegeben ist. Seit v0.0.1 ist die erste Quelle umgesetzt, die beiden anderen folgen mit der Verarbeitung der PDFs. Im Pilotbestand tragen 93 % der Dateien ein Datum im Namen.
+Erkannt werden am Anfang des Dateinamens die Formen `JJJJ-MM-TT`, `JJJJ-MM`, `JJJJMMTT` und `JJJJ`. Das Datum wird so genau gespeichert, wie es angegeben ist. Seit v0.0.2 sind alle drei Quellen umgesetzt. Jede Datei hat damit ein Dokumentdatum, die Quelle wird mitgespeichert. Im Pilotbestand tragen 93 % der Dateien ein Datum im Namen.
 
 Begründung: Fast alle Dateinamen beginnen mit einem Datum. Ein PDF-Erstellungsdatum tragen nur 76 % der PDFs. Das Anlagedatum eines Platzhalters ist nicht verlässlich. Ein Änderungsdatum im Sinne von "zuletzt bearbeitet" wird nicht gebraucht.
 
@@ -268,7 +271,7 @@ Gewichtung, Filter nach Ordner und Jahr und die Darstellung der Treffer werden a
 | Oberfläche | React mit TypeScript und Vite | entschieden, im Einsatz seit v0.0.1 |
 | Aufbau | Kern als eigene Rust-Bibliothek ohne Oberfläche, die Tauri-Anwendung ist nur eine Hülle darüber | entschieden. Hält den lesenden Teil für eine Web-Oberfläche wiederverwendbar |
 | Datenbank | SQLite mit Volltextindex, verschlüsselt | entschieden. Bis Stufe 3 unverschlüsselt, der Wechsel auf die verschlüsselnde Variante ist eine Einstellung der Bibliothek |
-| PDF | PDFium für Textauslese und Rendering | geplant |
+| PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
 | OCR | Tesseract, Sprachen Deutsch und Englisch. Bereits in PaperTrail Compare im Einsatz, unabhängig von Apple | entschieden |
 | Vorschau | AVIF Q25, 1024 px bezogen auf A4 | entschieden |
 | Zugangsdaten | lokaler Schlüsselbund des Betriebssystems, wie in Stellwerk | Annahme |
@@ -338,6 +341,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**
 | Version | Inhalt | Stufe |
 |---|---|---|
 | v0.0.1 | Gerüst der Anwendung, Einlesen des Dateibaums ins Register mit Abgleich (neu, geändert, entfernt), Datum aus dem Dateinamen, Übersicht in der Oberfläche | Beginn von Stufe 1, noch ohne PDF-Inhalte und Vorschauen |
+| v0.0.2 | PDFium angebunden, Text je Seite im Register, Gütemaß und Seitenart, Datum aus PDF und Änderungsdatum, Fortsetzen nach Abbruch | Stufe 1 ohne Vorschauen |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -346,7 +350,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Punkt | Wann |
 |---|---|
 | Inventur der Verzeichnisse außerhalb des aktuellen Archivs. Bestimmt die Endgröße, nicht den Bau | vor Stufe 6 |
-| Prüfung, ob die betroffenen Kontoauszüge wirklich unlesbaren Text liefern | Pilot |
+| Kontoauszüge: Ein Auszug von 2017 hat keine Textebene. Ob andere Zeichensalat liefern, zeigt das Gütemaß | Stufe 5 |
 | Anzeige von AVIF in der Oberfläche auf allen Zielsystemen | Stufe 2 |
 | Einteilung der Vorschau-Scheiben | Stufe 1 |
 | Zurücksetzen auf "nur online" per Programm | Stufe 4 |
@@ -382,6 +386,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Oberfläche | React mit TypeScript und Vite | bewährt in Stellwerk, überzeugt in Gestaltung und Möglichkeiten |
 | Pfade im Register | relativ zum Cloud-Ordner, einheitliche Schreibweise | Register gilt auf jedem Gerät und Betriebssystem |
 | Wechsel auf "nur online" | keine Änderung, solange das Änderungsdatum gleich bleibt | sonst würde jedes Auslagern Text und Vorschauen neu erzeugen |
+| Anbindung von PDFium | `pdfium-render`, Bibliothek per Skript geladen, nicht im Repo | fertige Builds für alle Zielsysteme, freizügige Lizenzen, keine Binärdateien im Repo |
+| "Nur online" bis Stufe 4 | nicht öffnen, bleiben ausstehend | Öffnen löst den Download aus. Erstindizierung mit von Hand offline gestellten Ordnern |
+| Verarbeitungsstand | Änderungsdatum und Größe beim Lesen, dazu eine Verfahrensversion | geänderte Dateien und Verfahren werden gezielt neu gelesen, ein Abbruch kostet nichts |
+| Suchindex | erst mit der Suche | die Wahl hängt an der fehlertoleranten Suche, die Texttabelle je Seite ist die Grundlage |
 | Entfernen aus dem Register | nur in vollständig gelesenen Verzeichnissen | ein fehlender Cloud-Ordner darf das Register nicht leeren |
 | Ablage des Projekts | im Cloud-Ordner, Build-Ordner bleiben im Projekt und sind von der Synchronisation ausgenommen | sichert auch die nicht versionierten Inhalte. Eine zentrale Ablage je Projekt, keine Fragmente an anderen Orten |
 
@@ -403,5 +411,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `archiv_inventur.py`: Inventur und PDF-Stichprobe der Konzeptphase, nur lesend
 - `vorschau_vergleich.py`: Vorschauformate nebeneinander, Konzeptphase, nur lesend
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
+- `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
+- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

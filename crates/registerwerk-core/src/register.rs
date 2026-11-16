@@ -1,20 +1,32 @@
 //! Das Register: eine SQLite-Datenbank mit Kopien und Auszügen.
 //!
 //! Es enthält keine eigene Information und lässt sich jederzeit aus den Dateien
-//! neu aufbauen (Grundsatz 2). In dieser Version nimmt es nur den Dateibaum
-//! auf. Volltext, Vorschauen und Verschlüsselung folgen.
+//! neu aufbauen (Grundsatz 2). Es nimmt den Dateibaum und den Text je Seite der
+//! PDFs auf. Suchindex, Vorschauen und Verschlüsselung folgen.
+//!
+//! Schema-Versionen (in `PRAGMA user_version`):
+//! - 1 (v0.0.1): Tabellen `lauf` und `datei`
+//! - 2 (v0.0.2): Tabelle `seite`, Verarbeitungsstand und PDF-Angaben in `datei`,
+//!   Dokumentdatum für jede Datei
 
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 
 use crate::dateibaum::Durchlauf;
+use crate::guete::{self, Zaehlung};
+use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Version des Verfahrens, mit dem Inhalte gelesen werden. Wird sie erhöht,
+/// gelten alle bisher gelesenen PDFs als ausstehend und werden neu gelesen.
+/// Erhöhen, wenn sich Textauslese, Gütemaß oder Seitenart ändern.
+pub const INHALT_VERFAHREN: i64 = 1;
 
 pub struct Register {
     db: Connection,
@@ -64,6 +76,45 @@ pub struct LetzterLauf {
     pub entfernt: u64,
 }
 
+/// Kennzahlen zu den Inhalten der PDFs.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct InhaltStand {
+    pub pdfs: u64,
+    /// PDFs, deren Inhalt zum aktuellen Stand der Datei gelesen ist.
+    pub gelesen: u64,
+    /// PDFs, die noch gelesen werden müssen.
+    pub ausstehend: u64,
+    /// Davon "nur online". Sie werden erst gelesen, wenn sie lokal vorliegen.
+    pub ausstehend_online: u64,
+    /// Gelesen, aber mit Fehler (beschädigt, Kennwort).
+    pub fehler: u64,
+    pub seiten: u64,
+    /// Seiten mit weniger als 20 sichtbaren Zeichen Text.
+    pub seiten_ohne_text: u64,
+    /// Seiten mit Text, aber Güte unter der Schwelle.
+    pub seiten_schwach: u64,
+    /// Seiten, die überwiegend aus Bildern bestehen.
+    pub seiten_scan: u64,
+    pub pdfs_ohne_text: u64,
+    /// PDFs mit Text, deren Güte insgesamt unter der Schwelle liegt.
+    pub pdfs_schwach: u64,
+    pub fehler_liste: Vec<FehlerZeile>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FehlerZeile {
+    pub pfad: String,
+    pub meldung: String,
+}
+
+/// Eine PDF, deren Inhalt gelesen werden muss.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ausstehend {
+    pub id: i64,
+    pub pfad: String,
+    pub nur_online: bool,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RegisterStand {
     pub dateien: u64,
@@ -72,7 +123,11 @@ pub struct RegisterStand {
     pub bytes: u64,
     pub nur_online: u64,
     pub groesse_unbekannt: u64,
+    /// Dokumentdatum nach Quelle: Dateiname, PDF-Erstellungsdatum, Änderungsdatum.
     pub mit_datum: u64,
+    pub datum_pdf: u64,
+    pub datum_geaendert: u64,
+    pub inhalt: InhaltStand,
     pub typen: Vec<TypZeile>,
     pub jahre: Vec<JahrZeile>,
     pub letzter_lauf: Option<LetzterLauf>,
@@ -103,19 +158,24 @@ impl Register {
         self.pfad.as_deref()
     }
 
-    fn einrichten(db: Connection, pfad: Option<PathBuf>) -> Ergebnis<Self> {
+    /// Legt das Schema an oder hebt es auf den aktuellen Stand.
+    ///
+    /// Die Version wird erst innerhalb einer sperrenden Transaktion gelesen.
+    /// Öffnen zwei Aufrufe das Register gleichzeitig, wartet der zweite und
+    /// sieht danach das bereits umgestellte Schema.
+    fn einrichten(mut db: Connection, pfad: Option<PathBuf>) -> Ergebnis<Self> {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
-        let version: i64 = db.query_row("PRAGMA user_version", [], |z| z.get(0))?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |z| z.get(0))?;
         if version > SCHEMA_VERSION {
             return Err(crate::Fehler::Konfiguration(format!(
                 "Das Register stammt von einer neueren Programmversion (Schema {version})"
             )));
         }
         if version < 1 {
-            db.execute_batch(
-                "BEGIN;
-                 CREATE TABLE lauf (
+            tx.execute_batch(
+                "CREATE TABLE lauf (
                      id            INTEGER PRIMARY KEY,
                      begonnen      INTEGER NOT NULL,
                      beendet       INTEGER,
@@ -143,11 +203,55 @@ impl Register {
                  );
                  CREATE INDEX datei_endung ON datei(endung);
                  CREATE INDEX datei_datum ON datei(datum_dokument);
-                 PRAGMA user_version = 1;
-                 COMMIT;",
+                 PRAGMA user_version = 1;",
             )?;
         }
+        if version < 2 {
+            Self::migration_2(&tx)?;
+        }
+        tx.commit()?;
         Ok(Self { db, pfad })
+    }
+
+    /// Schema 2: Text je Seite, Verarbeitungsstand, Dokumentdatum für jede Datei.
+    fn migration_2(db: &Connection) -> Ergebnis<()> {
+        db.execute_batch(
+            "-- Stand der Datei, zu dem der Inhalt gelesen wurde. Weicht das
+             -- Änderungsdatum oder die Größe ab, wird neu gelesen.
+             ALTER TABLE datei ADD COLUMN inhalt_geaendert INTEGER;
+             ALTER TABLE datei ADD COLUMN inhalt_groesse   INTEGER;
+             ALTER TABLE datei ADD COLUMN inhalt_verfahren INTEGER;
+             -- Fehlermeldung, wenn sich die Datei nicht lesen ließ
+             ALTER TABLE datei ADD COLUMN inhalt_fehler    TEXT;
+             ALTER TABLE datei ADD COLUMN seiten           INTEGER;
+             -- Erstellungsdatum aus den PDF-Metadaten, Rohwert
+             ALTER TABLE datei ADD COLUMN pdf_erstellt     TEXT;
+             CREATE TABLE seite (
+                 datei       INTEGER NOT NULL REFERENCES datei(id) ON DELETE CASCADE,
+                 nr          INTEGER NOT NULL,
+                 text        TEXT NOT NULL,
+                 -- sichtbare Zeichen, Tokens und wortartige Tokens (Gütemaß)
+                 zeichen     INTEGER NOT NULL,
+                 tokens      INTEGER NOT NULL,
+                 wortartig   INTEGER NOT NULL,
+                 -- Anteil der Seitenfläche, den Bilder abdecken
+                 bildanteil  REAL NOT NULL,
+                 PRIMARY KEY (datei, nr)
+             ) WITHOUT ROWID;",
+        )?;
+        // Dokumentdatum aus dem Änderungsdatum für alle Dateien ohne Datum im Namen
+        {
+            let mut ohne = db.prepare("SELECT id, geaendert FROM datei WHERE datum_dokument IS NULL")?;
+            let zeilen = ohne
+                .query_map([], |z| Ok((z.get::<_, i64>(0)?, z.get::<_, i64>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut setzen = db.prepare("UPDATE datei SET datum_dokument = ?2, datum_quelle = ?3 WHERE id = ?1")?;
+            for (id, geaendert) in zeilen {
+                setzen.execute(params![id, datum::aus_zeitstempel(geaendert), datum::QUELLE_GEAENDERT])?;
+            }
+        }
+        db.execute_batch("PRAGMA user_version = 2;")?;
+        Ok(())
     }
 
     /// Gleicht das Register mit einem Durchlauf des Dateibaums ab.
@@ -181,8 +285,10 @@ impl Register {
                                     datum_dokument, datum_quelle, erfasst_lauf, gesehen_lauf)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             )?;
+            // Stammt das Dokumentdatum aus dem Änderungsdatum, wandert es mit.
             let mut aktualisieren = tx.prepare(
-                "UPDATE datei SET groesse = ?2, geaendert = ?3, nur_online = ?4, gesehen_lauf = ?5
+                "UPDATE datei SET groesse = ?2, geaendert = ?3, nur_online = ?4, gesehen_lauf = ?5,
+                    datum_dokument = CASE WHEN datum_quelle = ?6 THEN ?7 ELSE datum_dokument END
                  WHERE id = ?1",
             )?;
 
@@ -197,8 +303,7 @@ impl Register {
                     .optional()?;
                 match vorhanden {
                     None => {
-                        let datum = datum::aus_dateiname(&d.name);
-                        let quelle = datum.as_ref().map(|_| "dateiname");
+                        let (datum, quelle) = dokumentdatum(&d.name, None, d.geaendert);
                         einfuegen.execute(params![
                             d.pfad, d.name, d.endung, groesse_neu, d.geaendert, leer, datum, quelle, lauf
                         ])?;
@@ -216,7 +321,15 @@ impl Register {
                             e.geaendert += 1;
                         }
                         let groesse = if gleiches_datum { groesse_neu.or(groesse_alt) } else { groesse_neu };
-                        aktualisieren.execute(params![id, groesse, d.geaendert, leer, lauf])?;
+                        aktualisieren.execute(params![
+                            id,
+                            groesse,
+                            d.geaendert,
+                            leer,
+                            lauf,
+                            datum::QUELLE_GEAENDERT,
+                            datum::aus_zeitstempel(d.geaendert)
+                        ])?;
                     }
                 }
             }
@@ -246,21 +359,18 @@ impl Register {
     }
 
     pub fn stand(&self) -> Ergebnis<RegisterStand> {
-        let (dateien, bytes, nur_online, groesse_unbekannt, mit_datum) = self.db.query_row(
-            "SELECT count(*), coalesce(sum(groesse), 0), coalesce(sum(nur_online), 0),
-                    coalesce(sum(groesse IS NULL), 0), count(datum_dokument)
-             FROM datei",
-            [],
-            |z| {
-                Ok((
-                    z.get::<_, i64>(0)? as u64,
-                    z.get::<_, i64>(1)? as u64,
-                    z.get::<_, i64>(2)? as u64,
-                    z.get::<_, i64>(3)? as u64,
-                    z.get::<_, i64>(4)? as u64,
-                ))
-            },
-        )?;
+        let zahl = |z: &rusqlite::Row, i: usize| -> rusqlite::Result<u64> { Ok(z.get::<_, i64>(i)? as u64) };
+        let (dateien, bytes, nur_online, groesse_unbekannt, mit_datum, datum_pdf, datum_geaendert) =
+            self.db.query_row(
+                "SELECT count(*), coalesce(sum(groesse), 0), coalesce(sum(nur_online), 0),
+                        coalesce(sum(groesse IS NULL), 0),
+                        coalesce(sum(datum_quelle = ?1), 0), coalesce(sum(datum_quelle = ?2), 0),
+                        coalesce(sum(datum_quelle = ?3), 0)
+                 FROM datei",
+                params![datum::QUELLE_DATEINAME, datum::QUELLE_PDF, datum::QUELLE_GEAENDERT],
+                |z| Ok((zahl(z, 0)?, zahl(z, 1)?, zahl(z, 2)?, zahl(z, 3)?, zahl(z, 4)?, zahl(z, 5)?, zahl(z, 6)?)),
+            )?;
+        let inhalt = self.inhalt_stand()?;
 
         let typen = self
             .db
@@ -307,8 +417,139 @@ impl Register {
             )
             .optional()?;
 
-        Ok(RegisterStand { dateien, bytes, nur_online, groesse_unbekannt, mit_datum, typen, jahre, letzter_lauf })
+        Ok(RegisterStand {
+            dateien,
+            bytes,
+            nur_online,
+            groesse_unbekannt,
+            mit_datum,
+            datum_pdf,
+            datum_geaendert,
+            inhalt,
+            typen,
+            jahre,
+            letzter_lauf,
+        })
     }
+
+    /// Bedingung für PDFs, deren Inhalt (neu) gelesen werden muss.
+    const AUSSTEHEND: &'static str = "endung = 'pdf' AND (
+            inhalt_verfahren IS NULL OR inhalt_verfahren < ?1
+            OR inhalt_geaendert IS NOT geaendert
+            OR (groesse IS NOT NULL AND inhalt_groesse IS NOT groesse))";
+
+    /// PDFs, deren Inhalt noch nicht oder nicht zum aktuellen Stand gelesen ist.
+    pub fn ausstehend(&self) -> Ergebnis<Vec<Ausstehend>> {
+        let sql = format!("SELECT id, pfad, nur_online FROM datei WHERE {} ORDER BY pfad", Self::AUSSTEHEND);
+        let liste = self
+            .db
+            .prepare(&sql)?
+            .query_map([INHALT_VERFAHREN], |z| {
+                Ok(Ausstehend { id: z.get(0)?, pfad: z.get(1)?, nur_online: z.get(2)? })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(liste)
+    }
+
+    /// Schreibt den gelesenen Inhalt einer Datei ins Register und ersetzt einen
+    /// früheren Stand. `geaendert` und `groesse` sind die Werte der Datei beim
+    /// Lesen. Ein Lesefehler wird festgehalten, damit die Datei erst nach einer
+    /// Änderung erneut versucht wird.
+    pub fn inhalt_speichern(
+        &mut self,
+        id: i64,
+        geaendert: i64,
+        groesse: u64,
+        inhalt: &Result<pdf::Inhalt, String>,
+    ) -> Ergebnis<()> {
+        let tx = self.db.transaction()?;
+        tx.execute("DELETE FROM seite WHERE datei = ?1", [id])?;
+        let (seiten, erstellt, fehler) = match inhalt {
+            Ok(inhalt) => {
+                let mut einfuegen = tx.prepare(
+                    "INSERT INTO seite (datei, nr, text, zeichen, tokens, wortartig, bildanteil)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )?;
+                for s in &inhalt.seiten {
+                    let z: Zaehlung = guete::zaehlen(&s.text);
+                    einfuegen.execute(params![
+                        id,
+                        s.nr,
+                        s.text,
+                        z.zeichen as i64,
+                        z.tokens as i64,
+                        z.wortartig as i64,
+                        s.bildanteil as f64
+                    ])?;
+                }
+                (Some(inhalt.seiten.len() as i64), inhalt.erstellt.clone(), None)
+            }
+            Err(meldung) => (None, None, Some(meldung.clone())),
+        };
+        tx.execute(
+            "UPDATE datei SET inhalt_geaendert = ?2, inhalt_groesse = ?3, inhalt_verfahren = ?4,
+                              inhalt_fehler = ?5, seiten = ?6, pdf_erstellt = ?7
+             WHERE id = ?1",
+            params![id, geaendert, groesse as i64, INHALT_VERFAHREN, fehler, seiten, erstellt],
+        )?;
+        // Dokumentdatum neu bestimmen, das PDF-Erstellungsdatum ist jetzt bekannt
+        let (name, geaendert_reg): (String, i64) =
+            tx.query_row("SELECT name, geaendert FROM datei WHERE id = ?1", [id], |z| Ok((z.get(0)?, z.get(1)?)))?;
+        let (datum, quelle) = dokumentdatum(&name, erstellt.as_deref(), geaendert_reg);
+        tx.execute(
+            "UPDATE datei SET datum_dokument = ?2, datum_quelle = ?3 WHERE id = ?1",
+            params![id, datum, quelle],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn inhalt_stand(&self) -> Ergebnis<InhaltStand> {
+        let zahl = |z: &rusqlite::Row, i: usize| -> rusqlite::Result<u64> { Ok(z.get::<_, Option<i64>>(i)?.unwrap_or(0) as u64) };
+        let mut s = InhaltStand::default();
+        let sql = format!(
+            "SELECT count(*), sum(NOT ({a})), sum({a}), sum(({a}) AND nur_online),
+                    sum(NOT ({a}) AND inhalt_fehler IS NOT NULL)
+             FROM datei WHERE endung = 'pdf'",
+            a = Self::AUSSTEHEND
+        );
+        (s.pdfs, s.gelesen, s.ausstehend, s.ausstehend_online, s.fehler) =
+            self.db.query_row(&sql, [INHALT_VERFAHREN], |z| {
+                Ok((zahl(z, 0)?, zahl(z, 1)?, zahl(z, 2)?, zahl(z, 3)?, zahl(z, 4)?))
+            })?;
+        (s.seiten, s.seiten_ohne_text, s.seiten_schwach, s.seiten_scan) = self.db.query_row(
+            "SELECT count(*), sum(zeichen < ?1), sum(zeichen >= ?1 AND wortartig < ?2 * tokens),
+                    sum(bildanteil >= ?3)
+             FROM seite",
+            params![guete::MIN_ZEICHEN as i64, guete::SCHWELLE, pdf::SCAN_FLAECHE as f64],
+            |z| Ok((zahl(z, 0)?, zahl(z, 1)?, zahl(z, 2)?, zahl(z, 3)?)),
+        )?;
+        (s.pdfs_ohne_text, s.pdfs_schwach) = self.db.query_row(
+            "SELECT sum(max_zeichen < ?1), sum(max_zeichen >= ?1 AND wortartig < ?2 * tokens)
+             FROM (SELECT max(zeichen) AS max_zeichen, sum(tokens) AS tokens, sum(wortartig) AS wortartig
+                   FROM seite GROUP BY datei)",
+            params![guete::MIN_ZEICHEN as i64, guete::SCHWELLE],
+            |z| Ok((zahl(z, 0)?, zahl(z, 1)?)),
+        )?;
+        s.fehler_liste = self
+            .db
+            .prepare("SELECT pfad, inhalt_fehler FROM datei WHERE inhalt_fehler IS NOT NULL ORDER BY pfad LIMIT 50")?
+            .query_map([], |z| Ok(FehlerZeile { pfad: z.get(0)?, meldung: z.get(1)? }))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(s)
+    }
+}
+
+/// Dokumentdatum nach der Reihenfolge im Konzept (Abschnitt 9): Dateiname,
+/// PDF-Erstellungsdatum, Änderungsdatum. Liefert immer ein Datum.
+fn dokumentdatum(name: &str, pdf_erstellt: Option<&str>, geaendert: i64) -> (String, &'static str) {
+    if let Some(d) = datum::aus_dateiname(name) {
+        return (d, datum::QUELLE_DATEINAME);
+    }
+    if let Some(d) = pdf_erstellt.and_then(datum::aus_pdf_datum) {
+        return (d, datum::QUELLE_PDF);
+    }
+    (datum::aus_zeitstempel(geaendert), datum::QUELLE_GEAENDERT)
 }
 
 #[cfg(test)]
@@ -349,7 +590,12 @@ mod tests {
 
         let s = r.stand().unwrap();
         assert_eq!((s.dateien, s.bytes, s.mit_datum), (3, 40, 1));
-        assert_eq!(s.jahre, vec![JahrZeile { jahr: "2020".into(), anzahl: 1 }]);
+        // ohne Datum im Namen gilt das Änderungsdatum (hier 1970)
+        assert_eq!(
+            s.jahre,
+            vec![JahrZeile { jahr: "1970".into(), anzahl: 2 }, JahrZeile { jahr: "2020".into(), anzahl: 1 }]
+        );
+        assert_eq!(s.datum_geaendert, 2);
         assert_eq!(s.typen[0].endung, "pdf");
         assert_eq!(s.letzter_lauf.unwrap().lauf, 2);
     }
@@ -392,6 +638,56 @@ mod tests {
         let e = r.abgleichen(&d).unwrap();
         assert_eq!(e.entfernt, 1);
         assert_eq!(r.stand().unwrap().dateien, 2);
+    }
+
+    #[test]
+    fn migriert_register_von_schema_1() {
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            // Register im Stand von v0.0.1 nachbauen
+            let db = Connection::open(tmp.path().join(DATEINAME)).unwrap();
+            db.execute_batch(
+                "CREATE TABLE lauf (id INTEGER PRIMARY KEY, begonnen INTEGER NOT NULL, beendet INTEGER,
+                     gesehen INTEGER NOT NULL DEFAULT 0, neu INTEGER NOT NULL DEFAULT 0,
+                     geaendert INTEGER NOT NULL DEFAULT 0, unveraendert INTEGER NOT NULL DEFAULT 0,
+                     entfernt INTEGER NOT NULL DEFAULT 0, nicht_lesbar INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE datei (id INTEGER PRIMARY KEY, pfad TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+                     endung TEXT NOT NULL, groesse INTEGER, geaendert INTEGER NOT NULL,
+                     nur_online INTEGER NOT NULL, datum_dokument TEXT, datum_quelle TEXT,
+                     erfasst_lauf INTEGER NOT NULL REFERENCES lauf(id),
+                     gesehen_lauf INTEGER NOT NULL REFERENCES lauf(id));
+                 CREATE INDEX datei_endung ON datei(endung);
+                 CREATE INDEX datei_datum ON datei(datum_dokument);
+                 INSERT INTO lauf (id, begonnen, beendet) VALUES (1, 1, 2);
+                 INSERT INTO datei VALUES (1, 'A/2020 a.pdf', '2020 a.pdf', 'pdf', 5, 1794857940, 0, '2020', 'dateiname', 1, 1);
+                 INSERT INTO datei VALUES (2, 'A/b.pdf', 'b.pdf', 'pdf', 5, 1794857940, 0, NULL, NULL, 1, 1);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let r = Register::oeffnen(tmp.path()).unwrap();
+        let version: i64 = r.db.query_row("PRAGMA user_version", [], |z| z.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let s = r.stand().unwrap();
+        assert_eq!((s.dateien, s.mit_datum, s.datum_geaendert), (2, 1, 1));
+        assert_eq!((s.inhalt.pdfs, s.inhalt.ausstehend), (2, 2));
+        let datum: String = r.db.query_row("SELECT datum_dokument FROM datei WHERE id = 2", [], |z| z.get(0)).unwrap();
+        assert_eq!(datum, "2026-11-16");
+    }
+
+    #[test]
+    fn gleichzeitiges_oeffnen_stellt_nur_einmal_um() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ordner = tmp.path().to_path_buf();
+        let faeden: Vec<_> = (0..6)
+            .map(|_| {
+                let o = ordner.clone();
+                std::thread::spawn(move || Register::oeffnen(&o).map(|r| r.stand().unwrap().dateien))
+            })
+            .collect();
+        for f in faeden {
+            assert_eq!(f.join().unwrap().unwrap(), 0);
+        }
     }
 
     #[test]

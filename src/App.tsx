@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import logo from "../docs/icons/png-randlos/registerwerk_128.png";
-import { AppInfo, LaufErgebnis, RegisterStand, appInfo, dateibaumEinlesen, registerStand } from "./api";
-import { alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
+import {
+  AppInfo,
+  Fortschritt,
+  InhaltErgebnis,
+  InhaltStand,
+  LaufErgebnis,
+  RegisterStand,
+  appInfo,
+  dateibaumEinlesen,
+  inhalteAbbrechen,
+  inhalteLesen,
+  registerStand,
+} from "./api";
+import { alsAnteil, alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
 
 export default function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -9,6 +21,10 @@ export default function App() {
   const [lauf, setLauf] = useState<LaufErgebnis | null>(null);
   const [laeuft, setLaeuft] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
+  const [liest, setLiest] = useState(false);
+  const [fortschritt, setFortschritt] = useState<Fortschritt | null>(null);
+  const [inhaltLauf, setInhaltLauf] = useState<InhaltErgebnis | null>(null);
+  const [haelt, setHaelt] = useState(false);
 
   const standLaden = useCallback(async () => {
     try {
@@ -40,7 +56,31 @@ export default function App() {
     }
   }
 
+  async function inhalteStarten() {
+    setLiest(true);
+    setHaelt(false);
+    setFehler(null);
+    setFortschritt(null);
+    setInhaltLauf(null);
+    try {
+      setInhaltLauf(await inhalteLesen(setFortschritt));
+    } catch (e) {
+      setFehler(String(e));
+    } finally {
+      setLiest(false);
+      setFortschritt(null);
+      await standLaden();
+    }
+  }
+
+  async function anhalten() {
+    setHaelt(true);
+    await inhalteAbbrechen();
+  }
+
   const bereit = info !== null && !info.konfig_fehler;
+  const ausstehend = stand?.inhalt.ausstehend ?? 0;
+  const lokalAusstehend = ausstehend - (stand?.inhalt.ausstehend_online ?? 0);
 
   return (
     <div className="seite">
@@ -94,11 +134,58 @@ export default function App() {
             </dd>
             <dt>Register</dt>
             <dd className="pfad">{info.register_ordner}</dd>
+            <dt>PDFium</dt>
+            <dd className="pfad">{info.pdfium_ordner ?? "nicht gefunden"}</dd>
           </dl>
         )}
 
         {lauf && <LaufMeldung lauf={lauf} />}
       </section>
+
+      {bereit && stand && (
+        <section className="karte">
+          <div className="karte-kopf">
+            <div>
+              <h2>Inhalte der PDFs</h2>
+              <p className="unterzeile">
+                Öffnet lokal vorhandene PDFs nur lesend und übernimmt den Text jeder Seite. „Nur online“-Dateien werden
+                übergangen, damit nichts aus der Cloud geladen wird.
+              </p>
+            </div>
+            {liest ? (
+              <button onClick={anhalten} disabled={haelt}>
+                {haelt ? "Hält an …" : "Anhalten"}
+              </button>
+            ) : (
+              <button onClick={inhalteStarten} disabled={!info.pdfium_ordner || laeuft || lokalAusstehend === 0}>
+                Inhalte lesen
+              </button>
+            )}
+          </div>
+
+          {!info.pdfium_ordner && (
+            <p className="achtung">
+              PDFium nicht gefunden. Bitte im Projektordner <code>bash tools/pdfium_holen.sh</code> ausführen.
+            </p>
+          )}
+
+          {liest ? (
+            <FortschrittAnzeige f={fortschritt} />
+          ) : (
+            <p className="stand-zeile">
+              {ausstehend === 0
+                ? "Alle PDFs sind gelesen."
+                : `${alsZahl(lokalAusstehend)} PDFs stehen zum Lesen an` +
+                  (stand.inhalt.ausstehend_online > 0
+                    ? `, ${alsZahl(stand.inhalt.ausstehend_online)} weitere liegen nur online.`
+                    : ".")}
+            </p>
+          )}
+
+          {inhaltLauf && <InhaltMeldung e={inhaltLauf} />}
+          {stand.inhalt.fehler_liste.length > 0 && <FehlerListe inhalt={stand.inhalt} />}
+        </section>
+      )}
 
       {stand ? (
         <StandAnzeige stand={stand} />
@@ -132,9 +219,65 @@ function LaufMeldung({ lauf }: { lauf: LaufErgebnis }) {
   );
 }
 
+function FortschrittAnzeige({ f }: { f: Fortschritt | null }) {
+  const anteil = f && f.gesamt > 0 ? (f.erledigt / f.gesamt) * 100 : 0;
+  return (
+    <div className="fortschritt">
+      <div className="fortschritt-balken">
+        <span style={{ width: `${anteil}%` }} />
+      </div>
+      <p className="stand-zeile">
+        {f ? `${alsZahl(f.erledigt)} von ${alsZahl(f.gesamt)}` : "Startet …"}
+        {f && <span className="pfad fortschritt-datei"> {f.datei}</span>}
+      </p>
+    </div>
+  );
+}
+
+function InhaltMeldung({ e }: { e: InhaltErgebnis }) {
+  return (
+    <div className="lauf">
+      <p>
+        {e.abgebrochen ? "Angehalten" : "Fertig"} nach {alsDauer(e.dauer_ms)}: <b>{alsZahl(e.gelesen)} PDFs</b> mit{" "}
+        {alsZahl(e.seiten)} Seiten gelesen
+        {e.fehler > 0 && (
+          <>
+            , <b>{alsZahl(e.fehler)} mit Fehler</b>
+          </>
+        )}
+        {e.nur_online > 0 && <>, {alsZahl(e.nur_online)} nur online übergangen</>}.
+      </p>
+      {e.abgebrochen && <p className="stand-zeile">Der nächste Lauf setzt hier fort.</p>}
+    </div>
+  );
+}
+
+function FehlerListe({ inhalt }: { inhalt: InhaltStand }) {
+  return (
+    <details className="fehlerliste">
+      <summary>
+        {alsZahl(inhalt.fehler)} {inhalt.fehler === 1 ? "PDF ließ" : "PDFs ließen"} sich nicht lesen
+      </summary>
+      <table>
+        <tbody>
+          {inhalt.fehler_liste.map((f) => (
+            <tr key={f.pfad}>
+              <td className="pfad">{f.pfad}</td>
+              <td>{f.meldung}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="stand-zeile">Die Dateien werden erneut gelesen, sobald sie sich ändern.</p>
+    </details>
+  );
+}
+
 function StandAnzeige({ stand }: { stand: RegisterStand }) {
   const maxJahr = Math.max(1, ...stand.jahre.map((j) => j.anzahl));
-  const anteilDatum = stand.dateien > 0 ? Math.round((stand.mit_datum / stand.dateien) * 100) : 0;
+  const i = stand.inhalt;
+  const mitText = i.seiten - i.seiten_ohne_text;
+  const pdfsMitText = i.gelesen - i.fehler - i.pdfs_ohne_text;
   return (
     <>
       <section className="kacheln">
@@ -145,8 +288,37 @@ function StandAnzeige({ stand }: { stand: RegisterStand }) {
           zusatz={stand.groesse_unbekannt > 0 ? `${alsZahl(stand.groesse_unbekannt)} ohne bekannte Größe` : undefined}
         />
         <Kachel titel="Nur online oder leer" wert={alsZahl(stand.nur_online)} />
-        <Kachel titel="Datum im Dateinamen" wert={`${anteilDatum} %`} zusatz={`${alsZahl(stand.mit_datum)} Dateien`} />
+        <Kachel
+          titel="Datum im Dateinamen"
+          wert={alsAnteil(stand.mit_datum, stand.dateien)}
+          zusatz={`sonst PDF ${alsZahl(stand.datum_pdf)}, Änderung ${alsZahl(stand.datum_geaendert)}`}
+        />
       </section>
+
+      {i.seiten > 0 && (
+        <section className="kacheln">
+          <Kachel
+            titel="Seiten im Register"
+            wert={alsZahl(i.seiten)}
+            zusatz={`aus ${alsZahl(i.gelesen - i.fehler)} von ${alsZahl(i.pdfs)} PDFs`}
+          />
+          <Kachel
+            titel="Seiten mit Text"
+            wert={alsAnteil(mitText, i.seiten)}
+            zusatz={`${alsZahl(i.seiten_ohne_text)} Seiten ohne Text, ${alsZahl(i.pdfs_ohne_text)} PDFs ganz ohne`}
+          />
+          <Kachel
+            titel="PDFs mit schwachem Text"
+            wert={alsAnteil(i.pdfs_schwach, pdfsMitText)}
+            zusatz={`${alsZahl(i.pdfs_schwach)} PDFs, ${alsZahl(i.seiten_schwach)} Seiten unter 60 % Güte`}
+          />
+          <Kachel
+            titel="Scan-Seiten"
+            wert={alsAnteil(i.seiten_scan, i.seiten)}
+            zusatz={`${alsZahl(i.seiten - i.seiten_scan)} Seiten digital erzeugt`}
+          />
+        </section>
+      )}
 
       {stand.letzter_lauf && (
         <p className="stand-zeile">Letzter Durchlauf: {alsZeitpunkt(stand.letzter_lauf.beendet)}</p>
@@ -179,7 +351,7 @@ function StandAnzeige({ stand }: { stand: RegisterStand }) {
 
         <section className="karte">
           <h2>Dokumente nach Jahr</h2>
-          <p className="unterzeile">Nach dem Datum am Anfang des Dateinamens</p>
+          <p className="unterzeile">Datum im Dateinamen, sonst PDF-Erstellungsdatum, sonst Änderungsdatum</p>
           <ul className="jahre">
             {stand.jahre.map((j) => (
               <li key={j.jahr}>
