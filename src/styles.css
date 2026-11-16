@@ -1,0 +1,312 @@
+/* Farben des Icons: Dunkelblau, Graublau, Orange. Hell und dunkel folgen dem System. */
+:root {
+  --blau: #1e2b45;
+  --graublau: #8fa3c8;
+  --orange: #f2a93b;
+
+  --grund: #f3f5f9;
+  --flaeche: #ffffff;
+  --rand: #dfe4ee;
+  --text: #1e2b45;
+  --text-leise: #5d6b85;
+  --akzent: #c57d0c;
+  --knopf: #1e2b45;
+  --knopf-text: #ffffff;
+  --balken: #8fa3c8;
+  --warn-grund: #fff5e1;
+  --fehler-grund: #fdecec;
+  --fehler-text: #9b1c1c;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--grund);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --grund: #111827;
+    --flaeche: #1a2438;
+    --rand: #2b3852;
+    --text: #e8ecf5;
+    --text-leise: #9aa8c4;
+    --akzent: #f2a93b;
+    --knopf: #f2a93b;
+    --knopf-text: #1e2b45;
+    --balken: #5f77a6;
+    --warn-grund: #3a2f17;
+    --fehler-grund: #3b1d22;
+    --fehler-text: #ffb4b4;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.seite {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 28px 28px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.kopf {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+p {
+  margin: 0;
+}
+
+.unterzeile {
+  color: var(--text-leise);
+  font-size: 13px;
+}
+
+.version {
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--rand);
+  border-radius: 999px;
+  color: var(--text-leise);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.karte {
+  background: var(--flaeche);
+  border: 1px solid var(--rand);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.karte-kopf {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+button {
+  flex: none;
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--knopf);
+  color: var(--knopf-text);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.angaben {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  font-size: 13px;
+}
+
+.angaben dt {
+  color: var(--text-leise);
+}
+
+.angaben dd {
+  margin: 0;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pfad {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.marke {
+  padding: 1px 9px;
+  border-radius: 6px;
+  background: var(--grund);
+  border: 1px solid var(--rand);
+}
+
+.lauf {
+  padding-top: 12px;
+  border-top: 1px solid var(--rand);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.achtung {
+  color: var(--akzent);
+}
+
+.hinweis {
+  border-radius: 12px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hinweis.warnung {
+  background: var(--warn-grund);
+  border: 1px solid var(--orange);
+}
+
+.hinweis.fehler {
+  background: var(--fehler-grund);
+  color: var(--fehler-text);
+  border: 1px solid currentColor;
+}
+
+.leer,
+.stand-zeile {
+  color: var(--text-leise);
+  font-size: 13px;
+}
+
+.kacheln {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.kachel {
+  background: var(--flaeche);
+  border: 1px solid var(--rand);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kachel-titel,
+.kachel-zusatz {
+  color: var(--text-leise);
+  font-size: 12px;
+}
+
+.kachel-wert {
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.spalten {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-leise);
+  font-size: 12px;
+}
+
+th,
+td {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--rand);
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.r {
+  text-align: right;
+}
+
+.jahre {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.jahre li {
+  display: grid;
+  grid-template-columns: 40px 1fr 52px;
+  align-items: center;
+  gap: 10px;
+}
+
+.jahr {
+  color: var(--text-leise);
+}
+
+.balken {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--grund);
+  overflow: hidden;
+}
+
+.balken span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 4px;
+  background: var(--balken);
+}

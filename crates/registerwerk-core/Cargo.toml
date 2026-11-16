@@ -1,0 +1,19 @@
+[package]
+name = "registerwerk-core"
+description = "Kern von Registerwerk: Konfiguration, Dateibaum und Register. Ohne Oberfläche, damit er sich für andere Hüllen wiederverwenden lässt."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "0.8"
+unicode-normalization = "0.1"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

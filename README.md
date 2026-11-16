@@ -9,9 +9,10 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** Konzept abgeschlossen (November 2026). Es gibt noch keinen
-Programmcode. Die Umsetzung beginnt mit einem Piloten auf einem kleinen Teil
-des Archivs.
+**Stand:** v0.0.1 (November 2026). Das Gerüst der Anwendung steht. Der
+Dateibaum der konfigurierten Verzeichnisse wird ins Register eingelesen, noch
+ohne Inhalte und Vorschauen. Die Umsetzung läuft als Pilot auf einem kleinen
+Teil des Archivs.
 
 ## Warum
 
@@ -33,8 +34,9 @@ eigene Volltextsuche nicht mehr gebraucht wird.
    vollständig aus den Dateien neu aufbauen lassen. Eigene Informationen, die
    bei einem Systemwechsel verloren gingen, gibt es darin nicht.
 3. **Originale werden nicht verschlechtert.** Keine Neukomprimierung, keine
-   Qualitätsreduktion. Einzige Ausnahme: Fehlt einer PDF die Textebene, wird sie
-   per OCR ergänzt und verlustfrei in die Datei eingebettet.
+   Qualitätsreduktion. Einzige Ausnahme: Fehlt einem Scan die Textebene oder
+   ist sie zu schwach, wird sie per OCR ergänzt oder ersetzt und verlustfrei in
+   die Datei eingebettet.
 4. **Unabhängig von Betriebssystem und Cloud-Anbieter.** Der Zugriff läuft über
    das normale Dateisystem, nicht über die Schnittstelle eines Anbieters.
 5. **Nur ein Schreiber.** Es indiziert immer genau ein Gerät, alle anderen lesen.
@@ -66,8 +68,8 @@ Ordner bekommen per Regel eine Behandlungsstufe. Die genaueste Regel gewinnt.
 Unabhängig vom Ordner gilt: Nicht lesbare oder gepackte Formate werden nur mit
 Metadaten erfasst. Archive werden nicht entpackt.
 
-Die Regeln stehen in einer lesbaren Textdatei neben dem Archiv, nicht nur in der
-Datenbank.
+Die Regeln stehen in einer lesbaren Textdatei neben dem Register, nicht nur in
+der Datenbank.
 
 ## Technik
 
@@ -79,16 +81,47 @@ Datenbank.
 - **Vorschau:** jede Seite in 1024 px bezogen auf A4, AVIF mit Qualität 25
 
 Alle Entscheidungen, Messwerte und offenen Punkte stehen im
-[Konzept](docs/konzept.md).
+[Konzept](docs/konzept.md). Stand, Vorgehen und Entscheidungen je Version stehen
+in der Entwicklungsdokumentation unter `docs/`, zuerst in
+[v0.0.1](docs/v0.0.1%20Entwicklungsdokumentation.md).
 
 ## Aufbau des Repos
 
 ```
-docs/           Dokumentation, darin konzept.md
-docs/icons/     App-Icon in allen Größen (PNG, SVG, ICNS, ICO)
-docs/intern/    interne Notizen, nicht versioniert
-tools/          Analyse-Skripte der Konzeptphase (Python, nur lesend)
+crates/registerwerk-core/   Kern in Rust: Konfiguration, Dateibaum, Register
+src-tauri/                  Tauri-Hülle: Fenster und Befehle für die Oberfläche
+src/                        Oberfläche (React, TypeScript, Vite)
+config.beispiel.toml        Vorlage für die Konfiguration
+docs/                       Dokumentation, darin konzept.md
+docs/icons/                 App-Icon in allen Größen (PNG, SVG, ICNS, ICO)
+docs/intern/                interne Notizen, nicht versioniert
+tools/                      Hilfsskripte: Analyse der Konzeptphase (Python, nur
+                            lesend), Dropbox-Ausschluss der Build-Ordner
 ```
+
+Der Kern kennt keine Oberfläche. So lässt sich der lesende Teil später für eine
+Web-Oberfläche wiederverwenden.
+
+## Entwicklung
+
+Voraussetzungen: Rust (über rustup), Node.js und unter macOS die Xcode Command
+Line Tools.
+
+```
+bash tools/dropbox_ausschluss.sh     # einmal je Gerät, siehe unten
+cp config.beispiel.toml config.local.toml   # danach Pfade eintragen
+npm install
+npm run tauri dev                    # Anwendung im Entwicklungsmodus
+cargo test -p registerwerk-core      # Tests des Kerns
+npm run tauri build                  # fertige Anwendung bauen
+```
+
+Liegt das Repo in einem Cloud-Ordner, nimmt `tools/dropbox_ausschluss.sh` die
+Build-Ordner (`target`, `node_modules`, `dist`, `src-tauri/gen`) von der
+Synchronisation aus. Das Skript sollte vor dem ersten `npm install` laufen.
+
+Die Arbeitskopie des Registers liegt ohne weitere Angabe im Datenordner der
+Anwendung im Benutzerprofil, also außerhalb des Cloud-Ordners.
 
 Zugangsdaten, lokale Pfade und andere Interna gehören nicht in versionierte
 Dateien, sondern nach `docs/intern/` oder in eine `config.local`-Datei. Beides

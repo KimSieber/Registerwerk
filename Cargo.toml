@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/registerwerk-core", "src-tauri"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+authors = ["Kim Sieber"]
+license = "UNLICENSED"
+
+[profile.release]
+strip = true
+lto = "thin"

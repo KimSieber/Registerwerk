@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 15.11.2026. Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 16.11.2026 (ergänzt um die Festlegungen aus v0.0.1). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -80,8 +80,9 @@ Der bestehende Scan-Prozess bleibt unverändert: Scan per Smartphone-App mit Bil
 
 - Der Indexer durchläuft den Dateibaum und vergleicht ihn mit dem Register.
 - Neu ist jeder Pfad, den das Register nicht kennt. Ein Datum wird dafür nicht gebraucht.
-- Geändert ist eine Datei, deren Größe oder Änderungsdatum abweicht.
+- Geändert ist eine Datei, deren Größe oder Änderungsdatum abweicht. Ausnahme ist der Wechsel zwischen lokal und "nur online", siehe unten.
 - Entfernt ist ein Pfad, der im Register steht und im Dateibaum fehlt. Der Eintrag und seine Vorschauen werden aus dem Register entfernt. **Annahme**
+- Entfernt wird nur in Verzeichnissen, die der Durchlauf vollständig gelesen hat. Fehlt ein konfiguriertes Verzeichnis auf dem Gerät oder gab es darin Lesefehler, bleibt sein Bestand im Register unangetastet. Ein nicht eingehängter Cloud-Ordner leert so nicht das Register. Umgesetzt in v0.0.1.
 - Verschobene und umbenannte Dateien sollen über einen Inhalts-Hash erkannt werden, damit Text und Vorschauen nicht neu erzeugt werden müssen. **Annahme**, wird mit dem Delta-Lauf umgesetzt.
 
 ### Platzhalter ("nur online")
@@ -97,6 +98,8 @@ Folgen:
 - Eine Datei mit 0 Byte gilt als "nur online oder leer".
 - Zum Indizieren öffnet der Indexer die Datei. Der Cloud-Client lädt sie dabei automatisch.
 - Das Gesamtvolumen von "nur online"-Dateien lässt sich über das Dateisystem nicht ermitteln.
+- Wechselt eine Datei bei gleichem Änderungsdatum zwischen lokal und "nur online", gilt sie als unverändert. Das Register behält die letzte bekannte Größe und merkt sich nur den Zustand. Erst ein anderes Änderungsdatum bedeutet einen neuen Inhalt. Umgesetzt in v0.0.1. **Annahme**: Der Cloud-Client lässt das Änderungsdatum beim Auslagern und Laden unverändert. Das wird im Pilot beobachtet.
+- Eine Datei, die bisher nur als Platzhalter gesehen wurde, hat im Register keine Größe.
 
 ### Zurück auf "nur online"
 
@@ -125,6 +128,8 @@ Begründung für "Nur Metadaten" bei eBooks: Ihr Inhalt würde sonst bei fast je
 - Die genaueste Regel gewinnt. Ein ausgeschlossener Unterordner bleibt ausgeschlossen, auch wenn der Oberordner auf Voll steht.
 - Die Regeln stehen in einer lesbaren Textdatei neben dem Register, nicht nur in der Datenbank. Sie überleben damit einen Neuaufbau.
 - Die konkrete Zuordnung der Ordner steht in `docs/intern/umgebung.md`.
+- Bis die Behandlungsstufen umgesetzt sind (Stufe 3), nennt eine Konfigurationsdatei nur den Cloud-Ordner und die zu lesenden Verzeichnisse. Sie heißt `config.local.toml` und wird nicht versioniert, eine Vorlage ohne echte Pfade liegt im Repo.
+- Verwaltungsdateien von Cloud-Client und Betriebssystem werden immer übergangen.
 
 ### Dateitypen
 
@@ -195,22 +200,37 @@ Für Sortierung und Priorisierung gilt diese Reihenfolge:
 2. Erstellungsdatum in den PDF-Metadaten
 3. Änderungsdatum der Datei
 
+Erkannt werden am Anfang des Dateinamens die Formen `JJJJ-MM-TT`, `JJJJ-MM`, `JJJJMMTT` und `JJJJ`. Das Datum wird so genau gespeichert, wie es angegeben ist. Seit v0.0.1 ist die erste Quelle umgesetzt, die beiden anderen folgen mit der Verarbeitung der PDFs. Im Pilotbestand tragen 93 % der Dateien ein Datum im Namen.
+
 Begründung: Fast alle Dateinamen beginnen mit einem Datum. Ein PDF-Erstellungsdatum tragen nur 76 % der PDFs. Das Anlagedatum eines Platzhalters ist nicht verlässlich. Ein Änderungsdatum im Sinne von "zuletzt bearbeitet" wird nicht gebraucht.
 
 ## 10. Register
 
 ### Aufbau
 
-- SQLite als Datenbank, mit Volltextindex
-- Eine kleine **Index-Datenbank** mit Metadaten und Volltext
-- **Vorschau-Datenbanken in Scheiben** von je etwa 1 bis 2 GB. Nach einem Delta-Lauf müssen so nur die Index-Datenbank und die Scheibe mit den neuen Vorschauen repliziert werden. **Annahme**: Die Vorschauen liegen wie bei Bilderwerk in der Datenbank. Die Aufteilung in Scheiben ist ein Vorschlag, die Einteilung wird in der Umsetzung festgelegt.
+Das Register besteht aus mehreren SQLite-Dateien, die das Programm gemeinsam öffnet und wie eine Datenbank behandelt:
+
+| Datei | Inhalt | Größe |
+|---|---|---|
+| Index-Datenbank | Pfade, Metadaten, Volltext mit Suchindex, Verweis auf die Vorschau | einige GB |
+| Vorschau-Datenbanken ("Scheiben") | die AVIF-Bilder als Datensätze, wie bei Bilderwerk | je etwa 1 bis 2 GB |
+
+Die Vorschauen liegen also in der Datenbank, nicht als einzelne Bilddateien. Sie sind nur auf mehrere Dateien verteilt. Gründe gegen eine einzige große Datei:
+
+- Jeder Delta-Lauf würde aus Sicht der Cloud die ganze Datei ändern. Manche Anbieter laden sie dann vollständig neu hoch.
+- Die Arbeitskopie beim Schreiben bräuchte zeitweise den doppelten Platz.
+- Ein Schaden bei der Übertragung träfe das gesamte Register statt einer Scheibe.
+
+Alte Scheiben bleiben unverändert. Ein Delta-Lauf fasst nur die Index-Datenbank und die jüngste Scheibe an. Wonach die Scheiben eingeteilt werden, wird in der Umsetzung festgelegt.
+
+**Pfade im Register** sind relativ zum Cloud-Ordner gespeichert, mit `/` als Trenner und einheitlicher Schreibweise der Umlaute (Unicode NFC). Wo der Cloud-Ordner auf einem Gerät liegt, steht nur in dessen Konfiguration. Dasselbe Register gilt damit auf jedem Gerät und Betriebssystem. Die einheitliche Schreibweise ist nötig, weil macOS Umlaute zerlegt liefert und dieselbe Datei sonst je nach Gerät ein anderer Eintrag wäre. Umgesetzt in v0.0.1.
 
 Die Replikation großer Dateien ist kein Engpass: Leitungen und Laufzeit reichen aus, notfalls läuft ein Rechner eine Nacht durch.
 
 ### Ablage und Veröffentlichen
 
 - Das Register liegt im Cloud-Ordner und wird auf die Endgeräte repliziert. Der Ort steht in `docs/intern/umgebung.md`. Der Register-Ordner ist von der Indizierung ausgeschlossen.
-- Der Indexer schreibt in eine Arbeitskopie außerhalb des Cloud-Ordners und legt erst den fertigen Stand hinein. Lesende Geräte sehen so keine halb geschriebenen Zustände. **Annahme**
+- Der Indexer schreibt in eine Arbeitskopie außerhalb des Cloud-Ordners und legt erst den fertigen Stand hinein. Lesende Geräte sehen so keine halb geschriebenen Zustände. **Annahme**. Seit v0.0.1 liegt die Arbeitskopie ohne weitere Angabe im Datenordner der Anwendung im Benutzerprofil. Das Veröffentlichen in den Cloud-Ordner folgt in Stufe 3.
 - Eine Sperre mit Stand-Zähler hält fest, welches Gerät zuletzt geschrieben hat. Beim Start prüft das Programm, ob die lokale Kopie diesen Stand hat. Wenn nicht, öffnet es nur lesend und meldet das. **Annahme**
 
 ### Verschlüsselung
@@ -244,8 +264,10 @@ Gewichtung, Filter nach Ordner und Jahr und die Darstellung der Treffer werden a
 
 | Bereich | Festlegung | Stand |
 |---|---|---|
-| Anwendung | Tauri mit Rust und Web-Oberfläche, lauffähig auf macOS, Windows und Linux | geplant |
-| Datenbank | SQLite mit Volltextindex, verschlüsselt | entschieden |
+| Anwendung | Tauri 2 mit Rust, lauffähig auf macOS, Windows und Linux | entschieden, im Einsatz seit v0.0.1 |
+| Oberfläche | React mit TypeScript und Vite | entschieden, im Einsatz seit v0.0.1 |
+| Aufbau | Kern als eigene Rust-Bibliothek ohne Oberfläche, die Tauri-Anwendung ist nur eine Hülle darüber | entschieden. Hält den lesenden Teil für eine Web-Oberfläche wiederverwendbar |
+| Datenbank | SQLite mit Volltextindex, verschlüsselt | entschieden. Bis Stufe 3 unverschlüsselt, der Wechsel auf die verschlüsselnde Variante ist eine Einstellung der Bibliothek |
 | PDF | PDFium für Textauslese und Rendering | geplant |
 | OCR | Tesseract, Sprachen Deutsch und Englisch. Bereits in PaperTrail Compare im Einsatz, unabhängig von Apple | entschieden |
 | Vorschau | AVIF Q25, 1024 px bezogen auf A4 | entschieden |
@@ -311,6 +333,14 @@ Der Pilot umfasst nur die zwei Hauptverzeichnisse des aktuellen Archivs mit rund
 
 Die Reihenfolge ist ein Vorschlag. **Annahme**
 
+### Stand der Umsetzung
+
+| Version | Inhalt | Stufe |
+|---|---|---|
+| v0.0.1 | Gerüst der Anwendung, Einlesen des Dateibaums ins Register mit Abgleich (neu, geändert, entfernt), Datum aus dem Dateinamen, Übersicht in der Oberfläche | Beginn von Stufe 1, noch ohne PDF-Inhalte und Vorschauen |
+
+Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
+
 ## 15. Offene Punkte
 
 | Punkt | Wann |
@@ -341,6 +371,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**
 | OCR wiederholen | nur unter 60 % Güte und nur bei messbarer Verbesserung | kein Durcharbeiten des ganzen Archivs für wenig Gewinn |
 | OCR-Text bei Scans | ins Register und in die PDF | durchsuchbare PDF bleibt auch außerhalb von Registerwerk erhalten |
 | OCR-Text bei unlesbaren digitalen PDFs | nur ins Register | Einbetten würde das Original verschlechtern |
+| Ablage der Vorschauen | in der Datenbank, verteilt auf Scheiben von 1 bis 2 GB | nur Geändertes wird repliziert, Anbieterwechsel bleibt offen |
 | Sicherungskopien | keine | sollen kein Volumen erzeugen, das von Hand bereinigt werden muss |
 | Datum | Dateiname, dann PDF, dann Datei | Dateinamen tragen fast immer ein Datum |
 | Verschlüsselung | Register verschlüsselt, Kennwort im eigenen Passwortsafe | hochsensible Inhalte, keine Bindung an einen Hersteller |
@@ -348,6 +379,11 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**
 | Systemsuche | nicht angebunden | gesucht wird in Registerwerk |
 | KI | nicht vorgesehen | kein Bedarf |
 | Pilot | zwei Hauptverzeichnisse, rund 3.600 Dateien | klein, vollständig in den Fällen, schnell neu aufgebaut |
+| Oberfläche | React mit TypeScript und Vite | bewährt in Stellwerk, überzeugt in Gestaltung und Möglichkeiten |
+| Pfade im Register | relativ zum Cloud-Ordner, einheitliche Schreibweise | Register gilt auf jedem Gerät und Betriebssystem |
+| Wechsel auf "nur online" | keine Änderung, solange das Änderungsdatum gleich bleibt | sonst würde jedes Auslagern Text und Vorschauen neu erzeugen |
+| Entfernen aus dem Register | nur in vollständig gelesenen Verzeichnissen | ein fehlender Cloud-Ordner darf das Register nicht leeren |
+| Ablage des Projekts | im Cloud-Ordner, Build-Ordner bleiben im Projekt und sind von der Synchronisation ausgenommen | sichert auch die nicht versionierten Inhalte. Eine zentrale Ablage je Projekt, keine Fragmente an anderen Orten |
 
 ## 17. Verworfene Alternativen
 
@@ -359,11 +395,13 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**
 | Native Apple-Anwendung | Bindung an ein Betriebssystem |
 | Schnittstelle des Cloud-Anbieters für die Änderungserkennung | Bindung an den Anbieter. Das Dateisystem genügt |
 | Stationärer Rechner als dauerhafte Vollkopie | kein Dauerbetrieb gewünscht, Platz wird anderweitig gebraucht |
-| Eine einzige große Datenbankdatei | jede Änderung beträfe die ganze Datei. Scheiben kosten kaum Aufwand |
+| Build-Ordner außerhalb des Projekts ablegen | verteilt die Projekte auf mehrere Orte |
+| Eine einzige große Datenbankdatei | jede Änderung beträfe die ganze Datei, die Arbeitskopie bräuchte doppelten Platz, ein Schaden träfe alles |
 
-## 18. Werkzeuge der Konzeptphase
+## 18. Werkzeuge
 
-- `archiv_inventur.py`: Inventur und PDF-Stichprobe, nur lesend
-- `vorschau_vergleich.py`: Vorschauformate nebeneinander, nur lesend
+- `archiv_inventur.py`: Inventur und PDF-Stichprobe der Konzeptphase, nur lesend
+- `vorschau_vergleich.py`: Vorschauformate nebeneinander, Konzeptphase, nur lesend
+- `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
 
-Beide Skripte liegen im Repo unter `tools/`. Ihre Ausgaben enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.
+Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.
