@@ -8,7 +8,16 @@
 //! - 1 (v0.0.1): Tabellen `lauf` und `datei`
 //! - 2 (v0.0.2): Tabelle `seite`, Verarbeitungsstand und PDF-Angaben in `datei`,
 //!   Dokumentdatum für jede Datei
+//! - 3 (v0.0.3): Tabellen `scheibe`, `vorschau` und `vorschau_weg`, Stand der
+//!   Vorschauen in `datei`
+//!
+//! Die Vorschauen selbst liegen nicht in dieser Datei, sondern in Scheiben
+//! (`vorschau-0001.db`, …) im selben Ordner, je etwa [`SCHEIBE_GRENZE`] groß.
+//! Neue Vorschauen kommen immer in die jüngste Scheibe. Ältere Scheiben ändern
+//! sich nur, wenn Vorschauen entfernt werden (Konzept, Abschnitt 10).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,7 +30,18 @@ use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+
+/// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
+/// Konzept: 1 bis 2 GB. **Annahme**
+pub const SCHEIBE_GRENZE: u64 = 1_500_000_000;
+
+/// Version des Verfahrens, mit dem Vorschauen erzeugt werden. Erhöhen, wenn
+/// sich Auflösung, Format, Qualität oder Farberkennung ändern. Dann werden
+/// alle Vorschauen neu erzeugt.
+pub const VORSCHAU_VERFAHREN: i64 = 2;
+// 1: ravif (rav1e) Stufe 8, Qualität 25, 4:4:4
+// 2: libavif mit libaom Stufe 8, Qualität 25, Farbe 4:2:0, Graustufen 4:0:0
 
 /// Version des Verfahrens, mit dem Inhalte gelesen werden. Wird sie erhöht,
 /// gelten alle bisher gelesenen PDFs als ausstehend und werden neu gelesen.
@@ -29,8 +49,11 @@ const SCHEMA_VERSION: i64 = 2;
 pub const INHALT_VERFAHREN: i64 = 1;
 
 pub struct Register {
-    db: Connection,
+    pub(crate) db: Connection,
     pfad: Option<PathBuf>,
+    /// Geöffnete Scheiben, nach Nummer. Ohne Ordner (Tests) im Arbeitsspeicher.
+    pub(crate) scheiben: RefCell<HashMap<i64, Connection>>,
+    pub(crate) scheibe_grenze: u64,
 }
 
 /// Ergebnis eines Abgleichs zwischen Dateibaum und Register.
@@ -107,7 +130,7 @@ pub struct FehlerZeile {
     pub meldung: String,
 }
 
-/// Eine PDF, deren Inhalt gelesen werden muss.
+/// Eine PDF, deren Inhalt gelesen oder deren Vorschauen erzeugt werden müssen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ausstehend {
     pub id: i64,
@@ -128,6 +151,7 @@ pub struct RegisterStand {
     pub datum_pdf: u64,
     pub datum_geaendert: u64,
     pub inhalt: InhaltStand,
+    pub vorschau: crate::scheiben::VorschauStand,
     pub typen: Vec<TypZeile>,
     pub jahre: Vec<JahrZeile>,
     pub letzter_lauf: Option<LetzterLauf>,
@@ -158,13 +182,18 @@ impl Register {
         self.pfad.as_deref()
     }
 
+    /// Ordner des Registers. `None` für ein Register im Arbeitsspeicher.
+    pub fn ordner(&self) -> Option<&Path> {
+        self.pfad.as_deref().and_then(Path::parent)
+    }
+
     /// Legt das Schema an oder hebt es auf den aktuellen Stand.
     ///
     /// Die Version wird erst innerhalb einer sperrenden Transaktion gelesen.
     /// Öffnen zwei Aufrufe das Register gleichzeitig, wartet der zweite und
     /// sieht danach das bereits umgestellte Schema.
     fn einrichten(mut db: Connection, pfad: Option<PathBuf>) -> Ergebnis<Self> {
-        db.pragma_update(None, "journal_mode", "WAL")?;
+        wal_einschalten(&db)?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |z| z.get(0))?;
@@ -209,8 +238,11 @@ impl Register {
         if version < 2 {
             Self::migration_2(&tx)?;
         }
+        if version < 3 {
+            Self::migration_3(&tx)?;
+        }
         tx.commit()?;
-        Ok(Self { db, pfad })
+        Ok(Self { db, pfad, scheiben: RefCell::default(), scheibe_grenze: SCHEIBE_GRENZE })
     }
 
     /// Schema 2: Text je Seite, Verarbeitungsstand, Dokumentdatum für jede Datei.
@@ -251,6 +283,51 @@ impl Register {
             }
         }
         db.execute_batch("PRAGMA user_version = 2;")?;
+        Ok(())
+    }
+
+    /// Schema 3: Verweise auf die Vorschauen in den Scheiben.
+    fn migration_3(db: &Connection) -> Ergebnis<()> {
+        db.execute_batch(
+            "-- Stand der Datei, zu dem die Vorschauen erzeugt wurden
+             ALTER TABLE datei ADD COLUMN vorschau_geaendert INTEGER;
+             ALTER TABLE datei ADD COLUMN vorschau_groesse   INTEGER;
+             ALTER TABLE datei ADD COLUMN vorschau_verfahren INTEGER;
+             ALTER TABLE datei ADD COLUMN vorschau_fehler    TEXT;
+             CREATE TABLE scheibe (
+                 nr          INTEGER PRIMARY KEY,
+                 datei       TEXT NOT NULL UNIQUE,
+                 -- Summe der Vorschauen in Byte und ihre Anzahl
+                 bytes       INTEGER NOT NULL DEFAULT 0,
+                 vorschauen  INTEGER NOT NULL DEFAULT 0,
+                 -- 1: nimmt keine neuen Vorschauen mehr auf
+                 voll        INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE vorschau (
+                 datei    INTEGER NOT NULL REFERENCES datei(id) ON DELETE CASCADE,
+                 nr       INTEGER NOT NULL,
+                 scheibe  INTEGER NOT NULL REFERENCES scheibe(nr),
+                 -- Schlüssel des Bildes in der Scheibe
+                 id       INTEGER NOT NULL,
+                 breite   INTEGER NOT NULL,
+                 hoehe    INTEGER NOT NULL,
+                 farbig   INTEGER NOT NULL,
+                 bytes    INTEGER NOT NULL,
+                 PRIMARY KEY (datei, nr)
+             ) WITHOUT ROWID;
+             -- Bilder, deren Verweis entfernt wurde. Sie werden beim nächsten
+             -- Aufräumen aus ihrer Scheibe gelöscht.
+             CREATE TABLE vorschau_weg (
+                 scheibe  INTEGER NOT NULL,
+                 id       INTEGER NOT NULL
+             );
+             CREATE TRIGGER vorschau_entfernt AFTER DELETE ON vorschau BEGIN
+                 INSERT INTO vorschau_weg (scheibe, id) VALUES (old.scheibe, old.id);
+                 UPDATE scheibe SET bytes = bytes - old.bytes, vorschauen = vorschauen - 1
+                 WHERE nr = old.scheibe;
+             END;
+             PRAGMA user_version = 3;",
+        )?;
         Ok(())
     }
 
@@ -371,6 +448,7 @@ impl Register {
                 |z| Ok((zahl(z, 0)?, zahl(z, 1)?, zahl(z, 2)?, zahl(z, 3)?, zahl(z, 4)?, zahl(z, 5)?, zahl(z, 6)?)),
             )?;
         let inhalt = self.inhalt_stand()?;
+        let vorschau = self.vorschau_stand()?;
 
         let typen = self
             .db
@@ -426,6 +504,7 @@ impl Register {
             datum_pdf,
             datum_geaendert,
             inhalt,
+            vorschau,
             typen,
             jahre,
             letzter_lauf,
@@ -537,6 +616,25 @@ impl Register {
             .query_map([], |z| Ok(FehlerZeile { pfad: z.get(0)?, meldung: z.get(1)? }))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(s)
+    }
+}
+
+/// Schaltet das WAL-Journal ein. Das Umschalten wartet nicht wie andere
+/// Zugriffe auf eine Sperre. Öffnen mehrere Aufrufe ein neues Register
+/// gleichzeitig, meldet es "database is locked". Dann kurz warten und erneut
+/// versuchen.
+fn wal_einschalten(db: &Connection) -> rusqlite::Result<()> {
+    let mut versuche = 0;
+    loop {
+        match db.pragma_update(None, "journal_mode", "WAL") {
+            Err(rusqlite::Error::SqliteFailure(f, _))
+                if f.code == rusqlite::ErrorCode::DatabaseBusy && versuche < 100 =>
+            {
+                versuche += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            andere => return andere,
+        }
     }
 }
 
@@ -671,6 +769,7 @@ mod tests {
         let s = r.stand().unwrap();
         assert_eq!((s.dateien, s.mit_datum, s.datum_geaendert), (2, 1, 1));
         assert_eq!((s.inhalt.pdfs, s.inhalt.ausstehend), (2, 2));
+        assert_eq!((s.vorschau.pdfs, s.vorschau.ausstehend), (2, 2));
         let datum: String = r.db.query_row("SELECT datum_dokument FROM datei WHERE id = 2", [], |z| z.get(0)).unwrap();
         assert_eq!(datum, "2026-11-16");
     }

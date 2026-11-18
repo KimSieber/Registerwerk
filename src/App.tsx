@@ -3,16 +3,19 @@ import logo from "../docs/icons/png-randlos/registerwerk_128.png";
 import {
   AppInfo,
   Fortschritt,
+  FehlerZeile,
   InhaltErgebnis,
-  InhaltStand,
   LaufErgebnis,
   RegisterStand,
+  VorschauErgebnis,
   appInfo,
   dateibaumEinlesen,
   inhalteAbbrechen,
   inhalteLesen,
   registerStand,
+  vorschauenErzeugen,
 } from "./api";
+import VorschauPruefen from "./VorschauPruefen";
 import { alsAnteil, alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
 
 export default function App() {
@@ -21,10 +24,14 @@ export default function App() {
   const [lauf, setLauf] = useState<LaufErgebnis | null>(null);
   const [laeuft, setLaeuft] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
-  const [liest, setLiest] = useState(false);
+  // Laufender Vorgang, der ins Register schreibt. Es läuft höchstens einer.
+  const [vorgang, setVorgang] = useState<"inhalte" | "vorschauen" | null>(null);
   const [fortschritt, setFortschritt] = useState<Fortschritt | null>(null);
   const [inhaltLauf, setInhaltLauf] = useState<InhaltErgebnis | null>(null);
+  const [vorschauLauf, setVorschauLauf] = useState<VorschauErgebnis | null>(null);
   const [haelt, setHaelt] = useState(false);
+  // Erhöht sich nach jedem Vorschau-Lauf, damit die Prüfansicht neu lädt
+  const [vorschauStand, setVorschauStand] = useState(0);
 
   const standLaden = useCallback(async () => {
     try {
@@ -57,7 +64,7 @@ export default function App() {
   }
 
   async function inhalteStarten() {
-    setLiest(true);
+    setVorgang("inhalte");
     setHaelt(false);
     setFehler(null);
     setFortschritt(null);
@@ -67,8 +74,26 @@ export default function App() {
     } catch (e) {
       setFehler(String(e));
     } finally {
-      setLiest(false);
+      setVorgang(null);
       setFortschritt(null);
+      await standLaden();
+    }
+  }
+
+  async function vorschauenStarten() {
+    setVorgang("vorschauen");
+    setHaelt(false);
+    setFehler(null);
+    setFortschritt(null);
+    setVorschauLauf(null);
+    try {
+      setVorschauLauf(await vorschauenErzeugen(setFortschritt));
+    } catch (e) {
+      setFehler(String(e));
+    } finally {
+      setVorgang(null);
+      setFortschritt(null);
+      setVorschauStand((n) => n + 1);
       await standLaden();
     }
   }
@@ -79,8 +104,12 @@ export default function App() {
   }
 
   const bereit = info !== null && !info.konfig_fehler;
+  const liest = vorgang === "inhalte";
   const ausstehend = stand?.inhalt.ausstehend ?? 0;
   const lokalAusstehend = ausstehend - (stand?.inhalt.ausstehend_online ?? 0);
+  const v = stand?.vorschau;
+  const vAusstehend = v?.ausstehend ?? 0;
+  const vLokalAusstehend = vAusstehend - (v?.ausstehend_online ?? 0);
 
   return (
     <div className="seite">
@@ -157,7 +186,10 @@ export default function App() {
                 {haelt ? "Hält an …" : "Anhalten"}
               </button>
             ) : (
-              <button onClick={inhalteStarten} disabled={!info.pdfium_ordner || laeuft || lokalAusstehend === 0}>
+              <button
+                onClick={inhalteStarten}
+                disabled={!info.pdfium_ordner || laeuft || vorgang !== null || lokalAusstehend === 0}
+              >
                 Inhalte lesen
               </button>
             )}
@@ -183,9 +215,75 @@ export default function App() {
           )}
 
           {inhaltLauf && <InhaltMeldung e={inhaltLauf} />}
-          {stand.inhalt.fehler_liste.length > 0 && <FehlerListe inhalt={stand.inhalt} />}
+          {stand.inhalt.fehler_liste.length > 0 && (
+            <FehlerListe anzahl={stand.inhalt.fehler} liste={stand.inhalt.fehler_liste} />
+          )}
         </section>
       )}
+
+      {bereit && stand && v && (
+        <section className="karte">
+          <div className="karte-kopf">
+            <div>
+              <h2>Vorschauen</h2>
+              <p className="unterzeile">
+                Rendert jede Seite in 1024 Pixel Breite bezogen auf A4 und speichert sie als AVIF in den Scheiben des
+                Registers. Seiten ohne Farbe werden als Graustufen gespeichert. „Nur online“-Dateien werden übergangen.
+              </p>
+            </div>
+            {vorgang === "vorschauen" ? (
+              <button onClick={anhalten} disabled={haelt}>
+                {haelt ? "Hält an …" : "Anhalten"}
+              </button>
+            ) : (
+              <button
+                onClick={vorschauenStarten}
+                disabled={!info.pdfium_ordner || laeuft || vorgang !== null || vLokalAusstehend === 0}
+              >
+                Vorschauen erzeugen
+              </button>
+            )}
+          </div>
+
+          {vorgang === "vorschauen" ? (
+            <FortschrittAnzeige f={fortschritt} />
+          ) : (
+            <p className="stand-zeile">
+              {vAusstehend === 0
+                ? "Für alle PDFs liegen Vorschauen vor."
+                : `Für ${alsZahl(vLokalAusstehend)} PDFs stehen Vorschauen an` +
+                  (v.ausstehend_online > 0 ? `, ${alsZahl(v.ausstehend_online)} weitere liegen nur online.` : ".")}
+            </p>
+          )}
+
+          {vorschauLauf && <VorschauMeldung e={vorschauLauf} />}
+
+          {v.seiten > 0 && (
+            <div className="kacheln">
+              <Kachel
+                titel="Seiten mit Vorschau"
+                wert={alsZahl(v.seiten)}
+                zusatz={`aus ${alsZahl(v.erzeugt - v.fehler)} von ${alsZahl(v.pdfs)} PDFs`}
+              />
+              <Kachel titel="Volumen" wert={alsGroesse(v.bytes)} zusatz={`${alsGroesse(v.bytes / v.seiten)} je Seite`} />
+              <Kachel
+                titel="Farbig"
+                wert={alsAnteil(v.farbig, v.seiten)}
+                zusatz={`${alsZahl(v.seiten - v.farbig)} Seiten in Graustufen`}
+              />
+              <Kachel
+                titel="Scheiben"
+                wert={alsZahl(v.scheiben.length)}
+                zusatz={v.scheiben.map((z) => `${z.datei} ${alsGroesse(z.bytes)}`).join(", ")}
+              />
+            </div>
+          )}
+
+          {v.fehler_liste.length > 0 && <FehlerListe anzahl={v.fehler} liste={v.fehler_liste} />}
+        </section>
+      )}
+
+      {bereit && v && v.seiten > 0 && <VorschauPruefen neuLaden={vorschauStand} />}
 
       {stand ? (
         <StandAnzeige stand={stand} />
@@ -252,15 +350,75 @@ function InhaltMeldung({ e }: { e: InhaltErgebnis }) {
   );
 }
 
-function FehlerListe({ inhalt }: { inhalt: InhaltStand }) {
+function VorschauMeldung({ e }: { e: VorschauErgebnis }) {
+  return (
+    <div className="lauf">
+      <p>
+        {e.abgebrochen ? "Angehalten" : "Fertig"} nach {alsDauer(e.dauer_ms)}: <b>{alsZahl(e.erzeugt)} PDFs</b> mit{" "}
+        {alsZahl(e.seiten)} Seiten, {alsGroesse(e.bytes)}
+        {e.fehler > 0 && (
+          <>
+            , <b>{alsZahl(e.fehler)} mit Fehler</b>
+          </>
+        )}
+        {e.nur_online > 0 && <>, {alsZahl(e.nur_online)} nur online übergangen</>}
+        {e.aufgeraeumt > 0 && <>, {alsZahl(e.aufgeraeumt)} alte Vorschauen entfernt</>}.
+      </p>
+      {e.abgebrochen && <p className="stand-zeile">Der nächste Lauf setzt hier fort.</p>}
+      {e.seiten > 0 && <MessungAnzeige e={e} />}
+    </div>
+  );
+}
+
+/** Wo die Zeit bleibt: Rendern läuft in einem Faden, Kodieren in mehreren. */
+function MessungAnzeige({ e }: { e: VorschauErgebnis }) {
+  const m = e.messung;
+  const seiten = Math.max(1, e.seiten);
+  const dauer = Math.max(1, e.dauer_ms);
+  const ms = (x: number) => `${Math.round(x).toLocaleString("de-DE")} ms`;
+  const anteil = (x: number) => `${Math.round(x * 100)} %`;
+  return (
+    <table className="messung">
+      <tbody>
+        <tr>
+          <td>Tempo</td>
+          <td className="r">{((seiten * 1000) / dauer).toLocaleString("de-DE", { maximumFractionDigits: 1 })} Seiten/s</td>
+          <td>{ms(dauer / seiten)} je Seite, {(m.pixel / seiten / 1e6).toLocaleString("de-DE", { maximumFractionDigits: 2 })} Megapixel je Seite</td>
+        </tr>
+        <tr>
+          <td>Rendern (1 Faden)</td>
+          <td className="r">{ms(m.render_ms / seiten)} je Seite</td>
+          <td>
+            beschäftigt {anteil(m.render_ms / dauer)} der Laufzeit, wartet {anteil(m.render_wartet_ms / dauer)} auf freie
+            Kodier-Fäden
+          </td>
+        </tr>
+        <tr>
+          <td>Kodieren ({m.faeden} Fäden)</td>
+          <td className="r">{ms(m.kodier_ms / seiten)} je Seite</td>
+          <td>
+            ausgelastet {anteil(m.kodier_ms / (m.faeden * dauer))}, leer {anteil(m.kodier_leer_ms / (m.faeden * dauer))}
+          </td>
+        </tr>
+        <tr>
+          <td>Schreiben</td>
+          <td className="r">{ms(m.schreib_ms / Math.max(1, e.erzeugt + e.fehler))} je Datei</td>
+          <td>{anteil(m.schreib_ms / dauer)} der Laufzeit</td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+function FehlerListe({ anzahl, liste }: { anzahl: number; liste: FehlerZeile[] }) {
   return (
     <details className="fehlerliste">
       <summary>
-        {alsZahl(inhalt.fehler)} {inhalt.fehler === 1 ? "PDF ließ" : "PDFs ließen"} sich nicht lesen
+        {alsZahl(anzahl)} {anzahl === 1 ? "PDF ließ" : "PDFs ließen"} sich nicht lesen
       </summary>
       <table>
         <tbody>
-          {inhalt.fehler_liste.map((f) => (
+          {liste.map((f) => (
             <tr key={f.pfad}>
               <td className="pfad">{f.pfad}</td>
               <td>{f.meldung}</td>

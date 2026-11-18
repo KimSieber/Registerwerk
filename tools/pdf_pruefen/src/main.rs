@@ -9,6 +9,11 @@
 //! --still      nur Fehler und Zusammenfassung
 //! --ohne-text  nur PDFs mit Seiten ohne Text, mit Seitennummern (d = digital)
 //! --text       zusätzlich die ersten 80 Zeichen der ersten Seite
+//! --vorschau N Tempotest der Vorschauen: N PDFs gleichmäßig verteilt, je
+//!              höchstens 4 Seiten rendern und mit mehreren Geschwindigkeiten
+//!              als AVIF kodieren. Muster landen in target/vorschau_muster/
+//! --render N   N PDFs gleichmäßig verteilt, je die erste Seite gerendert als
+//!              PPM nach target/render_muster/. Vorlage für Encoder-Vergleiche
 //!
 //! PDFium wird in `REGISTERWERK_PDFIUM` oder in `bibliotheken/pdfium/lib`
 //! ab dem Arbeitsverzeichnis aufwärts gesucht. Dateien mit 0 Byte
@@ -18,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use registerwerk_core::{guete, pdf};
+
+mod tempotest;
 
 #[derive(Default)]
 struct Summe {
@@ -39,6 +46,8 @@ struct Summe {
 
 fn main() {
     let (mut still, mut nur_ohne_text, mut text_zeigen, mut max) = (false, false, false, usize::MAX);
+    let mut vorschau_n: Option<usize> = None;
+    let mut render_n: Option<usize> = None;
     let mut ziele: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -46,6 +55,8 @@ fn main() {
             "--still" => still = true,
             "--ohne-text" => nur_ohne_text = true,
             "--text" => text_zeigen = true,
+            "--render" => render_n = args.next().and_then(|n| n.parse().ok()).or(Some(24)),
+            "--vorschau" => vorschau_n = args.next().and_then(|n| n.parse().ok()).or(Some(150)),
             "--max" => max = args.next().and_then(|n| n.parse().ok()).unwrap_or(usize::MAX),
             _ => ziele.push(PathBuf::from(a)),
         }
@@ -76,6 +87,14 @@ fn main() {
         sammeln(z, &mut dateien);
     }
     dateien.sort();
+    if let Some(n) = render_n {
+        tempotest::rendern_ablegen(pdfium, &dateien, n);
+        return;
+    }
+    if let Some(n) = vorschau_n {
+        tempotest::lauf(pdfium, &dateien, n);
+        return;
+    }
 
     let mut s = Summe::default();
     let start = Instant::now();

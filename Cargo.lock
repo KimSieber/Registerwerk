@@ -361,6 +361,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1807,6 +1816,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "libaom-sys"
+version = "0.18.1+libaom.3.15.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb571e6ba72de3f95bf11a86724aecb2e21a7aa396a205c84e65fb7ac1c842b"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "libappindicator"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1828,6 +1846,17 @@ dependencies = [
  "gtk-sys",
  "libloading",
  "once_cell",
+]
+
+[[package]]
+name = "libavif-sys"
+version = "0.18.0+libavif.1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3147ece4edd43fce03ab0b2f465a9c3f852c90adfa205aea4125315e8fb564f"
+dependencies = [
+ "cmake",
+ "libaom-sys",
+ "libc",
 ]
 
 [[package]]
@@ -2340,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_pruefen"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "registerwerk-core",
 ]
@@ -2729,7 +2758,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "registerwerk"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "registerwerk-core",
  "serde",
@@ -2739,8 +2768,9 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
+ "libavif-sys",
  "pdfium-render",
  "rusqlite",
  "serde",

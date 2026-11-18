@@ -3,10 +3,22 @@ resolver = "2"
 members = ["crates/registerwerk-core", "src-tauri", "tools/pdf_pruefen"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 authors = ["Kim Sieber"]
 license = "UNLICENSED"
+
+# Im Entwicklungsmodus (npm run tauri dev) die Abhängigkeiten und den Kern
+# trotzdem optimieren. Ohne Optimierung ist der AV1-Encoder (rav1e) 30- bis
+# 100-mal langsamer, das Erzeugen der Vorschauen wäre nicht prüfbar.
+# Der Kern muss dabei sein: Der Encoder ist generisch, große Teile davon werden
+# erst im Kern übersetzt und hätten sonst dessen Stufe 0. Nur die Tauri-Hülle
+# und die Werkzeuge bleiben unoptimiert und schnell übersetzt.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.registerwerk-core]
+opt-level = 3
 
 [profile.release]
 strip = true

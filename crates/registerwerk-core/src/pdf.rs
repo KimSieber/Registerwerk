@@ -12,6 +12,9 @@ use std::sync::OnceLock;
 
 use pdfium_render::prelude::*;
 
+/// Für Werkzeuge, die den Kern nutzen, ohne pdfium-render selbst einzubinden.
+pub use pdfium_render::prelude::Pdfium;
+
 use crate::{Ergebnis, Fehler};
 
 /// Ab diesem Anteil der Seitenfläche, den Bilder abdecken, gilt eine Seite als Scan.

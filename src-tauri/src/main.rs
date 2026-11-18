@@ -6,19 +6,29 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use registerwerk_core::{Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, Register, RegisterStand};
+use registerwerk_core::{
+    DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, Register, RegisterStand,
+    VorschauErgebnis,
+};
 use serde::Serialize;
+use tauri::http::{Request, Response, StatusCode};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, UriSchemeResponder};
 
-/// Zustand eines laufenden Lesevorgangs. Es läuft höchstens einer.
+/// Zustand eines laufenden Vorgangs, der ins Register schreibt (Inhalte lesen
+/// oder Vorschauen erzeugen). Es läuft höchstens einer.
 #[derive(Default)]
 struct Lesen {
     laeuft: AtomicBool,
     abbrechen: AtomicBool,
 }
+
+/// Geöffnetes Register zum Lesen der Vorschauen, mit seinem Ordner.
+#[derive(Default)]
+struct Leser(Mutex<Option<(PathBuf, Register)>>);
 
 #[derive(Serialize)]
 struct AppInfo {
@@ -151,7 +161,7 @@ async fn inhalte_lesen(
     let pdfium = pdfium_ordner(&app)
         .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
     if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es werden bereits Inhalte gelesen.".into());
+        return Err("Es läuft bereits ein Vorgang.".into());
     }
     zustand.abbrechen.store(false, Ordering::SeqCst);
     let app2 = app.clone();
@@ -179,21 +189,122 @@ async fn inhalte_lesen(
     ergebnis?
 }
 
-/// Bittet einen laufenden Lesevorgang, nach der aktuellen Datei anzuhalten.
+/// Bittet einen laufenden Vorgang, nach der aktuellen Datei anzuhalten.
 #[tauri::command]
 fn inhalte_abbrechen(zustand: State<'_, Lesen>) {
     zustand.abbrechen.store(true, Ordering::SeqCst);
 }
 
+/// Erzeugt die Vorschauen aller ausstehenden PDFs. Meldet den Fortschritt
+/// über `kanal`, höchstens etwa zehnmal je Sekunde. Abbrechen über
+/// `inhalte_abbrechen`.
+#[tauri::command]
+async fn vorschauen_erzeugen(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    kanal: Channel<Fortschritt>,
+) -> Result<VorschauErgebnis, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    let pdfium = pdfium_ordner(&app)
+        .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
+    if zustand.laeuft.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft bereits ein Vorgang.".into());
+    }
+    zustand.abbrechen.store(false, Ordering::SeqCst);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
+        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let mut zuletzt = Instant::now() - Duration::from_secs(1);
+        registerwerk_core::vorschauen_erzeugen(
+            &konfig,
+            &mut register,
+            &pdfium,
+            |f| {
+                if f.erledigt == f.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {
+                    zuletzt = Instant::now();
+                    let _ = kanal.send(f.clone());
+                }
+            },
+            &zustand.abbrechen,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    ergebnis?
+}
+
+/// Führt `f` mit dem Register zum Lesen aus. Öffnet es beim ersten Aufruf und
+/// erneut, wenn sich der Register-Ordner geändert hat.
+fn mit_leser<T>(app: &AppHandle, f: impl FnOnce(&Register) -> Result<T, String>) -> Result<T, String> {
+    let (_, konfig) = konfig_laden(app)?;
+    let ordner = register_ordner(app, &konfig)?;
+    let leser = app.state::<Leser>();
+    let mut offen = leser.0.lock().map_err(|e| e.to_string())?;
+    if offen.as_ref().map(|(o, _)| o != &ordner).unwrap_or(true) {
+        if !ordner.join(registerwerk_core::register::DATEINAME).is_file() {
+            return Err("Noch kein Register vorhanden.".into());
+        }
+        let register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        *offen = Some((ordner, register));
+    }
+    f(&offen.as_ref().expect("eben geöffnet").1)
+}
+
+/// Dateien mit Vorschauen, deren Pfad alle Wörter von `muster` enthält.
+/// Nur zum Prüfen der Vorschauen, die Suche folgt in Stufe 2.
+#[tauri::command]
+async fn dateien_mit_vorschau(app: AppHandle, muster: String) -> Result<Vec<DateiVorschau>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mit_leser(&app, |r| r.dateien_mit_vorschau(&muster, 100).map_err(|e| e.to_string()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Liefert eine Vorschau für `vorschau://localhost/<datei>/<seite>`.
+/// Läuft außerhalb des Fensters, damit das Lesen die Oberfläche nicht aufhält.
+fn vorschau_protokoll(app: AppHandle, anfrage: Request<Vec<u8>>, antwort: UriSchemeResponder) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let teile: Vec<&str> = anfrage.uri().path().trim_matches('/').split('/').collect();
+        let schluessel = match teile.as_slice() {
+            [datei, seite] => datei.parse::<i64>().ok().zip(seite.parse::<u32>().ok()),
+            _ => None,
+        };
+        let ergebnis = match schluessel {
+            Some((datei, seite)) => mit_leser(&app, |r| r.vorschau(datei, seite).map_err(|e| e.to_string())),
+            None => Ok(None),
+        };
+        let fertig = match ergebnis {
+            Ok(Some(avif)) => Response::builder()
+                .header("Content-Type", "image/avif")
+                .header("Cache-Control", "max-age=3600")
+                .body(avif),
+            Ok(None) => Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new()),
+            Err(fehler) => Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(fehler.into_bytes()),
+        };
+        antwort.respond(fertig.expect("gültige Antwort"));
+    });
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Lesen::default())
+        .manage(Leser::default())
+        .register_asynchronous_uri_scheme_protocol("vorschau", |ctx, anfrage, antwort| {
+            vorschau_protokoll(ctx.app_handle().clone(), anfrage, antwort)
+        })
         .invoke_handler(tauri::generate_handler![
             app_info,
             register_stand,
             dateibaum_einlesen,
             inhalte_lesen,
-            inhalte_abbrechen
+            inhalte_abbrechen,
+            vorschauen_erzeugen,
+            dateien_mit_vorschau
         ])
         .run(tauri::generate_context!())
         .expect("Registerwerk konnte nicht gestartet werden");

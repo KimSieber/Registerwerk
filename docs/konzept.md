@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 16.11.2026 (ergänzt um die Festlegungen aus v0.0.1 und v0.0.2). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 18.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.3). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -182,8 +182,10 @@ Als zusätzliches Netz ohne eigenes Volumen dient der Versionsverlauf des Cloud-
 |---|---|
 | Umfang | jede Seite jedes voll verarbeiteten Dokuments |
 | Auflösung | 1024 px Breite bezogen auf A4, das sind rund 124 dpi. Schmalere Seiten wie Kassenbelege werden im selben Maßstab gerendert |
-| Format | AVIF, Qualität 25 |
-| Farbe | Seiten ohne sichtbare Farbe werden als Graustufen gespeichert |
+| Format | AVIF, Qualität 25, kodiert mit libavif und libaom (Stufe 8) |
+| Farbe | farbige Seiten in 4:2:0, Seiten ohne sichtbare Farbe als echte Graustufen (4:0:0) |
+| Farberkennung | Ein Pixel gilt als farbig, wenn seine Farbkanäle um mehr als 48 auseinanderliegen. Eine Seite gilt als farbig ab 0,1 % farbiger Pixel. **Annahme**, im Pilot stichprobenartig bestätigt |
+| Übergrößen | längste Kante höchstens 2048 px, etwa bei Plänen. **Annahme** |
 
 Begründung:
 
@@ -194,6 +196,8 @@ Begründung:
 - Die Vorschau muss normalen Brieftext lesbar machen. Für Kleingedrucktes wird das Original geladen.
 
 Die Vorschau ist eine abgeleitete Kopie. Ihre starke Kompression berührt die Originale nicht.
+
+Die Einstellungen entsprechen dem Vergleich der Konzeptphase, der ebenfalls libavif nutzte (über Pillow). Im Pilot (v0.0.3) ergaben sich 27,2 KB je Seite, genau der Wert aus der Stichprobe. Beim Durchsehen war kein Unterschied zum Original zu erkennen.
 
 ## 9. Datum eines Dokuments
 
@@ -224,7 +228,13 @@ Die Vorschauen liegen also in der Datenbank, nicht als einzelne Bilddateien. Sie
 - Die Arbeitskopie beim Schreiben bräuchte zeitweise den doppelten Platz.
 - Ein Schaden bei der Übertragung träfe das gesamte Register statt einer Scheibe.
 
-Alte Scheiben bleiben unverändert. Ein Delta-Lauf fasst nur die Index-Datenbank und die jüngste Scheibe an. Wonach die Scheiben eingeteilt werden, wird in der Umsetzung festgelegt.
+Alte Scheiben bleiben unverändert. Ein Delta-Lauf fasst nur die Index-Datenbank und die jüngste Scheibe an. Umgesetzt in v0.0.3:
+
+- Die Scheiben werden nach **Erfassungsreihenfolge** gefüllt. Neue Vorschauen kommen in die jüngste Scheibe, bis diese rund 1,5 GB erreicht (**Annahme**). Dann beginnt eine neue.
+- Die Dateien heißen `vorschau-0001.db`, `vorschau-0002.db` usw. und liegen neben der Index-Datenbank.
+- Die Index-Datenbank hält je Seite einen Verweis (Scheibe und Schlüssel), Maße und Farbe.
+- Ändert sich eine Datei oder verschwindet sie, wandern ihre alten Verweise in eine Liste. Beim nächsten Lauf werden die Bilder aus ihrer Scheibe gelöscht. Nur dabei ändert sich eine ältere Scheibe.
+- Geschrieben wird erst die Scheibe, dann der Verweis. Ein Abbruch dazwischen hinterlässt höchstens ein Bild ohne Verweis, das der nächste Neuaufbau beseitigt.
 
 **Pfade im Register** sind relativ zum Cloud-Ordner gespeichert, mit `/` als Trenner und einheitlicher Schreibweise der Umlaute (Unicode NFC). Wo der Cloud-Ordner auf einem Gerät liegt, steht nur in dessen Konfiguration. Dasselbe Register gilt damit auf jedem Gerät und Betriebssystem. Die einheitliche Schreibweise ist nötig, weil macOS Umlaute zerlegt liefert und dieselbe Datei sonst je nach Gerät ein anderer Eintrag wäre. Umgesetzt in v0.0.1.
 
@@ -249,7 +259,7 @@ Die Verschlüsselung schützt das Register. Die Originale im Cloud-Ordner schüt
 
 ### Neuaufbau
 
-Ein vollständiger Neuaufbau aus den Dateien ist jederzeit möglich und wird im Pilot als Test ausgeführt.
+Ein vollständiger Neuaufbau aus den Dateien ist jederzeit möglich. Im Pilot am 18.11.2026 ausgeführt (v0.0.3): Register-Ordner beiseitegelegt, Dateibaum, Inhalte und Vorschauen neu erzeugt. Ergebnis identisch mit dem vorherigen Stand: 3.384 PDFs, 11.131 Seiten, 295 MB Vorschauen. Text in 17 s, Vorschauen in 3 min 16 s.
 
 ## 11. Suche und Anzeige
 
@@ -273,10 +283,10 @@ Gewichtung, Filter nach Ordner und Jahr und die Darstellung der Treffer werden a
 | Datenbank | SQLite mit Volltextindex, verschlüsselt | entschieden. Bis Stufe 3 unverschlüsselt, der Wechsel auf die verschlüsselnde Variante ist eine Einstellung der Bibliothek |
 | PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
 | OCR | Tesseract, Sprachen Deutsch und Englisch. Bereits in PaperTrail Compare im Einsatz, unabhängig von Apple | entschieden |
-| Vorschau | AVIF Q25, 1024 px bezogen auf A4 | entschieden |
+| Vorschau | AVIF Q25, 1024 px bezogen auf A4. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3 |
 | Zugangsdaten | lokaler Schlüsselbund des Betriebssystems, wie in Stellwerk | Annahme |
 
-Zu prüfen beim Start: Die Oberfläche muss AVIF auf allen Zielsystemen anzeigen. Wo die eingebettete Browser-Komponente das nicht kann, dekodiert der Rust-Teil das Bild und reicht es weiter.
+Die Oberfläche muss AVIF auf allen Zielsystemen anzeigen. Die Bilder kommen über ein eigenes Protokoll (`vorschau://`) aus dem Register. Unter macOS geprüft in v0.0.3. Windows und Linux sind offen. Wo die eingebettete Browser-Komponente AVIF nicht kann, dekodiert der Rust-Teil das Bild und reicht es weiter.
 
 ## 13. Messwerte
 
@@ -304,6 +314,21 @@ Grundlage: Inventur mit PDF-Stichprobe vom 15.11.2026 über die zwei Hauptverzei
 | AVIF Q25 | 27 | 23 |
 | WebP Q25 | 50 | 43 |
 | WebP Q50 | 67 | 57 |
+
+### Vorschauen im Pilot (v0.0.3)
+
+Gemessen am 18.11.2026 auf dem Notebook beim Neuaufbau, Anwendung im Release-Modus:
+
+| Größe | Wert |
+|---|---|
+| Seiten | 11.131 aus 3.384 PDFs |
+| Volumen | 295 MB, 27,2 KB je Seite |
+| farbig | 34 % der Seiten |
+| Dauer | 196 s, 18 ms je Seite (57 Seiten je Sekunde) |
+| Rendern | 17 ms je Seite, ein Faden, zu 96 % ausgelastet. Der Engpass |
+| Kodieren | 65 ms je Seite und Faden, 8 Fäden zu 46 % ausgelastet |
+
+Hochgerechnet auf 1,5 Mio. Seiten: rund 8 Stunden und rund 40 GB. Mehrere Render-Prozesse könnten das Tempo noch einmal etwa verdoppeln. Das lohnt sich bei diesen Werten nicht.
 
 ### Mengengerüst (Schätzung)
 
@@ -342,6 +367,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**
 |---|---|---|
 | v0.0.1 | Gerüst der Anwendung, Einlesen des Dateibaums ins Register mit Abgleich (neu, geändert, entfernt), Datum aus dem Dateinamen, Übersicht in der Oberfläche | Beginn von Stufe 1, noch ohne PDF-Inhalte und Vorschauen |
 | v0.0.2 | PDFium angebunden, Text je Seite im Register, Gütemaß und Seitenart, Datum aus PDF und Änderungsdatum, Fortsetzen nach Abbruch | Stufe 1 ohne Vorschauen |
+| v0.0.3 | Vorschauen aller Seiten als AVIF in Scheiben, Seitenansicht zum Prüfen, Neuaufbau des Pilot-Registers getestet | Stufe 1 abgeschlossen |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -351,8 +377,8 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 |---|---|
 | Inventur der Verzeichnisse außerhalb des aktuellen Archivs. Bestimmt die Endgröße, nicht den Bau | vor Stufe 6 |
 | Kontoauszüge: Ein Auszug von 2017 hat keine Textebene. Ob andere Zeichensalat liefern, zeigt das Gütemaß | Stufe 5 |
-| Anzeige von AVIF in der Oberfläche auf allen Zielsystemen | Stufe 2 |
-| Einteilung der Vorschau-Scheiben | Stufe 1 |
+| Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
+| Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | Zurücksetzen auf "nur online" per Programm | Stufe 4 |
 | Textauslese für Word, Pages, Tabellen und Bilder | nach Stufe 6 |
 | Verhalten eines europäischen Cloud-Anbieters bei der Replikation des Registers | vor einem Anbieterwechsel |
@@ -391,6 +417,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Verarbeitungsstand | Änderungsdatum und Größe beim Lesen, dazu eine Verfahrensversion | geänderte Dateien und Verfahren werden gezielt neu gelesen, ein Abbruch kostet nichts |
 | Suchindex | erst mit der Suche | die Wahl hängt an der fehlertoleranten Suche, die Texttabelle je Seite ist die Grundlage |
 | Entfernen aus dem Register | nur in vollständig gelesenen Verzeichnissen | ein fehlender Cloud-Ordner darf das Register nicht leeren |
+| AVIF-Encoder | libavif mit libaom, Stufe 8 | bei gleicher Qualität und Größe knapp 3-mal so schnell wie rav1e. Kostet einen C-Bau mit CMake |
+| Einteilung der Scheiben | nach Erfassungsreihenfolge, neue Scheibe ab rund 1,5 GB | Delta-Läufe ändern nur die jüngste Scheibe |
+| Graustufen | echte Graustufen (4:0:0) für Seiten ohne Farbe | kleiner, ohne sichtbaren Verlust |
+| Entwicklungsmodus | Kern und Abhängigkeiten auch im Entwicklungsmodus optimiert | ohne Optimierung ist der Encoder um ein Vielfaches langsamer, auch weil seine generischen Teile erst im Kern übersetzt werden |
 | Ablage des Projekts | im Cloud-Ordner, Build-Ordner bleiben im Projekt und sind von der Synchronisation ausgenommen | sichert auch die nicht versionierten Inhalte. Eine zentrale Ablage je Projekt, keine Fragmente an anderen Orten |
 
 ## 17. Verworfene Alternativen
@@ -404,6 +434,9 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Schnittstelle des Cloud-Anbieters für die Änderungserkennung | Bindung an den Anbieter. Das Dateisystem genügt |
 | Stationärer Rechner als dauerhafte Vollkopie | kein Dauerbetrieb gewünscht, Platz wird anderweitig gebraucht |
 | Build-Ordner außerhalb des Projekts ablegen | verteilt die Projekte auf mehrere Orte |
+| AVIF-Encoder rav1e (über ravif), reines Rust | im Pilot 92 ms je Seite statt 19 ms. Ein reiner Rust-Encoder mit dem Tempo von libaom existiert nicht |
+| AVIF-Encoder SVT-AV1 | in der geprüften Version 1.7 für Einzelbilder nicht verlässlich, die Geschwindigkeitsstufe wirkte nicht |
+| Scheiben nach Jahr des Dokumentdatums | ein nachträglich gescanntes altes Dokument hätte eine alte Scheibe geändert |
 | Eine einzige große Datenbankdatei | jede Änderung beträfe die ganze Datei, die Arbeitskopie bräuchte doppelten Platz, ein Schaden träfe alles |
 
 ## 18. Werkzeuge
@@ -412,6 +445,6 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `vorschau_vergleich.py`: Vorschauformate nebeneinander, Konzeptphase, nur lesend
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
-- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien
+- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche. Beide Ausgaben enthalten Dokumentinhalte und landen in `target/`
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

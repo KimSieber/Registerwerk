@@ -11,6 +11,10 @@ publish = false
 # PDFium wird zur Laufzeit als dynamische Bibliothek geladen (tools/pdfium_holen.sh).
 # Die Funktionsversion ist an die Version der Bibliothek gebunden.
 pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfium_8125", "thread_safe"] }
+# AVIF über libavif mit dem Encoder libaom, beim ersten Bau aus dem Quelltext
+# übersetzt (braucht CMake, unter x86 auch NASM). Gemessen v0.0.3: bei gleicher
+# Qualität und Größe knapp 3-mal so schnell wie ravif (rav1e).
+libavif-sys = { version = "0.18", default-features = false, features = ["codec-aom"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

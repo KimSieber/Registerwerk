@@ -9,10 +9,10 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** v0.0.2 (November 2026). Der Dateibaum der konfigurierten
-Verzeichnisse und der Text jeder PDF-Seite werden ins Register eingelesen, mit
-Gütemaß und Seitenart. Vorschauen und Suche folgen. Die Umsetzung läuft als
-Pilot auf einem kleinen Teil des Archivs.
+**Stand:** v0.0.3 (November 2026). Der Dateibaum der konfigurierten
+Verzeichnisse, der Text jeder PDF-Seite und eine Vorschau jeder Seite werden
+ins Register eingelesen. Die Suche folgt. Die Umsetzung läuft als Pilot auf
+einem kleinen Teil des Archivs.
 
 ## Warum
 
@@ -78,18 +78,21 @@ der Datenbank.
 - **Register:** SQLite mit Volltextindex, verschlüsselt
 - **PDF:** PDFium für Text und Rendering
 - **OCR:** Tesseract, nur für Seiten ohne oder mit schwachem Text
-- **Vorschau:** jede Seite in 1024 px bezogen auf A4, AVIF mit Qualität 25
+- **Vorschau:** jede Seite in 1024 px bezogen auf A4, AVIF mit Qualität 25,
+  kodiert mit libavif und libaom, abgelegt in Vorschau-Scheiben (eigene
+  SQLite-Dateien neben dem Register)
 
 Alle Entscheidungen, Messwerte und offenen Punkte stehen im
 [Konzept](docs/konzept.md). Stand, Vorgehen und Entscheidungen je Version stehen
 in der Entwicklungsdokumentation unter `docs/`:
 [v0.0.1](docs/v0.0.1%20Entwicklungsdokumentation.md),
-[v0.0.2](docs/v0.0.2%20Entwicklungsdokumentation.md).
+[v0.0.2](docs/v0.0.2%20Entwicklungsdokumentation.md),
+[v0.0.3](docs/v0.0.3%20Entwicklungsdokumentation.md).
 
 ## Aufbau des Repos
 
 ```
-crates/registerwerk-core/   Kern in Rust: Konfiguration, Dateibaum, PDFs, Register
+crates/registerwerk-core/   Kern in Rust: Konfiguration, Dateibaum, PDFs, Vorschauen, Register
 src-tauri/                  Tauri-Hülle: Fenster und Befehle für die Oberfläche
 src/                        Oberfläche (React, TypeScript, Vite)
 config.beispiel.toml        Vorlage für die Konfiguration
@@ -99,7 +102,8 @@ docs/intern/                interne Notizen, nicht versioniert
 tools/                      Hilfsskripte: Analyse der Konzeptphase (Python, nur
                             lesend), Dropbox-Ausschluss der Build-Ordner,
                             Laden von PDFium
-tools/pdf_pruefen/          Prüfwerkzeug: PDFs mit dem Kern lesen, ohne Register
+tools/pdf_pruefen/          Prüfwerkzeug: PDFs mit dem Kern lesen, ohne Register,
+                            Tempotest der Vorschauen
 bibliotheken/               per Skript geladene Bibliotheken, nicht versioniert
 ```
 
@@ -108,8 +112,10 @@ Web-Oberfläche wiederverwenden.
 
 ## Entwicklung
 
-Voraussetzungen: Rust (über rustup), Node.js und unter macOS die Xcode Command
-Line Tools.
+Voraussetzungen: Rust (über rustup), Node.js, CMake und unter macOS die Xcode
+Command Line Tools. CMake braucht der erste Bau, weil libaom (AV1-Encoder für die
+Vorschauen) aus dem Quelltext übersetzt wird. Unter macOS: `brew install cmake`.
+Auf Intel-Rechnern und unter Windows wird zusätzlich NASM gebraucht.
 
 ```
 bash tools/dropbox_ausschluss.sh     # einmal je Gerät, siehe unten
@@ -117,9 +123,11 @@ bash tools/pdfium_holen.sh           # einmal je Gerät: PDFium laden
 cp config.beispiel.toml config.local.toml   # danach Pfade eintragen
 npm install
 npm run tauri dev                    # Anwendung im Entwicklungsmodus
+npm run tauri dev -- --release       # dasselbe mit Release-Bau, volles Tempo
 cargo test -p registerwerk-core      # Tests des Kerns
 npm run tauri build                  # fertige Anwendung bauen
-cargo run --release -p pdf_pruefen -- --still <Ordner>   # PDFs prüfen
+cargo run --release -p pdf_pruefen -- --still <Ordner>       # PDFs prüfen
+cargo run --release -p pdf_pruefen -- --vorschau 150 <Ordner> # Tempotest Vorschauen
 ```
 
 PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.
@@ -130,8 +138,13 @@ Liegt das Repo in einem Cloud-Ordner, nimmt `tools/dropbox_ausschluss.sh` die
 Build-Ordner (`target`, `node_modules`, `dist`, `src-tauri/gen`) von der
 Synchronisation aus. Das Skript sollte vor dem ersten `npm install` laufen.
 
+Kern und Abhängigkeiten werden auch im Entwicklungsmodus optimiert übersetzt
+(`Cargo.toml`, `[profile.dev.package]`). Sonst wäre das Erzeugen der Vorschauen
+um ein Vielfaches langsamer. Für Messungen trotzdem den Release-Bau nehmen.
+
 Die Arbeitskopie des Registers liegt ohne weitere Angabe im Datenordner der
-Anwendung im Benutzerprofil, also außerhalb des Cloud-Ordners.
+Anwendung im Benutzerprofil, also außerhalb des Cloud-Ordners. Dort liegen die
+Index-Datenbank `register.db` und die Vorschau-Scheiben `vorschau-0001.db` usw.
 
 Zugangsdaten, lokale Pfade und andere Interna gehören nicht in versionierte
 Dateien, sondern nach `docs/intern/` oder in eine `config.local`-Datei. Beides

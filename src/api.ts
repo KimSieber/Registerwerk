@@ -82,6 +82,64 @@ export interface InhaltErgebnis {
   abgebrochen: boolean;
 }
 
+export interface ScheibeZeile {
+  nr: number;
+  datei: string;
+  bytes: number;
+  vorschauen: number;
+  voll: boolean;
+}
+
+export interface VorschauStand {
+  pdfs: number;
+  erzeugt: number;
+  ausstehend: number;
+  ausstehend_online: number;
+  fehler: number;
+  seiten: number;
+  farbig: number;
+  bytes: number;
+  scheiben: ScheibeZeile[];
+  fehler_liste: FehlerZeile[];
+}
+
+export interface VorschauErgebnis {
+  dauer_ms: number;
+  ausstehend: number;
+  erzeugt: number;
+  seiten: number;
+  bytes: number;
+  fehler: number;
+  nur_online: number;
+  aufgeraeumt: number;
+  abgebrochen: boolean;
+  messung: Messung;
+}
+
+export interface Messung {
+  faeden: number;
+  render_ms: number;
+  render_wartet_ms: number;
+  kodier_ms: number;
+  kodier_leer_ms: number;
+  schreib_ms: number;
+  pixel: number;
+}
+
+export interface VorschauSeite {
+  nr: number;
+  breite: number;
+  hoehe: number;
+  farbig: boolean;
+}
+
+export interface DateiVorschau {
+  id: number;
+  pfad: string;
+  datum: string | null;
+  seiten: VorschauSeite[];
+}
+
 export interface RegisterStand {
   dateien: number;
   bytes: number;
@@ -91,6 +149,7 @@ export interface RegisterStand {
   datum_pdf: number;
   datum_geaendert: number;
   inhalt: InhaltStand;
+  vorschau: VorschauStand;
   typen: TypZeile[];
   jahre: JahrZeile[];
   letzter_lauf: LetzterLauf | null;
@@ -107,3 +166,16 @@ export function inhalteLesen(beiFortschritt: (f: Fortschritt) => void) {
 }
 
 export const inhalteAbbrechen = () => invoke<void>("inhalte_abbrechen");
+
+export function vorschauenErzeugen(beiFortschritt: (f: Fortschritt) => void) {
+  const kanal = new Channel<Fortschritt>();
+  kanal.onmessage = beiFortschritt;
+  return invoke<VorschauErgebnis>("vorschauen_erzeugen", { kanal });
+}
+
+export const dateienMitVorschau = (muster: string) => invoke<DateiVorschau[]>("dateien_mit_vorschau", { muster });
+
+/** Adresse eines Vorschaubildes. Unter Windows bildet Tauri eigene Protokolle auf http ab. */
+export const vorschauUrl = (datei: number, seite: number) =>
+  (navigator.userAgent.includes("Windows") ? "http://vorschau.localhost" : "vorschau://localhost") +
+  `/${datei}/${seite}`;

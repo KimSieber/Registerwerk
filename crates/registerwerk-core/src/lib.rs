@@ -1,7 +1,7 @@
 //! Kern von Registerwerk.
 //!
 //! Enthält alles, was keine Oberfläche braucht: Konfiguration, Durchlauf des
-//! Dateibaums, Lesen der PDFs und das Register (SQLite). Die Tauri-Anwendung ist nur eine Hülle
+//! Dateibaums, Lesen der PDFs, Vorschauen und das Register (SQLite). Die Tauri-Anwendung ist nur eine Hülle
 //! darüber. Der lesende Teil soll sich später für eine Web-Oberfläche
 //! wiederverwenden lassen (Konzept, Abschnitt 4).
 
@@ -12,6 +12,9 @@ pub mod inhalte;
 pub mod konfiguration;
 pub mod pdf;
 pub mod register;
+pub mod scheiben;
+pub mod vorschau;
+pub mod vorschauen;
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -19,6 +22,8 @@ use std::sync::atomic::AtomicBool;
 pub use inhalte::{Fortschritt, InhaltErgebnis};
 pub use konfiguration::Konfiguration;
 pub use register::{LaufErgebnis, Register, RegisterStand};
+pub use scheiben::{DateiVorschau, VorschauStand};
+pub use vorschauen::{Messung, VorschauErgebnis};
 
 /// Fehler des Kerns.
 #[derive(Debug, thiserror::Error)]
@@ -54,4 +59,27 @@ pub fn inhalte_lesen(
 ) -> Ergebnis<InhaltErgebnis> {
     let pdfium = pdf::einbinden(pdfium_ordner)?;
     inhalte::lesen(konfig, register, |pfad| pdf::lesen(pdfium, pfad), fortschritt, abbrechen)
+}
+
+/// Erzeugt die Vorschauen aller ausstehenden PDFs mit PDFium aus
+/// `pdfium_ordner`. Kodiert auf allen Kernen. Öffnet nur lokal vorhandene
+/// Dateien und verändert keine.
+pub fn vorschauen_erzeugen(
+    konfig: &Konfiguration,
+    register: &mut Register,
+    pdfium_ordner: &Path,
+    fortschritt: impl FnMut(&Fortschritt),
+    abbrechen: &AtomicBool,
+) -> Ergebnis<VorschauErgebnis> {
+    let pdfium = pdf::einbinden(pdfium_ordner)?;
+    let faeden = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    vorschauen::erzeugen(
+        konfig,
+        register,
+        |pfad, seite| vorschau::pdf_rendern_je_seite(pdfium, pfad, seite),
+        |bild| vorschau::erzeugen(bild, Some(1)),
+        faeden,
+        fortschritt,
+        abbrechen,
+    )
 }
