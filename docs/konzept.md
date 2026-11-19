@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 18.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.4). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 19.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.5). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -154,11 +154,11 @@ Eine Seite gilt als Scan, wenn Bilder mindestens 70 % ihrer Fläche abdecken. G�
 
 | Fall | Erkennung | Behandlung |
 |---|---|---|
-| Seite ohne Text | weniger als 20 Zeichen eingebetteter Text | OCR ausführen. Der Text gilt ab 20 Zeichen. Text ins Register, bei Scans auch in die PDF einbetten |
+| Seite ohne Text | höchstens 10 Zeichen eingebetteter Text | OCR ausführen. Der Text gilt ab 11 Zeichen. Text ins Register, bei Scans auch in die PDF einbetten |
 | Scan mit schwachem Text | Güte unter 60 % | keine OCR, der eingebettete Text bleibt |
 | Digital erzeugte PDF mit schwachem Text | kein Scanbild, Güte unter 60 % | keine OCR, der eingebettete Text bleibt |
 
-Umgesetzt in v0.0.4 für das Register. Das Einbetten in die PDF folgt in v0.0.5.
+Umgesetzt in v0.0.4 für das Register, in v0.0.5 das Einbetten in die PDF.
 
 **Eingebetteter Text wird nie überschrieben.** Die Scan-App erkennt den Text schon beim Scannen, und diese Erkennung ist besser als Tesseract. OCR läuft deshalb nur für Seiten, auf denen noch kein Text hinterlegt ist. Ein vorhandener Text bleibt in der PDF unverändert und bleibt auch im Register erhalten. Der erkannte Text liegt dort daneben, nicht an seiner Stelle. Das gilt für neue Dateien genauso wie für den Bestand.
 
@@ -167,7 +167,7 @@ Erläuterungen:
 - Ursprünglich sollte auch schwacher Text neu erkannt und bei messbarer Verbesserung ersetzt werden. Im Pilot (v0.0.4, erster Lauf) war der eingebettete Text aber nicht schlechter, oft besser als das Ergebnis von Tesseract. Das Gütemaß zeigte trotzdem eine Verbesserung, es ist für diese Entscheidung zu grob. Schwacher Text bleibt deshalb unverändert.
 - Digital erzeugte PDFs ohne Text, etwa ein Kontoauszug von 2017, dessen Schrift beim Drucken in ein PDF zu Kurven wurde, bekommen den erkannten Text **nur ins Register**. Die Textebene lässt sich dort nicht einbetten, ohne die Seite in ein Bild umzuwandeln. Das wäre ein Qualitätsverlust und ist ausgeschlossen. Der OCR-Text im Register ist ein Auszug und lässt sich jederzeit neu erzeugen, der Grundsatz 2 bleibt gewahrt.
 - Handschrift, auch in Druckbuchstaben, und Text in Bildern erkennt Tesseract nicht brauchbar. Im Pilot blieben 307 von 1.185 Seiten ohne Text.
-- Die Grenze von 20 Zeichen für die Übernahme ist eine **Annahme**.
+- Die Grenze von 10 Zeichen ist eine **Annahme** (v0.0.5, vorher unter 20). Im Pilot haben 67 Seiten 11 bis 19 Zeichen. Sie gelten als Seiten mit Text und werden nicht erkannt.
 - Erkannt wird mit 300 dpi in Graustufen, Sprachen Deutsch und Englisch, Sprachdaten `tessdata` (Standard). `tessdata_best` brachte im Pilot dasselbe Ergebnis und war gut 30 % langsamer.
 - Der erkannte Text liegt in einer eigenen Tabelle neben dem eingebetteten Text. Welcher gilt, zeigt eine Sicht im Register. Sie ist die Grundlage der Suche.
 
@@ -182,6 +182,15 @@ Gilt nur für Scans mit Seiten ohne Text (Abschnitt "Welche Seiten erkannt werde
 5. Ein Protokoll hält Pfad und Zeitpunkt jeder geänderten Datei fest.
 
 Als zusätzliches Netz ohne eigenes Volumen dient der Versionsverlauf des Cloud-Anbieters, solange er zur Verfügung steht.
+
+Umgesetzt in v0.0.5:
+
+- Die Textebene besteht aus unsichtbarem Text (`3 Tr`) je Wort, an der von Tesseract erkannten Stelle und auf die Breite des Worts gestreckt, in einer eingebetteten Schrift ohne sichtbare Zeichen aus Tesseract. Markieren und Suchen funktionieren in jedem PDF-Programm.
+- Geschrieben wird als inkrementelle Änderung: Die Bytes des Originals bleiben unverändert, die Textebene wird angehängt. Die Scanbilder können sich nicht verändern.
+- Geprüft wird zusätzlich, dass die neue Fassung mit dem Original beginnt und dass die betroffenen Seiten gerendert genau gleich aussehen.
+- Danach führt das Register Größe und Änderungsdatum nach. Die Datei gilt nicht als geändert, Vorschauen und OCR bleiben gültig.
+- Das Protokoll `textebene.log` liegt neben dem Register. **Annahme**
+- Im Pilot: 148 PDFs mit 806 Seiten in 30 s, Zuwachs 4,4 KB je Seite. Änderungsdatum in Finder und Dropbox blieb erhalten, der Versionsverlauf der Dropbox legte eine neue Version mit dem Tag des Schreibens an.
 
 ## 8. Vorschauen
 
@@ -391,6 +400,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.2 | PDFium angebunden, Text je Seite im Register, Gütemaß und Seitenart, Datum aus PDF und Änderungsdatum, Fortsetzen nach Abbruch | Stufe 1 ohne Vorschauen |
 | v0.0.3 | Vorschauen aller Seiten als AVIF in Scheiben, Seitenansicht zum Prüfen, Neuaufbau des Pilot-Registers getestet | Stufe 1 abgeschlossen |
 | v0.0.4 | Tesseract statisch eingebaut, OCR der Seiten ohne Text ins Register, gültiger Text je Seite, Textvergleich in der Prüfansicht | erster Teil von Stufe 5 |
+| v0.0.5 | Textebene in Scans zurückgeschrieben, Lage der Wörter aus Tesseract, Grenze "ohne Text" bei 10 Zeichen, Lesen gedrehter Seiten korrigiert | Stufe 5 abgeschlossen |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -422,7 +432,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Vorschau | alle Seiten, 1024 px, AVIF Q25 | lesbar, klein, flüssig beim Blättern |
 | Vorschau nur der ersten Seite | nein | alle Seiten müssen schnell erreichbar sein |
 | OCR-Werkzeug | Tesseract | schon im Einsatz, unabhängig von Apple |
-| OCR wofür | nur für Seiten ohne Text, der Text gilt ab 20 Zeichen | bei schwachem Text war der eingebettete Text im Pilot nicht schlechter, oft besser als Tesseract |
+| OCR wofür | nur für Seiten ohne Text (höchstens 10 Zeichen), der erkannte Text gilt ab 11 Zeichen | bei schwachem Text war der eingebettete Text im Pilot nicht schlechter, oft besser als Tesseract |
 | Eingebetteter Text | wird nie überschrieben, weder in der PDF noch im Register | die OCR der Scan-App ist besser als Tesseract |
 | OCR-Text bei Scans | ins Register und in die PDF | durchsuchbare PDF bleibt auch außerhalb von Registerwerk erhalten |
 | OCR-Text bei digitalen PDFs ohne Text | nur ins Register | Einbetten würde das Original verschlechtern |
@@ -450,6 +460,8 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Einteilung der Scheiben | nach Erfassungsreihenfolge, neue Scheibe ab rund 1,5 GB | Delta-Läufe ändern nur die jüngste Scheibe |
 | Graustufen | echte Graustufen (4:0:0) für Seiten ohne Farbe | kleiner, ohne sichtbaren Verlust |
 | Entwicklungsmodus | Kern und Abhängigkeiten auch im Entwicklungsmodus optimiert | ohne Optimierung ist der Encoder um ein Vielfaches langsamer, auch weil seine generischen Teile erst im Kern übersetzt werden |
+| Zurückschreiben in die PDF | inkrementell mit `lopdf`, Schrift `glyphless.ttf` aus Tesseract im Repo | Original bleibt Byte für Byte erhalten. Gleich breite Zeichen lassen jedes Wort genau strecken |
+| Änderungsdatum nach dem Zurückschreiben | alter Wert | Sortierung kann darauf aufbauen. Das Register führt Größe und Datum selbst nach |
 | Ablage des Projekts | im Cloud-Ordner, Build-Ordner bleiben im Projekt und sind von der Synchronisation ausgenommen | sichert auch die nicht versionierten Inhalte. Eine zentrale Ablage je Projekt, keine Fragmente an anderen Orten |
 
 ## 17. Verworfene Alternativen
@@ -478,6 +490,6 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
 - `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
-- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
+- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

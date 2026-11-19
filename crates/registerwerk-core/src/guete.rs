@@ -7,8 +7,9 @@
 /// Unter dieser Güte gilt ein Text als schwach.
 pub const SCHWELLE: f64 = 0.6;
 
-/// Unter so vielen sichtbaren Zeichen gilt eine Seite als ohne Text.
-pub const MIN_ZEICHEN: usize = 20;
+/// Ab so vielen sichtbaren Zeichen hat eine Seite Text. Mit höchstens 10
+/// Zeichen gilt sie als ohne Text (Kim, 19.11.2026, vorher unter 20).
+pub const MIN_ZEICHEN: usize = 11;
 
 /// Zählung für einen Text. Gespeichert werden die Zähler, nicht der Quotient,
 /// damit sich Seiten zu einem Dokument zusammenfassen lassen.

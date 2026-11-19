@@ -9,9 +9,10 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** v0.0.4 (November 2026). Der Dateibaum der konfigurierten
+**Stand:** v0.0.5 (November 2026). Der Dateibaum der konfigurierten
 Verzeichnisse, der Text jeder PDF-Seite und eine Vorschau jeder Seite werden
-ins Register eingelesen. Seiten ohne Text werden per OCR erkannt. Die Suche
+ins Register eingelesen. Seiten ohne Text werden per OCR erkannt, in Scans
+kommt der erkannte Text als unsichtbare Textebene in die PDF. Die Suche
 folgt. Die Umsetzung läuft als Pilot auf
 einem kleinen Teil des Archivs.
 
@@ -103,7 +104,8 @@ tools/                      Hilfsskripte: Analyse der Konzeptphase (Python, nur
                             lesend), Dropbox-Ausschluss der Build-Ordner,
                             Laden von PDFium
 tools/pdf_pruefen/          Prüfwerkzeug: PDFs mit dem Kern lesen, ohne Register,
-                            Tempotest der Vorschauen, Messung der OCR
+                            Tempotest der Vorschauen, Messung der OCR, Probe der
+                            Textebene
 crates/registerwerk-ocr/    Tesseract, statisch aus dem Quelltext gebaut
 bibliotheken/               per Skript geladene Bibliotheken, nicht versioniert
 ```
@@ -131,6 +133,7 @@ npm run tauri build                  # fertige Anwendung bauen
 cargo run --release -p pdf_pruefen -- --still <Ordner>       # PDFs prüfen
 cargo run --release -p pdf_pruefen -- --vorschau 150 <Ordner> # Tempotest Vorschauen
 cargo run --release -p pdf_pruefen -- --ocr 100 <Ordner>     # Messung der OCR
+cargo run --release -p pdf_pruefen -- --textebene 20 <Ordner> # Probe der Textebene, Kopien in target/
 ```
 
 PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.

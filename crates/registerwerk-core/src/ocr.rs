@@ -1,19 +1,20 @@
 //! Texterkennung (OCR) für Seiten ohne oder mit schwachem Text
 //! (Konzept, Abschnitt 7; Stufe 5, erster Teil in v0.0.4).
 //!
-//! Erkannt werden nur Seiten **ohne Text** (weniger als 20 Zeichen
-//! eingebetteter Text). Der erkannte Text gilt, wenn er mindestens 20 Zeichen
-//! hat.
+//! Erkannt werden nur Seiten **ohne Text** (höchstens 10 Zeichen
+//! eingebetteter Text, seit v0.0.5). Der erkannte Text gilt, wenn er mehr als
+//! 10 Zeichen hat.
 //!
 //! Seiten mit schwachem Text (Güte unter 60 %) behalten ihren eingebetteten
 //! Text. Im Pilot (v0.0.4) war er nicht schlechter, oft besser als das
 //! Ergebnis von Tesseract. Die Fälle `ScanSchwach` und `DigitalSchwach`
 //! werden weiter bestimmt und angezeigt, aber nicht erkannt.
 //!
-//! Der erkannte Text kommt in diesem Schritt **nur ins Register** (Tabelle
-//! `ocr`). Die PDF bleibt unverändert. Das Zurückschreiben in die Datei folgt
-//! in v0.0.5. Der eingebettete Text bleibt in `seite` erhalten. Welcher Text
-//! gilt, zeigt die Sicht `seite_text`.
+//! Der erkannte Text kommt ins Register (Tabelle `ocr`), mit der Lage jedes
+//! Worts auf der Seite (Spalte `woerter`). Die PDF verändert dieser Schritt
+//! nicht. Das Zurückschreiben der Textebene in Scans übernimmt
+//! [`textebene`](crate::textebene). Der eingebettete Text bleibt in `seite`
+//! erhalten. Welcher Text gilt, zeigt die Sicht `seite_text`.
 //!
 //! Ablauf wie bei den Vorschauen: Ein Faden rendert die betroffenen Seiten mit
 //! 300 dpi in Graustufen, mehrere Fäden erkennen, je Faden ein eigenes
@@ -33,6 +34,7 @@ use serde::Serialize;
 use crate::guete::{self, Zaehlung};
 use crate::inhalte::Fortschritt;
 use crate::register::{Register, INHALT_VERFAHREN};
+use crate::woerter::{self, LageWort};
 use crate::{pdf, Ergebnis, Konfiguration};
 
 /// Auflösung, mit der Seiten für die OCR gerendert werden. Tesseract liefert
@@ -53,10 +55,11 @@ pub const MODELLE: &str = "standard";
 
 /// Version des OCR-Verfahrens. Erhöhen, wenn sich Auflösung, Sprachdaten,
 /// Tesseract-Version oder die Übernahmeregel ändern. Dann wird neu erkannt.
-pub const OCR_VERFAHREN: i64 = 2;
+pub const OCR_VERFAHREN: i64 = 3;
 // 1: 300 dpi Graustufen, Tesseract 5.5.2 LSTM, deu+eng, Sprachdaten MODELLE,
 //    Seiten ohne Text und mit schwachem Text
-// 2: wie 1, nur noch Seiten ohne Text
+// 2: wie 1, nur noch Seiten ohne Text (unter 20 Zeichen)
+// 3: wie 2, Grenze ohne Text bei höchstens 10 Zeichen, Lage der Wörter
 
 /// Ordner der Sprachdaten relativ zum Projekt, je Satz ein Unterordner.
 pub const ENTWICKLUNGS_ORDNER: &str = "bibliotheken/tesseract/tessdata";
@@ -131,6 +134,7 @@ pub struct Graubild {
 pub struct Erkannt {
     pub text: String,
     pub konfidenz: i32,
+    pub woerter: Vec<LageWort>,
 }
 
 /// Eine Seite, die erkannt werden soll.
@@ -164,6 +168,9 @@ pub struct OcrErgebnisSeite {
     pub konfidenz: i32,
     pub dauer_ms: u64,
     pub uebernommen: bool,
+    /// Lage der Wörter, gepackt ([`woerter::packen`]). Nur bei übernommenem
+    /// Text, sonst wird sie nicht gebraucht.
+    pub woerter: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -338,8 +345,9 @@ impl Register {
         let fehler = match ergebnis {
             Ok(seiten) => {
                 let mut einfuegen = tx.prepare(
-                    "INSERT INTO ocr (datei, nr, fall, text, zeichen, tokens, wortartig, konfidenz, dauer_ms, uebernommen)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO ocr (datei, nr, fall, text, zeichen, tokens, wortartig, konfidenz, dauer_ms, uebernommen,
+                                      woerter)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )?;
                 for s in seiten {
                     einfuegen.execute(params![
@@ -352,7 +360,8 @@ impl Register {
                         s.zaehlung.wortartig as i64,
                         s.konfidenz,
                         s.dauer_ms as i64,
-                        s.uebernommen
+                        s.uebernommen,
+                        s.woerter
                     ])?;
                 }
                 None
@@ -693,14 +702,16 @@ where
                         let erkannt = erkannt.as_ref().map_err(|f| format!("Seite {}: {f}", s.nr))?;
                         let text = erkannt.text.trim().to_string();
                         let zaehlung = guete::zaehlen(&text);
+                        let uebernommen = uebernehmen(s.fall, &s.alt, &zaehlung);
                         Ok(OcrErgebnisSeite {
                             nr: s.nr,
                             fall: s.fall,
-                            uebernommen: uebernehmen(s.fall, &s.alt, &zaehlung),
+                            uebernommen,
                             text,
                             zaehlung,
                             konfidenz: erkannt.konfidenz,
                             dauer_ms: dauer.as_millis() as u64,
+                            woerter: uebernommen.then(|| woerter::packen(&erkannt.woerter)),
                         })
                     })
                     .collect(),
@@ -825,7 +836,7 @@ mod tests {
                 2 => GUT.to_string(),
                 _ => "x".to_string(),
             };
-            Ok(Erkannt { text, konfidenz: 80 })
+            Ok(Erkannt { text, konfidenz: 80, woerter: Vec::new() })
         }))
     }
 
@@ -915,6 +926,7 @@ mod tests {
             konfidenz: 80,
             dauer_ms: 1,
             uebernommen: true,
+            woerter: None,
         };
         let (g, gr): (i64, Option<i64>) = register
             .db

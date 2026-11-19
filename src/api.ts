@@ -199,6 +199,32 @@ export interface SeitenText {
   uebernommen: boolean;
 }
 
+export interface TextebeneStand {
+  dateien_ausstehend: number;
+  seiten_ausstehend: number;
+  dateien_ausstehend_online: number;
+  dateien_geschrieben: number;
+  seiten_in_pdf: number;
+  fehler: number;
+  fehler_liste: FehlerZeile[];
+}
+
+export interface TextebeneErgebnis {
+  dauer_ms: number;
+  probelauf: boolean;
+  ziel: string | null;
+  ausstehend: number;
+  geschrieben: number;
+  seiten: number;
+  fehler: number;
+  nur_online: number;
+  veraendert: number;
+  abgebrochen: boolean;
+  bytes_vorher: number;
+  bytes_nachher: number;
+  fehler_liste: FehlerZeile[];
+}
+
 export interface RegisterStand {
   dateien: number;
   bytes: number;
@@ -210,6 +236,7 @@ export interface RegisterStand {
   inhalt: InhaltStand;
   vorschau: VorschauStand;
   ocr: OcrStand;
+  textebene: TextebeneStand;
   typen: TypZeile[];
   jahre: JahrZeile[];
   letzter_lauf: LetzterLauf | null;
@@ -237,6 +264,13 @@ export function ocrAusfuehren(beiFortschritt: (f: Fortschritt) => void) {
   const kanal = new Channel<Fortschritt>();
   kanal.onmessage = beiFortschritt;
   return invoke<OcrErgebnis>("ocr_ausfuehren", { kanal });
+}
+
+/** Mit `eine` endet der Lauf nach der ersten geschriebenen Datei. */
+export function textebeneSchreiben(probelauf: boolean, eine: boolean, beiFortschritt: (f: Fortschritt) => void) {
+  const kanal = new Channel<Fortschritt>();
+  kanal.onmessage = beiFortschritt;
+  return invoke<TextebeneErgebnis>("textebene_schreiben", { probelauf, eine, kanal });
 }
 
 export const dateienMitVorschau = (muster: string, nurOcr: boolean) =>

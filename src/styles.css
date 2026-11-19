@@ -140,6 +140,17 @@ button:disabled {
   cursor: default;
 }
 
+button.gefahr {
+  background: var(--fehler-text);
+  color: var(--flaeche);
+}
+
+.knoepfe {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
 .angaben {
   margin: 0;
   display: grid;

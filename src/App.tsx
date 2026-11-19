@@ -8,6 +8,7 @@ import {
   LaufErgebnis,
   OcrErgebnis,
   RegisterStand,
+  TextebeneErgebnis,
   VorschauErgebnis,
   appInfo,
   dateibaumEinlesen,
@@ -15,6 +16,7 @@ import {
   inhalteLesen,
   ocrAusfuehren,
   registerStand,
+  textebeneSchreiben,
   vorschauenErzeugen,
 } from "./api";
 import VorschauPruefen from "./VorschauPruefen";
@@ -27,11 +29,16 @@ export default function App() {
   const [laeuft, setLaeuft] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
   // Laufender Vorgang, der ins Register schreibt. Es läuft höchstens einer.
-  const [vorgang, setVorgang] = useState<"inhalte" | "vorschauen" | "ocr" | null>(null);
+  const [vorgang, setVorgang] = useState<"inhalte" | "vorschauen" | "ocr" | "probelauf" | "textebene" | null>(
+    null,
+  );
   const [fortschritt, setFortschritt] = useState<Fortschritt | null>(null);
   const [inhaltLauf, setInhaltLauf] = useState<InhaltErgebnis | null>(null);
   const [vorschauLauf, setVorschauLauf] = useState<VorschauErgebnis | null>(null);
   const [ocrLauf, setOcrLauf] = useState<OcrErgebnis | null>(null);
+  const [textebeneLauf, setTextebeneLauf] = useState<TextebeneErgebnis | null>(null);
+  // Das Schreiben in die Originale braucht einen zweiten Klick
+  const [bestaetigen, setBestaetigen] = useState(false);
   const [haelt, setHaelt] = useState(false);
   // Erhöht sich nach jedem Vorschau-Lauf, damit die Prüfansicht neu lädt
   const [vorschauStand, setVorschauStand] = useState(0);
@@ -119,6 +126,24 @@ export default function App() {
     }
   }
 
+  async function textebeneStarten(probelauf: boolean, eine = false) {
+    setVorgang(probelauf ? "probelauf" : "textebene");
+    setBestaetigen(false);
+    setHaelt(false);
+    setFehler(null);
+    setFortschritt(null);
+    setTextebeneLauf(null);
+    try {
+      setTextebeneLauf(await textebeneSchreiben(probelauf, eine, setFortschritt));
+    } catch (e) {
+      setFehler(String(e));
+    } finally {
+      setVorgang(null);
+      setFortschritt(null);
+      await standLaden();
+    }
+  }
+
   async function anhalten() {
     setHaelt(true);
     await inhalteAbbrechen();
@@ -134,6 +159,9 @@ export default function App() {
   const o = stand?.ocr;
   const oAusstehend = o?.ausstehend ?? 0;
   const oLokalAusstehend = oAusstehend - (o?.ausstehend_online ?? 0);
+  const t = stand?.textebene;
+  const tLokalAusstehend = (t?.dateien_ausstehend ?? 0) - (t?.dateien_ausstehend_online ?? 0);
+  const schreibt = vorgang === "probelauf" || vorgang === "textebene";
 
   return (
     <div className="seite">
@@ -317,8 +345,9 @@ export default function App() {
             <div>
               <h2>Texterkennung</h2>
               <p className="unterzeile">
-                Erkennt Seiten ohne Text mit Tesseract, gerendert mit 300 dpi. Seiten mit schwachem Text behalten ihren
-                eingebetteten Text. Der erkannte Text kommt nur ins Register, die PDFs bleiben unverändert.
+                Erkennt Seiten ohne Text (höchstens 10 Zeichen) mit Tesseract, gerendert mit 300 dpi. Seiten mit
+                schwachem Text behalten ihren eingebetteten Text. Der erkannte Text kommt mit der Lage der Wörter ins
+                Register, die PDFs bleiben dabei unverändert.
               </p>
             </div>
             {vorgang === "ocr" ? (
@@ -379,7 +408,7 @@ export default function App() {
               <Kachel
                 titel="Übernommen"
                 wert={alsAnteil(o.seiten_uebernommen, o.seiten_erkannt)}
-                zusatz={`${alsZahl(o.seiten_uebernommen)} Seiten mit mindestens 20 Zeichen`}
+                zusatz={`${alsZahl(o.seiten_uebernommen)} Seiten mit mehr als 10 Zeichen`}
               />
               <Kachel
                 titel="Danach noch"
@@ -390,6 +419,78 @@ export default function App() {
           )}
 
           {o.fehler_liste.length > 0 && <FehlerListe anzahl={o.fehler} liste={o.fehler_liste} />}
+        </section>
+      )}
+
+      {bereit && stand && t && (t.dateien_ausstehend > 0 || t.dateien_geschrieben > 0 || t.fehler > 0) && (
+        <section className="karte">
+          <div className="karte-kopf">
+            <div>
+              <h2>Textebene in Scans</h2>
+              <p className="unterzeile">
+                Schreibt den erkannten Text unsichtbar in Scan-Seiten ohne Text, damit Markieren und Suchen in jedem
+                PDF-Programm funktionieren. Das Original bleibt Byte für Byte erhalten, die Textebene wird angehängt.
+                Digitale PDFs und vorhandener Text bleiben unberührt. Der Probelauf schreibt nur Kopien.
+              </p>
+            </div>
+            {schreibt ? (
+              <button onClick={anhalten} disabled={haelt}>
+                {haelt ? "Hält an …" : "Anhalten"}
+              </button>
+            ) : (
+              <div className="knoepfe">
+                <button
+                  onClick={() => textebeneStarten(true)}
+                  disabled={!info.pdfium_ordner || laeuft || vorgang !== null || tLokalAusstehend === 0}
+                >
+                  Probelauf
+                </button>
+                {bestaetigen ? (
+                  <>
+                    <button className="gefahr" onClick={() => textebeneStarten(false, true)}>
+                      Eine Datei
+                    </button>
+                    <button className="gefahr" onClick={() => textebeneStarten(false)}>
+                      Alle
+                    </button>
+                    <button onClick={() => setBestaetigen(false)}>Abbrechen</button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setBestaetigen(true)}
+                    disabled={!info.pdfium_ordner || laeuft || vorgang !== null || tLokalAusstehend === 0}
+                  >
+                    In PDFs schreiben
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {schreibt ? (
+            <FortschrittAnzeige f={fortschritt} />
+          ) : (
+            <p className="stand-zeile">
+              {t.dateien_ausstehend === 0
+                ? "Alle betroffenen Scans haben ihre Textebene."
+                : `${alsZahl(tLokalAusstehend)} PDFs mit ${alsZahl(t.seiten_ausstehend)} Seiten stehen an` +
+                  (t.dateien_ausstehend_online > 0
+                    ? `, ${alsZahl(t.dateien_ausstehend_online)} weitere liegen nur online.`
+                    : ".")}
+              {bestaetigen && " Die Originale im Cloud-Ordner werden ersetzt. Erst eine Datei oder gleich alle?"}
+            </p>
+          )}
+
+          {textebeneLauf && <TextebeneMeldung e={textebeneLauf} />}
+
+          {(t.dateien_geschrieben > 0 || t.seiten_in_pdf > 0) && (
+            <div className="kacheln">
+              <Kachel titel="PDFs geändert" wert={alsZahl(t.dateien_geschrieben)} zusatz="mit Textebene von Registerwerk" />
+              <Kachel titel="Seiten mit Textebene" wert={alsZahl(t.seiten_in_pdf)} zusatz="erkannter Text in der PDF" />
+            </div>
+          )}
+
+          {t.fehler_liste.length > 0 && <FehlerListe anzahl={t.fehler} liste={t.fehler_liste} />}
         </section>
       )}
 
@@ -476,6 +577,41 @@ function VorschauMeldung({ e }: { e: VorschauErgebnis }) {
       </p>
       {e.abgebrochen && <p className="stand-zeile">Der nächste Lauf setzt hier fort.</p>}
       {e.seiten > 0 && <MessungAnzeige e={e} />}
+    </div>
+  );
+}
+
+function TextebeneMeldung({ e }: { e: TextebeneErgebnis }) {
+  const zuwachs = e.bytes_nachher - e.bytes_vorher;
+  return (
+    <div className="lauf">
+      <p>
+        {e.probelauf ? "Probelauf" : "Schreiben"} {e.abgebrochen ? "angehalten" : "fertig"} nach {alsDauer(e.dauer_ms)}
+        : <b>{alsZahl(e.geschrieben)} PDFs</b> mit {alsZahl(e.seiten)} Seiten {e.probelauf ? "als Kopie " : ""}
+        geschrieben
+        {e.fehler > 0 && (
+          <>
+            , <b>{alsZahl(e.fehler)} mit Fehler</b>
+          </>
+        )}
+        {e.nur_online > 0 && <>, {alsZahl(e.nur_online)} nur online übergangen</>}
+        {e.veraendert > 0 && <>, {alsZahl(e.veraendert)} seit dem Lesen geändert</>}.
+        {e.geschrieben > 0 && (
+          <>
+            {" "}
+            Zuwachs {alsGroesse(zuwachs)} ({alsGroesse(zuwachs / Math.max(1, e.seiten))} je Seite).
+          </>
+        )}
+      </p>
+      {e.probelauf && e.ziel && (
+        <p className="stand-zeile">
+          Kopien in <code>{e.ziel}</code>. Die Originale und das Register sind unverändert.
+        </p>
+      )}
+      {e.veraendert > 0 && (
+        <p className="stand-zeile">Geänderte Dateien zuerst neu einlesen, ihre Inhalte lesen und erkennen.</p>
+      )}
+      {e.fehler_liste.length > 0 && <FehlerListe anzahl={e.fehler} liste={e.fehler_liste} />}
     </div>
   );
 }

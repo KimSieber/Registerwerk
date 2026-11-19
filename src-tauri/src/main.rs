@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use registerwerk_core::{
     DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis, Register, RegisterStand,
-    SeitenText, VorschauErgebnis,
+    SeitenText, TextebeneErgebnis, VorschauErgebnis,
 };
 use serde::Serialize;
 use tauri::http::{Request, Response, StatusCode};
@@ -263,7 +263,7 @@ async fn vorschauen_erzeugen(
     ergebnis?
 }
 
-/// Erkennt den Text aller Seiten ohne oder mit schwachem Text. Meldet den
+/// Erkennt den Text aller Seiten ohne Text samt Lage der Wörter. Meldet den
 /// Fortschritt über `kanal`, höchstens etwa zehnmal je Sekunde. Abbrechen über
 /// `inhalte_abbrechen`. Schreibt nur ins Register, die PDFs bleiben unverändert.
 #[tauri::command]
@@ -293,6 +293,71 @@ async fn ocr_ausfuehren(
             &mut register,
             &pdfium,
             &tessdata,
+            |f| {
+                if f.erledigt == f.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {
+                    zuletzt = Instant::now();
+                    let _ = kanal.send(f.clone());
+                }
+            },
+            &zustand.abbrechen,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    ergebnis?
+}
+
+/// Ordner für die Kopien des Probelaufs: `target/textebene_probelauf` im
+/// Projektordner (Entwicklung), sonst im Datenordner der Anwendung. Der
+/// Projektordner ist der erste Ordner ab Arbeitsverzeichnis oder Programm
+/// aufwärts, der `Cargo.lock` und `bibliotheken` enthält.
+fn probelauf_ordner(app: &AppHandle) -> Result<PathBuf, String> {
+    let start_orte = [std::env::current_dir().ok(), std::env::current_exe().ok()];
+    let projekt = start_orte
+        .into_iter()
+        .flatten()
+        .find_map(|ort| ort.ancestors().find(|o| o.join("Cargo.lock").is_file() && o.join("bibliotheken").is_dir()).map(PathBuf::from));
+    match projekt {
+        Some(p) => Ok(p.join("target").join("textebene_probelauf")),
+        None => app.path().app_data_dir().map(|d| d.join("textebene_probelauf")).map_err(|e| e.to_string()),
+    }
+}
+
+/// Schreibt den erkannten Text als unsichtbare Textebene in die Scans. Mit
+/// `probelauf` entstehen nur Kopien (siehe `probelauf_ordner`), Originale
+/// und Register bleiben unberührt. Mit `eine` endet der Lauf nach der ersten
+/// geschriebenen Datei. Meldet den Fortschritt über `kanal`. Abbrechen über
+/// `inhalte_abbrechen`.
+#[tauri::command]
+async fn textebene_schreiben(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    probelauf: bool,
+    eine: bool,
+    kanal: Channel<Fortschritt>,
+) -> Result<TextebeneErgebnis, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    let pdfium = pdfium_ordner(&app)
+        .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
+    let ziel = if probelauf { Some(probelauf_ordner(&app)?) } else { None };
+    if zustand.laeuft.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft bereits ein Vorgang.".into());
+    }
+    zustand.abbrechen.store(false, Ordering::SeqCst);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
+        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let mut zuletzt = Instant::now() - Duration::from_secs(1);
+        registerwerk_core::textebene_schreiben(
+            &konfig,
+            &mut register,
+            &pdfium,
+            ziel.as_deref(),
+            eine.then_some(1),
             |f| {
                 if f.erledigt == f.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {
                     zuletzt = Instant::now();
@@ -388,6 +453,7 @@ fn main() {
             inhalte_abbrechen,
             vorschauen_erzeugen,
             ocr_ausfuehren,
+            textebene_schreiben,
             dateien_mit_vorschau,
             seitentexte
         ])

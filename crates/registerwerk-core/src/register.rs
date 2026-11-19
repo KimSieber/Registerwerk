@@ -12,6 +12,8 @@
 //!   Vorschauen in `datei`
 //! - 4 (v0.0.4): Tabelle `ocr` mit dem erkannten Text, Stand der OCR in
 //!   `datei`, Sicht `seite_text` mit dem gültigen Text je Seite
+//! - 5 (v0.0.5): Lage der Wörter in `ocr`, Stand der Textebene in `ocr` und
+//!   `datei`
 //!
 //! Die Vorschauen selbst liegen nicht in dieser Datei, sondern in Scheiben
 //! (`vorschau-0001.db`, …) im selben Ordner, je etwa [`SCHEIBE_GRENZE`] groß.
@@ -32,7 +34,7 @@ use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
 /// Konzept: 1 bis 2 GB. **Annahme**
@@ -48,7 +50,10 @@ pub const VORSCHAU_VERFAHREN: i64 = 2;
 /// Version des Verfahrens, mit dem Inhalte gelesen werden. Wird sie erhöht,
 /// gelten alle bisher gelesenen PDFs als ausstehend und werden neu gelesen.
 /// Erhöhen, wenn sich Textauslese, Gütemaß oder Seitenart ändern.
-pub const INHALT_VERFAHREN: i64 = 1;
+pub const INHALT_VERFAHREN: i64 = 2;
+// 1: Text je Seite mit PdfPageText::all()
+// 2: Text im sichtbaren Bereich in Seitenkoordinaten, richtig auch bei
+//    gedrehten Seiten (v0.0.5)
 
 pub struct Register {
     pub(crate) db: Connection,
@@ -155,6 +160,7 @@ pub struct RegisterStand {
     pub inhalt: InhaltStand,
     pub vorschau: crate::scheiben::VorschauStand,
     pub ocr: crate::ocr::OcrStand,
+    pub textebene: crate::textebene::TextebeneStand,
     pub typen: Vec<TypZeile>,
     pub jahre: Vec<JahrZeile>,
     pub letzter_lauf: Option<LetzterLauf>,
@@ -246,6 +252,9 @@ impl Register {
         }
         if version < 4 {
             Self::migration_4(&tx)?;
+        }
+        if version < 5 {
+            Self::migration_5(&tx)?;
         }
         tx.commit()?;
         Ok(Self { db, pfad, scheiben: RefCell::default(), scheibe_grenze: SCHEIBE_GRENZE })
@@ -378,6 +387,25 @@ impl Register {
         Ok(())
     }
 
+    /// Schema 5: Lage der erkannten Wörter und Stand der Textebene in der PDF.
+    fn migration_5(db: &Connection) -> Ergebnis<()> {
+        db.execute_batch(
+            "-- Lage der Wörter (woerter.rs), nur bei übernommenem Text. Wird
+             -- entfernt, sobald die Textebene in der PDF steht.
+             ALTER TABLE ocr ADD COLUMN woerter BLOB;
+             -- 1: der erkannte Text steht als Textebene in der PDF
+             ALTER TABLE ocr ADD COLUMN in_pdf INTEGER NOT NULL DEFAULT 0;
+             -- Zeitpunkt, zu dem Registerwerk zuletzt eine Textebene in die
+             -- Datei geschrieben hat
+             ALTER TABLE datei ADD COLUMN textebene_geschrieben INTEGER;
+             -- Fehlermeldung, wenn das Schreiben scheiterte. Die Datei wird
+             -- erst nach einer Änderung erneut versucht.
+             ALTER TABLE datei ADD COLUMN textebene_fehler TEXT;
+             PRAGMA user_version = 5;",
+        )?;
+        Ok(())
+    }
+
     /// Gleicht das Register mit einem Durchlauf des Dateibaums ab.
     ///
     /// - Neu ist jeder Pfad, den das Register nicht kennt.
@@ -497,6 +525,7 @@ impl Register {
         let inhalt = self.inhalt_stand()?;
         let vorschau = self.vorschau_stand()?;
         let ocr = self.ocr_stand()?;
+        let textebene = self.textebene_stand()?;
 
         let typen = self
             .db
@@ -554,6 +583,7 @@ impl Register {
             inhalt,
             vorschau,
             ocr,
+            textebene,
             typen,
             jahre,
             letzter_lauf,
@@ -595,7 +625,8 @@ impl Register {
         // Die Erkennung gehört zum alten Inhalt
         tx.execute("DELETE FROM ocr WHERE datei = ?1", [id])?;
         tx.execute(
-            "UPDATE datei SET ocr_geaendert = NULL, ocr_groesse = NULL, ocr_verfahren = NULL, ocr_fehler = NULL
+            "UPDATE datei SET ocr_geaendert = NULL, ocr_groesse = NULL, ocr_verfahren = NULL, ocr_fehler = NULL,
+                              textebene_fehler = NULL
              WHERE id = ?1",
             [id],
         )?;

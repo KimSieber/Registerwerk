@@ -20,6 +20,10 @@
 //!              auch best). Texte landen in target/ocr_muster/
 //!              Sprachdaten in REGISTERWERK_TESSDATA oder
 //!              bibliotheken/tesseract/tessdata ab dem Arbeitsverzeichnis
+//! --textebene N  Probe der Textebene: N PDFs mit Scan-Seiten ohne Text
+//!              erkennen, Textebene einbetten und prüfen. Neue Fassungen
+//!              landen in target/textebene_muster/, Originale bleiben
+//!              unberührt
 //!
 //! PDFium wird in `REGISTERWERK_PDFIUM` oder in `bibliotheken/pdfium/lib`
 //! ab dem Arbeitsverzeichnis aufwärts gesucht. Dateien mit 0 Byte
@@ -32,6 +36,7 @@ use registerwerk_core::{guete, pdf};
 
 mod ocrtest;
 mod tempotest;
+mod textebenetest;
 
 #[derive(Default)]
 struct Summe {
@@ -56,6 +61,7 @@ fn main() {
     let mut vorschau_n: Option<usize> = None;
     let mut render_n: Option<usize> = None;
     let mut ocr_n: Option<usize> = None;
+    let mut textebene_n: Option<usize> = None;
     let mut ziele: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -63,6 +69,7 @@ fn main() {
             "--still" => still = true,
             "--ohne-text" => nur_ohne_text = true,
             "--text" => text_zeigen = true,
+            "--textebene" => textebene_n = args.next().and_then(|n| n.parse().ok()).or(Some(20)),
             "--ocr" => ocr_n = args.next().and_then(|n| n.parse().ok()).or(Some(100)),
             "--render" => render_n = args.next().and_then(|n| n.parse().ok()).or(Some(24)),
             "--vorschau" => vorschau_n = args.next().and_then(|n| n.parse().ok()).or(Some(150)),
@@ -96,6 +103,10 @@ fn main() {
         sammeln(z, &mut dateien);
     }
     dateien.sort();
+    if let Some(n) = textebene_n {
+        textebenetest::lauf(pdfium, &dateien, n);
+        return;
+    }
     if let Some(n) = ocr_n {
         ocrtest::lauf(pdfium, &dateien, n);
         return;

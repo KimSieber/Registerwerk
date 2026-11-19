@@ -5,7 +5,8 @@
 //! Funktionsversion von `pdfium-render` (Feature `pdfium_NNNN` in Cargo.toml)
 //! muss zur Version der Bibliothek passen.
 //!
-//! Dieses Modul liest nur. Es verändert keine Datei.
+//! Dieses Modul liest nur. Es verändert keine Datei. Auch die Prüfung der
+//! Textebene ([`textebene_pruefen`]) liest nur.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -87,10 +88,63 @@ pub fn lesen(pdfium: &Pdfium, pfad: &Path) -> Result<Inhalt, String> {
         .filter(|w| !w.trim().is_empty());
     let mut seiten = Vec::new();
     for (i, seite) in dokument.pages().iter().enumerate() {
-        let text = seite.text().map(|t| t.all()).unwrap_or_default();
+        let text = seitentext(&seite);
         seiten.push(Seite { nr: i as u32 + 1, text, bildanteil: bildanteil(&seite) });
     }
     Ok(Inhalt { seiten, erstellt })
+}
+
+/// Prüft eine neue Fassung mit Textebene gegen das Original und liest ihren
+/// Inhalt (v0.0.5):
+///
+/// - beide lassen sich öffnen und haben dieselbe Seitenzahl,
+/// - die Seiten `seiten` hatten im Original keinen Text und haben jetzt
+///   welchen,
+/// - diese Seiten sehen gerendert genau gleich aus wie im Original.
+pub fn textebene_pruefen(pdfium: &Pdfium, alt: &Path, neu: &Path, seiten: &[u32]) -> Result<Inhalt, String> {
+    {
+        let a = pdfium.load_pdf_from_file(alt, None).map_err(|e| format!("Original: {}", beschreiben(&e)))?;
+        let n = pdfium.load_pdf_from_file(neu, None).map_err(|e| format!("neue Fassung: {}", beschreiben(&e)))?;
+        if a.pages().len() != n.pages().len() {
+            return Err(format!("Seitenzahl {} statt {}", n.pages().len(), a.pages().len()));
+        }
+        let config = PdfRenderConfig::new().scale_page_by_factor(1.0).set_clear_color(PdfColor::WHITE);
+        for &nr in seiten {
+            let index = nr.checked_sub(1).and_then(|i| i32::try_from(i).ok()).ok_or("Seitennummer ungültig")?;
+            let sa = a.pages().get(index).map_err(|e| format!("Seite {nr}: {e:?}"))?;
+            let sn = n.pages().get(index).map_err(|e| format!("Seite {nr}: {e:?}"))?;
+            let text = |s: &PdfPage| crate::guete::zaehlen(&seitentext(s));
+            if !text(&sa).ohne_text() {
+                return Err(format!("Seite {nr} hat im Original schon Text"));
+            }
+            if text(&sn).ohne_text() {
+                return Err(format!("Seite {nr} hat in der neuen Fassung keinen Text"));
+            }
+            let bild = |s: &PdfPage| {
+                s.render_with_config(&config)
+                    .map(|b| (b.width(), b.height(), b.as_rgba_bytes()))
+                    .map_err(|e| format!("Seite {nr} rendern: {e:?}"))
+            };
+            if bild(&sa)? != bild(&sn)? {
+                return Err(format!("Seite {nr} sieht in der neuen Fassung anders aus"));
+            }
+        }
+    }
+    lesen(pdfium, neu)
+}
+
+/// Text einer Seite innerhalb ihres sichtbaren Bereichs.
+///
+/// `PdfPageText::all()` begrenzt auf die Seitengröße nach der Drehung, aber in
+/// den Koordinaten vor der Drehung. Bei Seiten mit `/Rotate 270` fiel der
+/// Text dadurch heraus (gefunden in v0.0.5). Hier wird auf den sichtbaren
+/// Bereich in Seitenkoordinaten begrenzt.
+pub fn seitentext(seite: &PdfPage) -> String {
+    let Ok(text) = seite.text() else { return String::new() };
+    match seite.boundaries().bounding() {
+        Ok(b) => text.inside_rect(b.bounds),
+        Err(_) => text.all(),
+    }
 }
 
 fn beschreiben(e: &PdfiumError) -> String {

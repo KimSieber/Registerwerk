@@ -15,7 +15,9 @@ pub mod pdf;
 pub mod register;
 pub mod scheiben;
 pub mod vorschau;
+pub mod textebene;
 pub mod vorschauen;
+pub mod woerter;
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -25,6 +27,7 @@ pub use konfiguration::Konfiguration;
 pub use ocr::{OcrErgebnis, OcrStand, SeitenText};
 pub use register::{LaufErgebnis, Register, RegisterStand};
 pub use scheiben::{DateiVorschau, VorschauStand};
+pub use textebene::{TextebeneErgebnis, TextebeneStand};
 pub use vorschauen::{Messung, VorschauErgebnis};
 
 /// Fehler des Kerns.
@@ -91,8 +94,8 @@ pub fn ocr_version() -> String {
     registerwerk_ocr::version()
 }
 
-/// Erkennt den Text aller Seiten ohne oder mit schwachem Text mit Tesseract.
-/// Rendert mit PDFium aus `pdfium_ordner`, die Sprachdaten liegen in
+/// Erkennt den Text aller Seiten ohne Text mit Tesseract, samt Lage der
+/// Wörter. Rendert mit PDFium aus `pdfium_ordner`, die Sprachdaten liegen in
 /// `tessdata`. Erkennt auf allen Kernen. Schreibt nur ins Register, die
 /// PDFs bleiben unverändert.
 pub fn ocr_ausfuehren(
@@ -114,10 +117,43 @@ pub fn ocr_ausfuehren(
             Ok(Box::new(move |bild: &ocr::Graubild, dpi: u32| {
                 erkenner
                     .erkennen(&bild.grau, bild.breite, bild.hoehe, dpi)
-                    .map(|e| ocr::Erkannt { text: e.text, konfidenz: e.konfidenz })
+                    .map(|e| ocr::Erkannt {
+                        woerter: woerter::aus_tesseract(&e.woerter, bild.breite, bild.hoehe),
+                        text: e.text,
+                        konfidenz: e.konfidenz,
+                    })
             }) as ocr::ErkennerFn)
         },
         faeden,
+        fortschritt,
+        abbrechen,
+    )
+}
+
+/// Schreibt den erkannten Text als unsichtbare Textebene in die Scans
+/// (v0.0.5). Prüft jede neue Fassung mit PDFium aus `pdfium_ordner`, bevor
+/// sie das Original ersetzt. Mit `probelauf` entstehen nur Kopien in diesem
+/// Ordner, Originale und Register bleiben unberührt. Mit `hoechstens` endet
+/// der Lauf nach so vielen geschriebenen Dateien. Das Protokoll liegt neben
+/// dem Register.
+pub fn textebene_schreiben(
+    konfig: &Konfiguration,
+    register: &mut Register,
+    pdfium_ordner: &Path,
+    probelauf: Option<&Path>,
+    hoechstens: Option<u64>,
+    fortschritt: impl FnMut(&Fortschritt),
+    abbrechen: &AtomicBool,
+) -> Ergebnis<TextebeneErgebnis> {
+    let pdfium = pdf::einbinden(pdfium_ordner)?;
+    let protokoll = register.ordner().map(|o| o.join(textebene::PROTOKOLL));
+    textebene::schreiben(
+        konfig,
+        register,
+        &|alt: &Path, neu: &Path, seiten: &[u32]| pdf::textebene_pruefen(pdfium, alt, neu, seiten),
+        probelauf,
+        protokoll.as_deref(),
+        hoechstens,
         fortschritt,
         abbrechen,
     )
