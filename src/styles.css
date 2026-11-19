@@ -456,3 +456,76 @@ code {
   padding-right: 14px;
   color: var(--text-leise);
 }
+
+/* Prüfansicht: Filter und Textvergleich (v0.0.4) */
+.filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+}
+
+.filter .eingabe {
+  flex: 1 1 260px;
+}
+
+.schalter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-leise);
+  cursor: pointer;
+}
+
+.texte {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.texte.einzeln {
+  grid-template-columns: 1fr;
+}
+
+.text {
+  border: 1px solid var(--rand);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--flaeche);
+  min-width: 0;
+}
+
+.text.gilt {
+  border-color: var(--orange);
+}
+
+.text-kopf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--text-leise);
+  margin-bottom: 6px;
+}
+
+.text-kopf b {
+  color: var(--text);
+}
+
+.text-kopf .marke {
+  border-color: var(--orange);
+  color: var(--akzent);
+}
+
+.text pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+}

@@ -10,16 +10,16 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use registerwerk_core::{
-    DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, Register, RegisterStand,
-    VorschauErgebnis,
+    DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis, Register, RegisterStand,
+    SeitenText, VorschauErgebnis,
 };
 use serde::Serialize;
 use tauri::http::{Request, Response, StatusCode};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, UriSchemeResponder};
 
-/// Zustand eines laufenden Vorgangs, der ins Register schreibt (Inhalte lesen
-/// oder Vorschauen erzeugen). Es läuft höchstens einer.
+/// Zustand eines laufenden Vorgangs, der ins Register schreibt (Inhalte lesen,
+/// Vorschauen erzeugen oder Text erkennen). Es läuft höchstens einer.
 #[derive(Default)]
 struct Lesen {
     laeuft: AtomicBool,
@@ -41,6 +41,10 @@ struct AppInfo {
     register_ordner: Option<String>,
     /// Ordner, aus dem PDFium geladen wird.
     pdfium_ordner: Option<String>,
+    /// Ordner mit den Sprachdaten für die OCR.
+    tessdata_ordner: Option<String>,
+    /// Version der eingebauten Tesseract-Bibliothek.
+    tesseract_version: String,
 }
 
 /// Sucht die Konfiguration in dieser Reihenfolge:
@@ -90,6 +94,26 @@ fn pdfium_ordner(app: &AppHandle) -> Option<PathBuf> {
     start_orte.into_iter().flatten().find_map(|ort| registerwerk_core::pdf::suchen_ab(&ort))
 }
 
+/// Sucht den Ordner mit den Sprachdaten (Satz `registerwerk_core::ocr::MODELLE`) in dieser Reihenfolge:
+/// 1. Umgebungsvariable `REGISTERWERK_TESSDATA`, darin der Unterordner des Satzes
+/// 2. `tessdata/<Satz>` in den Ressourcen des Programmpakets
+/// 3. `bibliotheken/tesseract/tessdata/<Satz>` im Arbeitsverzeichnis oder darüber (Entwicklung)
+/// 4. dasselbe neben dem Programm oder darüber
+fn tessdata_ordner(app: &AppHandle) -> Option<PathBuf> {
+    use registerwerk_core::ocr;
+    if let Some(basis) = std::env::var_os("REGISTERWERK_TESSDATA").map(PathBuf::from) {
+        return Some(basis.join(ocr::MODELLE));
+    }
+    if let Ok(ressourcen) = app.path().resource_dir() {
+        let ordner = ressourcen.join("tessdata").join(ocr::MODELLE);
+        if ocr::tessdata_vollstaendig(&ordner) {
+            return Some(ordner);
+        }
+    }
+    let start_orte = [std::env::current_dir().ok(), std::env::current_exe().ok()];
+    start_orte.into_iter().flatten().find_map(|ort| ocr::tessdata_suchen_ab(&ort, ocr::MODELLE))
+}
+
 fn register_ordner(app: &AppHandle, konfig: &Konfiguration) -> Result<PathBuf, String> {
     match &konfig.register_ordner {
         Some(ordner) => Ok(ordner.clone()),
@@ -107,6 +131,8 @@ fn app_info(app: AppHandle) -> AppInfo {
         verzeichnisse: Vec::new(),
         register_ordner: None,
         pdfium_ordner: pdfium_ordner(&app).map(|p| p.display().to_string()),
+        tessdata_ordner: tessdata_ordner(&app).map(|p| p.display().to_string()),
+        tesseract_version: registerwerk_core::ocr_version(),
     };
     match konfig_laden(&app) {
         Ok((_, konfig)) => {
@@ -237,6 +263,52 @@ async fn vorschauen_erzeugen(
     ergebnis?
 }
 
+/// Erkennt den Text aller Seiten ohne oder mit schwachem Text. Meldet den
+/// Fortschritt über `kanal`, höchstens etwa zehnmal je Sekunde. Abbrechen über
+/// `inhalte_abbrechen`. Schreibt nur ins Register, die PDFs bleiben unverändert.
+#[tauri::command]
+async fn ocr_ausfuehren(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    kanal: Channel<Fortschritt>,
+) -> Result<OcrErgebnis, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    let pdfium = pdfium_ordner(&app)
+        .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
+    let tessdata = tessdata_ordner(&app).ok_or_else(|| {
+        "Sprachdaten für die OCR nicht gefunden. Bitte im Projektordner ausführen: bash tools/tesseract_holen.sh".to_string()
+    })?;
+    if zustand.laeuft.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft bereits ein Vorgang.".into());
+    }
+    zustand.abbrechen.store(false, Ordering::SeqCst);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
+        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let mut zuletzt = Instant::now() - Duration::from_secs(1);
+        registerwerk_core::ocr_ausfuehren(
+            &konfig,
+            &mut register,
+            &pdfium,
+            &tessdata,
+            |f| {
+                if f.erledigt == f.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {
+                    zuletzt = Instant::now();
+                    let _ = kanal.send(f.clone());
+                }
+            },
+            &zustand.abbrechen,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    ergebnis?
+}
+
 /// Führt `f` mit dem Register zum Lesen aus. Öffnet es beim ersten Aufruf und
 /// erneut, wenn sich der Register-Ordner geändert hat.
 fn mit_leser<T>(app: &AppHandle, f: impl FnOnce(&Register) -> Result<T, String>) -> Result<T, String> {
@@ -254,12 +326,23 @@ fn mit_leser<T>(app: &AppHandle, f: impl FnOnce(&Register) -> Result<T, String>)
     f(&offen.as_ref().expect("eben geöffnet").1)
 }
 
-/// Dateien mit Vorschauen, deren Pfad alle Wörter von `muster` enthält.
-/// Nur zum Prüfen der Vorschauen, die Suche folgt in Stufe 2.
+/// Dateien mit Vorschauen, deren Pfad alle Wörter von `muster` enthält,
+/// mit `nur_ocr` nur solche mit erkanntem Text. Nur zum Prüfen, die Suche
+/// folgt in Stufe 2.
 #[tauri::command]
-async fn dateien_mit_vorschau(app: AppHandle, muster: String) -> Result<Vec<DateiVorschau>, String> {
+async fn dateien_mit_vorschau(app: AppHandle, muster: String, nur_ocr: bool) -> Result<Vec<DateiVorschau>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        mit_leser(&app, |r| r.dateien_mit_vorschau(&muster, 100).map_err(|e| e.to_string()))
+        mit_leser(&app, |r| r.dateien_mit_vorschau(&muster, nur_ocr, 100).map_err(|e| e.to_string()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Eingebetteter und erkannter Text aller Seiten einer Datei.
+#[tauri::command]
+async fn seitentexte(app: AppHandle, datei: i64) -> Result<Vec<SeitenText>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mit_leser(&app, |r| r.seitentexte(datei).map_err(|e| e.to_string()))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -304,7 +387,9 @@ fn main() {
             inhalte_lesen,
             inhalte_abbrechen,
             vorschauen_erzeugen,
-            dateien_mit_vorschau
+            ocr_ausfuehren,
+            dateien_mit_vorschau,
+            seitentexte
         ])
         .run(tauri::generate_context!())
         .expect("Registerwerk konnte nicht gestartet werden");

@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 18.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.3). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 18.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.4). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -27,7 +27,7 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 
 1. **Die Dateien sind die einzige Wahrheit.** Ordnerstruktur und Dateinamen des Archivs bleiben unverändert. Registerwerk ist nur eine Schicht darüber. Hintergrund: Mehrere frühere Archivsysteme mussten aufgegeben werden, jede Migration kostete Aufwand und Daten.
 2. **Das Register enthält nur Kopien und Auszüge.** Es muss sich jederzeit vollständig aus den Dateien neu aufbauen lassen. Die einzige eigene Information des Programms sind die Ordnerregeln, und die liegen als lesbare Textdatei vor.
-3. **Originale werden nicht verschlechtert.** Keine Neukomprimierung, keine Qualitätsreduktion. Einzige zulässige Änderung an einer Datei ist das verlustfreie Ergänzen oder Ersetzen der Textebene bei Scans (Abschnitt 7).
+3. **Originale werden nicht verschlechtert.** Keine Neukomprimierung, keine Qualitätsreduktion. Einzige zulässige Änderung an einer Datei ist das verlustfreie Ergänzen der Textebene bei Scan-Seiten ohne Text (Abschnitt 7).
 4. **Unabhängig von Betriebssystem und Cloud-Anbieter.** Der Zugriff läuft über das normale Dateisystem. Kein Swift, keine Apple-Dienste, keine Schnittstelle eines Cloud-Anbieters im laufenden Betrieb.
 5. **Nur ein Schreiber.** Es indiziert immer genau ein Gerät. Alle anderen lesen.
 6. **Kein dauerhaftes Backup-Volumen.** Das Programm legt keine Sicherungskopien an, die später von Hand gesucht und entfernt werden müssten.
@@ -41,7 +41,7 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 - Vorschau aller Seiten
 - Fehlertolerante Suche mit Gewichtung von Dateiname und Pfad
 - Öffnen des Originals aus dem Cloud-Ordner
-- OCR für Seiten ohne oder mit schwachem Text
+- OCR für Seiten ohne Text
 - Anwendung mit eigener Oberfläche für Indizierung, Suche und Anzeige
 
 ### Nicht enthalten
@@ -150,23 +150,28 @@ Die Güte eines Textes ist der Anteil wortartiger Tokens: Wörter aus mindestens
 
 Eine Seite gilt als Scan, wenn Bilder mindestens 70 % ihrer Fläche abdecken. Gütemaß und Seitenart werden je Seite im Register gespeichert. Umgesetzt in v0.0.2.
 
-### Drei Fälle
+### Welche Seiten erkannt werden
 
 | Fall | Erkennung | Behandlung |
 |---|---|---|
-| Seite ohne Text | weniger als 20 Zeichen eingebetteter Text | OCR ausführen, Text ins Register, Text in die PDF einbetten |
-| Scan mit schwachem Text | Güte unter 60 % | OCR neu ausführen. Der neue Text wird nur übernommen, wenn er messbar besser ist. Dann Text ins Register und Textebene in der PDF ersetzen |
-| Digital erzeugte PDF mit unlesbarem Text | kein Scanbild, Güte unter 60 % | OCR auf die gerenderte Seite, Text **nur ins Register**. Die Datei bleibt unverändert |
+| Seite ohne Text | weniger als 20 Zeichen eingebetteter Text | OCR ausführen. Der Text gilt ab 20 Zeichen. Text ins Register, bei Scans auch in die PDF einbetten |
+| Scan mit schwachem Text | Güte unter 60 % | keine OCR, der eingebettete Text bleibt |
+| Digital erzeugte PDF mit schwachem Text | kein Scanbild, Güte unter 60 % | keine OCR, der eingebettete Text bleibt |
+
+Umgesetzt in v0.0.4 für das Register. Das Einbetten in die PDF folgt in v0.0.5.
 
 Erläuterungen:
 
-- Der dritte Fall betrifft zum Beispiel Kontoauszüge, deren Text sich wegen der Schriftkodierung nicht auslesen lässt. Die Textebene lässt sich dort nicht ersetzen, ohne die Seite in ein Bild umzuwandeln. Das wäre ein Qualitätsverlust und ist ausgeschlossen. Der OCR-Text im Register ist ein Auszug und lässt sich jederzeit neu erzeugen, der Grundsatz 2 bleibt gewahrt. Im Pilot (v0.0.2) hatte ein Kontoauszug von 2017 gar keine Textebene, vermutlich weil die Schrift beim Drucken in ein PDF zu Kurven wurde. Die Behandlung ist dieselbe. Ob andere Auszüge Zeichensalat liefern, zeigt das Gütemaß.
-- "Messbar besser" heißt: Die Güte des neuen Textes liegt mindestens 10 Prozentpunkte über der des alten. **Annahme**
-- Es wird nicht das ganze Archiv neu erkannt. In der Stichprobe lagen 15 % der PDFs unter der Schwelle, 1,6 % hatten gar keinen Text.
+- Ursprünglich sollte auch schwacher Text neu erkannt und bei messbarer Verbesserung ersetzt werden. Im Pilot (v0.0.4, erster Lauf) war der eingebettete Text aber nicht schlechter, oft besser als das Ergebnis von Tesseract. Das Gütemaß zeigte trotzdem eine Verbesserung, es ist für diese Entscheidung zu grob. Schwacher Text bleibt deshalb unverändert.
+- Digital erzeugte PDFs ohne Text, etwa ein Kontoauszug von 2017, dessen Schrift beim Drucken in ein PDF zu Kurven wurde, bekommen den erkannten Text **nur ins Register**. Die Textebene lässt sich dort nicht einbetten, ohne die Seite in ein Bild umzuwandeln. Das wäre ein Qualitätsverlust und ist ausgeschlossen. Der OCR-Text im Register ist ein Auszug und lässt sich jederzeit neu erzeugen, der Grundsatz 2 bleibt gewahrt.
+- Handschrift, auch in Druckbuchstaben, und Text in Bildern erkennt Tesseract nicht brauchbar. Im Pilot blieben 307 von 1.185 Seiten ohne Text.
+- Die Grenze von 20 Zeichen für die Übernahme ist eine **Annahme**.
+- Erkannt wird mit 300 dpi in Graustufen, Sprachen Deutsch und Englisch, Sprachdaten `tessdata` (Standard). `tessdata_best` brachte im Pilot dasselbe Ergebnis und war gut 30 % langsamer.
+- Der erkannte Text liegt in einer eigenen Tabelle neben dem eingebetteten Text. Welcher gilt, zeigt eine Sicht im Register. Sie ist die Grundlage der Suche.
 
 ### Zurückschreiben in die PDF
 
-Der Text wird in die Datei eingebettet, damit der Komfort der durchsuchbaren PDF auch außerhalb von Registerwerk erhalten bleibt. Der Ablauf kommt ohne Sicherungskopien aus:
+Gilt nur für Scans mit Seiten ohne Text (Abschnitt "Welche Seiten erkannt werden"). Der Text wird in die Datei eingebettet, damit der Komfort der durchsuchbaren PDF auch außerhalb von Registerwerk erhalten bleibt. Der Ablauf kommt ohne Sicherungskopien aus:
 
 1. Die neue Fassung entsteht als temporäre Datei.
 2. Das Programm prüft sie: gleiche Seitenzahl, Scanbilder unverändert, Text vorhanden, Datei lässt sich öffnen.
@@ -282,7 +287,7 @@ Gewichtung, Filter nach Ordner und Jahr und die Darstellung der Treffer werden a
 | Aufbau | Kern als eigene Rust-Bibliothek ohne Oberfläche, die Tauri-Anwendung ist nur eine Hülle darüber | entschieden. Hält den lesenden Teil für eine Web-Oberfläche wiederverwendbar |
 | Datenbank | SQLite mit Volltextindex, verschlüsselt | entschieden. Bis Stufe 3 unverschlüsselt, der Wechsel auf die verschlüsselnde Variante ist eine Einstellung der Bibliothek |
 | PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
-| OCR | Tesseract, Sprachen Deutsch und Englisch. Bereits in PaperTrail Compare im Einsatz, unabhängig von Apple | entschieden |
+| OCR | Tesseract 5.5.2, Sprachen Deutsch und Englisch, Sprachdaten `tessdata`. Statisch aus dem Quelltext gebaut (mit Leptonica, über CMake), eigene schmale Anbindung an die C-Schnittstelle. Keine Installation auf dem Gerät | entschieden, im Einsatz seit v0.0.4 |
 | Vorschau | AVIF Q25, 1024 px bezogen auf A4. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3 |
 | Zugangsdaten | lokaler Schlüsselbund des Betriebssystems, wie in Stellwerk | Annahme |
 
@@ -330,6 +335,21 @@ Gemessen am 18.11.2026 auf dem Notebook beim Neuaufbau, Anwendung im Release-Mod
 
 Hochgerechnet auf 1,5 Mio. Seiten: rund 8 Stunden und rund 40 GB. Mehrere Render-Prozesse könnten das Tempo noch einmal etwa verdoppeln. Das lohnt sich bei diesen Werten nicht.
 
+### OCR im Pilot (v0.0.4)
+
+Gemessen am 18.11.2026 auf dem Notebook, Anwendung im Release-Modus:
+
+| Größe | Wert |
+|---|---|
+| Seiten ohne Text | 1.185, gut 10 % aller Seiten |
+| Text übernommen | 878 Seiten (74 %) |
+| weiter ohne Text | 307 Seiten: Fotos, Karten, Handschrift, leere Seiten |
+| Dauer | 242 s, 284 Seiten je Minute |
+| Rendern mit 300 dpi | 58 ms je Seite, ein Faden |
+| Erkennen | 1,7 s je Seite und Faden, 8 Fäden zu 99 % ausgelastet. Der Engpass |
+
+Hochgerechnet auf 1,5 Mio. Seiten: rund 160.000 Seiten ohne Text, etwa 9 bis 10 Stunden auf dem Notebook.
+
 ### Mengengerüst (Schätzung)
 
 | Größe | Wert |
@@ -356,10 +376,10 @@ Der Pilot umfasst nur die zwei Hauptverzeichnisse des aktuellen Archivs mit rund
 | 2 | Anwendung: Suche, Trefferliste, Seitenvorschau, Original öffnen | tägliche Nutzung auf dem Pilotbestand |
 | 3 | Verschlüsselung, Ordnerregeln, Behandlungsstufen | Register im Cloud-Ordner, zweites Gerät liest |
 | 4 | Delta-Lauf, Sperre und Stand-Zähler, Erkennen verschobener Dateien | laufender Betrieb auf dem Notebook |
-| 5 | OCR: fehlender Text, schwacher Text, unlesbare digitale PDFs, Zurückschreiben | Suchqualität auf dem Pilotbestand geprüft |
+| 5 | OCR für Seiten ohne Text, Zurückschreiben in Scans | Suchqualität auf dem Pilotbestand geprüft |
 | 6 | Erstindizierung des gesamten Archivs in Tranchen | vollständiges Register |
 
-Die Reihenfolge ist ein Vorschlag. **Annahme**
+Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird.
 
 ### Stand der Umsetzung
 
@@ -368,6 +388,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**
 | v0.0.1 | Gerüst der Anwendung, Einlesen des Dateibaums ins Register mit Abgleich (neu, geändert, entfernt), Datum aus dem Dateinamen, Übersicht in der Oberfläche | Beginn von Stufe 1, noch ohne PDF-Inhalte und Vorschauen |
 | v0.0.2 | PDFium angebunden, Text je Seite im Register, Gütemaß und Seitenart, Datum aus PDF und Änderungsdatum, Fortsetzen nach Abbruch | Stufe 1 ohne Vorschauen |
 | v0.0.3 | Vorschauen aller Seiten als AVIF in Scheiben, Seitenansicht zum Prüfen, Neuaufbau des Pilot-Registers getestet | Stufe 1 abgeschlossen |
+| v0.0.4 | Tesseract statisch eingebaut, OCR der Seiten ohne Text ins Register, gültiger Text je Seite, Textvergleich in der Prüfansicht | erster Teil von Stufe 5 |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -376,7 +397,8 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Punkt | Wann |
 |---|---|
 | Inventur der Verzeichnisse außerhalb des aktuellen Archivs. Bestimmt die Endgröße, nicht den Bau | vor Stufe 6 |
-| Kontoauszüge: Ein Auszug von 2017 hat keine Textebene. Ob andere Zeichensalat liefern, zeigt das Gütemaß | Stufe 5 |
+| Bau von Tesseract und Leptonica unter Windows | vor dem ersten Windows-Paket |
+| Sprachdaten ins Programmpaket legen (Ressource `tessdata/standard` mit Lizenztexten) | mit dem ersten Paket |
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | Zurücksetzen auf "nur online" per Programm | Stufe 4 |
@@ -398,9 +420,13 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Vorschau | alle Seiten, 1024 px, AVIF Q25 | lesbar, klein, flüssig beim Blättern |
 | Vorschau nur der ersten Seite | nein | alle Seiten müssen schnell erreichbar sein |
 | OCR-Werkzeug | Tesseract | schon im Einsatz, unabhängig von Apple |
-| OCR wiederholen | nur unter 60 % Güte und nur bei messbarer Verbesserung | kein Durcharbeiten des ganzen Archivs für wenig Gewinn |
+| OCR wofür | nur für Seiten ohne Text, der Text gilt ab 20 Zeichen | bei schwachem Text war der eingebettete Text im Pilot nicht schlechter, oft besser als Tesseract |
 | OCR-Text bei Scans | ins Register und in die PDF | durchsuchbare PDF bleibt auch außerhalb von Registerwerk erhalten |
-| OCR-Text bei unlesbaren digitalen PDFs | nur ins Register | Einbetten würde das Original verschlechtern |
+| OCR-Text bei digitalen PDFs ohne Text | nur ins Register | Einbetten würde das Original verschlechtern |
+| Einbindung von Tesseract | Bibliothek, statisch aus dem Quelltext, eigene Anbindung | keine Installation und Pflege, auch bei Weitergabe. `tesseract-rs` legt Bau-Cache im Benutzerprofil ab und lädt beim Bau aus dem Netz |
+| Auflösung für OCR | 300 dpi | deutlich besser als 200 dpi |
+| Sprachdaten | `tessdata` (Standard), deu+eng | gleiches Ergebnis wie `tessdata_best`, gut 30 % schneller |
+| Reihenfolge der Stufen | OCR (Stufe 5) vor der Suche (Stufe 2) | die Suche wird am endgültigen Text eingestellt |
 | Ablage der Vorschauen | in der Datenbank, verteilt auf Scheiben von 1 bis 2 GB | nur Geändertes wird repliziert, Anbieterwechsel bleibt offen |
 | Sicherungskopien | keine | sollen kein Volumen erzeugen, das von Hand bereinigt werden muss |
 | Datum | Dateiname, dann PDF, dann Datei | Dateinamen tragen fast immer ein Datum |
@@ -436,6 +462,9 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Build-Ordner außerhalb des Projekts ablegen | verteilt die Projekte auf mehrere Orte |
 | AVIF-Encoder rav1e (über ravif), reines Rust | im Pilot 92 ms je Seite statt 19 ms. Ein reiner Rust-Encoder mit dem Tempo von libaom existiert nicht |
 | AVIF-Encoder SVT-AV1 | in der geprüften Version 1.7 für Einzelbilder nicht verlässlich, die Geschwindigkeitsstufe wirkte nicht |
+| OCR auch für schwachen Text (Güte unter 60 %) | im Pilot nicht besser als der eingebettete Text, oft schlechter. Das Gütemaß zeigte trotzdem Verbesserungen |
+| `tessdata_best` | gleiches Ergebnis wie `tessdata`, gut 30 % langsamer |
+| Tesseract als Programm aufrufen und mitliefern | braucht eine eigene Installation oder Bündelung, ist schwerer zu pflegen |
 | Scheiben nach Jahr des Dokumentdatums | ein nachträglich gescanntes altes Dokument hätte eine alte Scheibe geändert |
 | Eine einzige große Datenbankdatei | jede Änderung beträfe die ganze Datei, die Arbeitskopie bräuchte doppelten Platz, ein Schaden träfe alles |
 
@@ -445,6 +474,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `vorschau_vergleich.py`: Vorschauformate nebeneinander, Konzeptphase, nur lesend
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
-- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche. Beide Ausgaben enthalten Dokumentinhalte und landen in `target/`
+- `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
+- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

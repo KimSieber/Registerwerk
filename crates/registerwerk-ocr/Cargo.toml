@@ -1,0 +1,15 @@
+[package]
+name = "registerwerk-ocr"
+description = "Tesseract für Registerwerk: statisch gebaut aus dem Quelltext, schmale Anbindung an die C-Schnittstelle."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+build = "build.rs"
+links = "tesseract"
+
+[build-dependencies]
+# Tesseract und Leptonica werden mit CMake aus bibliotheken/tesseract/quelle
+# übersetzt (tools/tesseract_holen.sh). Wie libaom einmal je Profil.
+cmake = "0.1"

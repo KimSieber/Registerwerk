@@ -14,6 +14,12 @@
 //!              als AVIF kodieren. Muster landen in target/vorschau_muster/
 //! --render N   N PDFs gleichmäßig verteilt, je die erste Seite gerendert als
 //!              PPM nach target/render_muster/. Vorlage für Encoder-Vergleiche
+//! --ocr N      Messung der OCR: N Seiten ohne oder mit schwachem Text,
+//!              gleichmäßig verteilt, mit den vorhandenen Sätzen der
+//!              Sprachdaten erkannt (standard, mit tesseract_holen.sh --best
+//!              auch best). Texte landen in target/ocr_muster/
+//!              Sprachdaten in REGISTERWERK_TESSDATA oder
+//!              bibliotheken/tesseract/tessdata ab dem Arbeitsverzeichnis
 //!
 //! PDFium wird in `REGISTERWERK_PDFIUM` oder in `bibliotheken/pdfium/lib`
 //! ab dem Arbeitsverzeichnis aufwärts gesucht. Dateien mit 0 Byte
@@ -24,6 +30,7 @@ use std::time::Instant;
 
 use registerwerk_core::{guete, pdf};
 
+mod ocrtest;
 mod tempotest;
 
 #[derive(Default)]
@@ -48,6 +55,7 @@ fn main() {
     let (mut still, mut nur_ohne_text, mut text_zeigen, mut max) = (false, false, false, usize::MAX);
     let mut vorschau_n: Option<usize> = None;
     let mut render_n: Option<usize> = None;
+    let mut ocr_n: Option<usize> = None;
     let mut ziele: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -55,6 +63,7 @@ fn main() {
             "--still" => still = true,
             "--ohne-text" => nur_ohne_text = true,
             "--text" => text_zeigen = true,
+            "--ocr" => ocr_n = args.next().and_then(|n| n.parse().ok()).or(Some(100)),
             "--render" => render_n = args.next().and_then(|n| n.parse().ok()).or(Some(24)),
             "--vorschau" => vorschau_n = args.next().and_then(|n| n.parse().ok()).or(Some(150)),
             "--max" => max = args.next().and_then(|n| n.parse().ok()).unwrap_or(usize::MAX),
@@ -87,6 +96,10 @@ fn main() {
         sammeln(z, &mut dateien);
     }
     dateien.sort();
+    if let Some(n) = ocr_n {
+        ocrtest::lauf(pdfium, &dateien, n);
+        return;
+    }
     if let Some(n) = render_n {
         tempotest::rendern_ablegen(pdfium, &dateien, n);
         return;

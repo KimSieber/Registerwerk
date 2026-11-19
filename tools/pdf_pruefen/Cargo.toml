@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 registerwerk-core = { path = "../../crates/registerwerk-core" }
+registerwerk-ocr = { path = "../../crates/registerwerk-ocr" }

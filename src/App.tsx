@@ -6,12 +6,14 @@ import {
   FehlerZeile,
   InhaltErgebnis,
   LaufErgebnis,
+  OcrErgebnis,
   RegisterStand,
   VorschauErgebnis,
   appInfo,
   dateibaumEinlesen,
   inhalteAbbrechen,
   inhalteLesen,
+  ocrAusfuehren,
   registerStand,
   vorschauenErzeugen,
 } from "./api";
@@ -25,10 +27,11 @@ export default function App() {
   const [laeuft, setLaeuft] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
   // Laufender Vorgang, der ins Register schreibt. Es läuft höchstens einer.
-  const [vorgang, setVorgang] = useState<"inhalte" | "vorschauen" | null>(null);
+  const [vorgang, setVorgang] = useState<"inhalte" | "vorschauen" | "ocr" | null>(null);
   const [fortschritt, setFortschritt] = useState<Fortschritt | null>(null);
   const [inhaltLauf, setInhaltLauf] = useState<InhaltErgebnis | null>(null);
   const [vorschauLauf, setVorschauLauf] = useState<VorschauErgebnis | null>(null);
+  const [ocrLauf, setOcrLauf] = useState<OcrErgebnis | null>(null);
   const [haelt, setHaelt] = useState(false);
   // Erhöht sich nach jedem Vorschau-Lauf, damit die Prüfansicht neu lädt
   const [vorschauStand, setVorschauStand] = useState(0);
@@ -98,6 +101,24 @@ export default function App() {
     }
   }
 
+  async function ocrStarten() {
+    setVorgang("ocr");
+    setHaelt(false);
+    setFehler(null);
+    setFortschritt(null);
+    setOcrLauf(null);
+    try {
+      setOcrLauf(await ocrAusfuehren(setFortschritt));
+    } catch (e) {
+      setFehler(String(e));
+    } finally {
+      setVorgang(null);
+      setFortschritt(null);
+      setVorschauStand((n) => n + 1);
+      await standLaden();
+    }
+  }
+
   async function anhalten() {
     setHaelt(true);
     await inhalteAbbrechen();
@@ -110,6 +131,9 @@ export default function App() {
   const v = stand?.vorschau;
   const vAusstehend = v?.ausstehend ?? 0;
   const vLokalAusstehend = vAusstehend - (v?.ausstehend_online ?? 0);
+  const o = stand?.ocr;
+  const oAusstehend = o?.ausstehend ?? 0;
+  const oLokalAusstehend = oAusstehend - (o?.ausstehend_online ?? 0);
 
   return (
     <div className="seite">
@@ -165,6 +189,10 @@ export default function App() {
             <dd className="pfad">{info.register_ordner}</dd>
             <dt>PDFium</dt>
             <dd className="pfad">{info.pdfium_ordner ?? "nicht gefunden"}</dd>
+            <dt>Tesseract</dt>
+            <dd className="pfad">
+              {info.tesseract_version}, Sprachdaten {info.tessdata_ordner ?? "nicht gefunden"}
+            </dd>
           </dl>
         )}
 
@@ -283,6 +311,88 @@ export default function App() {
         </section>
       )}
 
+      {bereit && stand && o && (
+        <section className="karte">
+          <div className="karte-kopf">
+            <div>
+              <h2>Texterkennung</h2>
+              <p className="unterzeile">
+                Erkennt Seiten ohne Text mit Tesseract, gerendert mit 300 dpi. Seiten mit schwachem Text behalten ihren
+                eingebetteten Text. Der erkannte Text kommt nur ins Register, die PDFs bleiben unverändert.
+              </p>
+            </div>
+            {vorgang === "ocr" ? (
+              <button onClick={anhalten} disabled={haelt}>
+                {haelt ? "Hält an …" : "Anhalten"}
+              </button>
+            ) : (
+              <button
+                onClick={ocrStarten}
+                disabled={
+                  !info.pdfium_ordner || !info.tessdata_ordner || laeuft || vorgang !== null || oLokalAusstehend === 0
+                }
+              >
+                Text erkennen
+              </button>
+            )}
+          </div>
+
+          {!info.tessdata_ordner && (
+            <p className="achtung">
+              Sprachdaten nicht gefunden. Bitte im Projektordner <code>bash tools/tesseract_holen.sh</code> ausführen.
+            </p>
+          )}
+
+          {vorgang === "ocr" ? (
+            <FortschrittAnzeige f={fortschritt} />
+          ) : (
+            <p className="stand-zeile">
+              {o.pdfs === 0
+                ? "Keine Seite ohne Text."
+                : oAusstehend === 0
+                  ? "Alle betroffenen PDFs sind erkannt."
+                  : `${alsZahl(oLokalAusstehend)} PDFs stehen zur Erkennung an` +
+                    (o.ausstehend_online > 0 ? `, ${alsZahl(o.ausstehend_online)} weitere liegen nur online.` : ".")}
+            </p>
+          )}
+
+          {ocrLauf && <OcrMeldung e={ocrLauf} />}
+
+          {o.pdfs > 0 && (
+            <div className="kacheln">
+              <Kachel
+                titel="Seiten ohne Text"
+                wert={alsZahl(o.seiten_ohne_text)}
+                zusatz={`schwacher Text bleibt: Scan ${alsZahl(o.seiten_scan_schwach)}, digital ${alsZahl(
+                  o.seiten_digital_schwach,
+                )}`}
+              />
+              <Kachel
+                titel="Erkannt"
+                wert={alsZahl(o.seiten_erkannt)}
+                zusatz={
+                  o.seiten_erkannt > 0
+                    ? `${alsDauer(Math.round(o.erkenn_ms / o.seiten_erkannt))} je Seite und Faden`
+                    : `aus ${alsZahl(o.pdfs)} PDFs`
+                }
+              />
+              <Kachel
+                titel="Übernommen"
+                wert={alsAnteil(o.seiten_uebernommen, o.seiten_erkannt)}
+                zusatz={`${alsZahl(o.seiten_uebernommen)} Seiten mit mindestens 20 Zeichen`}
+              />
+              <Kachel
+                titel="Danach noch"
+                wert={alsZahl(o.nachher_ohne_text + o.nachher_schwach)}
+                zusatz={`${alsZahl(o.nachher_ohne_text)} ohne Text, ${alsZahl(o.nachher_schwach)} schwach`}
+              />
+            </div>
+          )}
+
+          {o.fehler_liste.length > 0 && <FehlerListe anzahl={o.fehler} liste={o.fehler_liste} />}
+        </section>
+      )}
+
       {bereit && v && v.seiten > 0 && <VorschauPruefen neuLaden={vorschauStand} />}
 
       {stand ? (
@@ -366,6 +476,65 @@ function VorschauMeldung({ e }: { e: VorschauErgebnis }) {
       </p>
       {e.abgebrochen && <p className="stand-zeile">Der nächste Lauf setzt hier fort.</p>}
       {e.seiten > 0 && <MessungAnzeige e={e} />}
+    </div>
+  );
+}
+
+function OcrMeldung({ e }: { e: OcrErgebnis }) {
+  const m = e.messung;
+  const seiten = Math.max(1, e.seiten);
+  const dauer = Math.max(1, e.dauer_ms);
+  const ms = (x: number) => `${Math.round(x).toLocaleString("de-DE")} ms`;
+  const anteil = (x: number) => `${Math.round(x * 100)} %`;
+  return (
+    <div className="lauf">
+      <p>
+        {e.abgebrochen ? "Angehalten" : "Fertig"} nach {alsDauer(e.dauer_ms)}: <b>{alsZahl(e.erkannt)} PDFs</b> mit{" "}
+        {alsZahl(e.seiten)} Seiten erkannt, <b>{alsZahl(e.uebernommen)} übernommen</b>
+        {e.fehler > 0 && (
+          <>
+            , <b>{alsZahl(e.fehler)} mit Fehler</b>
+          </>
+        )}
+        {e.nur_online > 0 && <>, {alsZahl(e.nur_online)} nur online übergangen</>}
+        {e.veraendert > 0 && <>, {alsZahl(e.veraendert)} seit dem Lesen geändert</>}.
+      </p>
+      {e.abgebrochen && <p className="stand-zeile">Der nächste Lauf setzt hier fort.</p>}
+      {e.veraendert > 0 && (
+        <p className="stand-zeile">Geänderte Dateien zuerst neu einlesen und ihre Inhalte lesen.</p>
+      )}
+      {e.seiten > 0 && (
+        <table className="messung">
+          <tbody>
+            <tr>
+              <td>Tempo</td>
+              <td className="r">
+                {((seiten * 60000) / dauer).toLocaleString("de-DE", { maximumFractionDigits: 0 })} Seiten/min
+              </td>
+              <td>
+                {ms(dauer / seiten)} je Seite,{" "}
+                {(m.pixel / seiten / 1e6).toLocaleString("de-DE", { maximumFractionDigits: 1 })} Megapixel je Seite
+              </td>
+            </tr>
+            <tr>
+              <td>Rendern (1 Faden)</td>
+              <td className="r">{ms(m.render_ms / seiten)} je Seite</td>
+              <td>
+                beschäftigt {anteil(m.render_ms / dauer)} der Laufzeit, wartet {anteil(m.render_wartet_ms / dauer)}{" "}
+                auf freie Fäden
+              </td>
+            </tr>
+            <tr>
+              <td>Erkennen ({m.faeden} Fäden)</td>
+              <td className="r">{ms(m.erkenn_ms / seiten)} je Seite</td>
+              <td>
+                ausgelastet {anteil(m.erkenn_ms / (m.faeden * dauer))}, leer{" "}
+                {anteil(m.erkenn_leer_ms / (m.faeden * dauer))}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

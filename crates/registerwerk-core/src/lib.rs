@@ -1,7 +1,7 @@
 //! Kern von Registerwerk.
 //!
 //! Enthält alles, was keine Oberfläche braucht: Konfiguration, Durchlauf des
-//! Dateibaums, Lesen der PDFs, Vorschauen und das Register (SQLite). Die Tauri-Anwendung ist nur eine Hülle
+//! Dateibaums, Lesen der PDFs, Vorschauen, OCR und das Register (SQLite). Die Tauri-Anwendung ist nur eine Hülle
 //! darüber. Der lesende Teil soll sich später für eine Web-Oberfläche
 //! wiederverwenden lassen (Konzept, Abschnitt 4).
 
@@ -10,6 +10,7 @@ pub mod datum;
 pub mod guete;
 pub mod inhalte;
 pub mod konfiguration;
+pub mod ocr;
 pub mod pdf;
 pub mod register;
 pub mod scheiben;
@@ -21,6 +22,7 @@ use std::sync::atomic::AtomicBool;
 
 pub use inhalte::{Fortschritt, InhaltErgebnis};
 pub use konfiguration::Konfiguration;
+pub use ocr::{OcrErgebnis, OcrStand, SeitenText};
 pub use register::{LaufErgebnis, Register, RegisterStand};
 pub use scheiben::{DateiVorschau, VorschauStand};
 pub use vorschauen::{Messung, VorschauErgebnis};
@@ -78,6 +80,43 @@ pub fn vorschauen_erzeugen(
         register,
         |pfad, seite| vorschau::pdf_rendern_je_seite(pdfium, pfad, seite),
         |bild| vorschau::erzeugen(bild, Some(1)),
+        faeden,
+        fortschritt,
+        abbrechen,
+    )
+}
+
+/// Version der eingebauten Tesseract-Bibliothek.
+pub fn ocr_version() -> String {
+    registerwerk_ocr::version()
+}
+
+/// Erkennt den Text aller Seiten ohne oder mit schwachem Text mit Tesseract.
+/// Rendert mit PDFium aus `pdfium_ordner`, die Sprachdaten liegen in
+/// `tessdata`. Erkennt auf allen Kernen. Schreibt nur ins Register, die
+/// PDFs bleiben unverändert.
+pub fn ocr_ausfuehren(
+    konfig: &Konfiguration,
+    register: &mut Register,
+    pdfium_ordner: &Path,
+    tessdata: &Path,
+    fortschritt: impl FnMut(&Fortschritt),
+    abbrechen: &AtomicBool,
+) -> Ergebnis<OcrErgebnis> {
+    let pdfium = pdf::einbinden(pdfium_ordner)?;
+    let faeden = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    ocr::erkennen(
+        konfig,
+        register,
+        |pfad, nummern, seite| ocr::pdf_rendern(pdfium, pfad, nummern, seite),
+        || {
+            let mut erkenner = registerwerk_ocr::Erkenner::neu(tessdata, ocr::SPRACHEN)?;
+            Ok(Box::new(move |bild: &ocr::Graubild, dpi: u32| {
+                erkenner
+                    .erkennen(&bild.grau, bild.breite, bild.hoehe, dpi)
+                    .map(|e| ocr::Erkannt { text: e.text, konfidenz: e.konfidenz })
+            }) as ocr::ErkennerFn)
+        },
         faeden,
         fortschritt,
         abbrechen,

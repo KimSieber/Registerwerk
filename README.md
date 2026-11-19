@@ -9,9 +9,10 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** v0.0.3 (November 2026). Der Dateibaum der konfigurierten
+**Stand:** v0.0.4 (November 2026). Der Dateibaum der konfigurierten
 Verzeichnisse, der Text jeder PDF-Seite und eine Vorschau jeder Seite werden
-ins Register eingelesen. Die Suche folgt. Die Umsetzung läuft als Pilot auf
+ins Register eingelesen. Seiten ohne Text werden per OCR erkannt. Die Suche
+folgt. Die Umsetzung läuft als Pilot auf
 einem kleinen Teil des Archivs.
 
 ## Warum
@@ -34,9 +35,8 @@ eigene Volltextsuche nicht mehr gebraucht wird.
    vollständig aus den Dateien neu aufbauen lassen. Eigene Informationen, die
    bei einem Systemwechsel verloren gingen, gibt es darin nicht.
 3. **Originale werden nicht verschlechtert.** Keine Neukomprimierung, keine
-   Qualitätsreduktion. Einzige Ausnahme: Fehlt einem Scan die Textebene oder
-   ist sie zu schwach, wird sie per OCR ergänzt oder ersetzt und verlustfrei in
-   die Datei eingebettet.
+   Qualitätsreduktion. Einzige Ausnahme: Fehlt einer Scan-Seite die Textebene,
+   wird sie per OCR ergänzt und verlustfrei in die Datei eingebettet.
 4. **Unabhängig von Betriebssystem und Cloud-Anbieter.** Der Zugriff läuft über
    das normale Dateisystem, nicht über die Schnittstelle eines Anbieters.
 5. **Nur ein Schreiber.** Es indiziert immer genau ein Gerät, alle anderen lesen.
@@ -77,7 +77,7 @@ der Datenbank.
   und Linux
 - **Register:** SQLite mit Volltextindex, verschlüsselt
 - **PDF:** PDFium für Text und Rendering
-- **OCR:** Tesseract, nur für Seiten ohne oder mit schwachem Text
+- **OCR:** Tesseract, nur für Seiten ohne Text
 - **Vorschau:** jede Seite in 1024 px bezogen auf A4, AVIF mit Qualität 25,
   kodiert mit libavif und libaom, abgelegt in Vorschau-Scheiben (eigene
   SQLite-Dateien neben dem Register)
@@ -103,7 +103,8 @@ tools/                      Hilfsskripte: Analyse der Konzeptphase (Python, nur
                             lesend), Dropbox-Ausschluss der Build-Ordner,
                             Laden von PDFium
 tools/pdf_pruefen/          Prüfwerkzeug: PDFs mit dem Kern lesen, ohne Register,
-                            Tempotest der Vorschauen
+                            Tempotest der Vorschauen, Messung der OCR
+crates/registerwerk-ocr/    Tesseract, statisch aus dem Quelltext gebaut
 bibliotheken/               per Skript geladene Bibliotheken, nicht versioniert
 ```
 
@@ -114,20 +115,22 @@ Web-Oberfläche wiederverwenden.
 
 Voraussetzungen: Rust (über rustup), Node.js, CMake und unter macOS die Xcode
 Command Line Tools. CMake braucht der erste Bau, weil libaom (AV1-Encoder für die
-Vorschauen) aus dem Quelltext übersetzt wird. Unter macOS: `brew install cmake`.
+Vorschauen) sowie Tesseract und Leptonica (OCR) aus dem Quelltext übersetzt werden. Unter macOS: `brew install cmake`.
 Auf Intel-Rechnern und unter Windows wird zusätzlich NASM gebraucht.
 
 ```
 bash tools/dropbox_ausschluss.sh     # einmal je Gerät, siehe unten
 bash tools/pdfium_holen.sh           # einmal je Gerät: PDFium laden
+bash tools/tesseract_holen.sh        # einmal je Gerät: Quelltext und Sprachdaten von Tesseract
 cp config.beispiel.toml config.local.toml   # danach Pfade eintragen
 npm install
 npm run tauri dev                    # Anwendung im Entwicklungsmodus
 npm run tauri dev -- --release       # dasselbe mit Release-Bau, volles Tempo
-cargo test -p registerwerk-core      # Tests des Kerns
+cargo test -p registerwerk-core -p registerwerk-ocr  # Tests des Kerns und der OCR
 npm run tauri build                  # fertige Anwendung bauen
 cargo run --release -p pdf_pruefen -- --still <Ordner>       # PDFs prüfen
 cargo run --release -p pdf_pruefen -- --vorschau 150 <Ordner> # Tempotest Vorschauen
+cargo run --release -p pdf_pruefen -- --ocr 100 <Ordner>     # Messung der OCR
 ```
 
 PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.

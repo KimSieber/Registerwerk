@@ -2369,9 +2369,10 @@ dependencies = [
 
 [[package]]
 name = "pdf_pruefen"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "registerwerk-core",
+ "registerwerk-ocr",
 ]
 
 [[package]]
@@ -2758,7 +2759,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "registerwerk"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "registerwerk-core",
  "serde",
@@ -2768,10 +2769,11 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "libavif-sys",
  "pdfium-render",
+ "registerwerk-ocr",
  "rusqlite",
  "serde",
  "tempfile",
@@ -2779,6 +2781,13 @@ dependencies = [
  "toml 0.8.23",
  "unicode-normalization",
  "walkdir",
+]
+
+[[package]]
+name = "registerwerk-ocr"
+version = "0.0.4"
+dependencies = [
+ "cmake",
 ]
 
 [[package]]

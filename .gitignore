@@ -16,7 +16,7 @@ config.local*
 /inventur/
 /inventur_ergebnis/
 
-# --- Fremdbibliotheken, per Skript geladen (tools/pdfium_holen.sh) ---
+# --- Fremdbibliotheken, per Skript geladen (tools/pdfium_holen.sh, tools/tesseract_holen.sh) ---
 /bibliotheken/
 
 # --- Webseite (Konvention in allen Repos) ---

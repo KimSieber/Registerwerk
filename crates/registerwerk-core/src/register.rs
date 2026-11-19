@@ -10,6 +10,8 @@
 //!   Dokumentdatum für jede Datei
 //! - 3 (v0.0.3): Tabellen `scheibe`, `vorschau` und `vorschau_weg`, Stand der
 //!   Vorschauen in `datei`
+//! - 4 (v0.0.4): Tabelle `ocr` mit dem erkannten Text, Stand der OCR in
+//!   `datei`, Sicht `seite_text` mit dem gültigen Text je Seite
 //!
 //! Die Vorschauen selbst liegen nicht in dieser Datei, sondern in Scheiben
 //! (`vorschau-0001.db`, …) im selben Ordner, je etwa [`SCHEIBE_GRENZE`] groß.
@@ -30,7 +32,7 @@ use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
 /// Konzept: 1 bis 2 GB. **Annahme**
@@ -152,6 +154,7 @@ pub struct RegisterStand {
     pub datum_geaendert: u64,
     pub inhalt: InhaltStand,
     pub vorschau: crate::scheiben::VorschauStand,
+    pub ocr: crate::ocr::OcrStand,
     pub typen: Vec<TypZeile>,
     pub jahre: Vec<JahrZeile>,
     pub letzter_lauf: Option<LetzterLauf>,
@@ -241,6 +244,9 @@ impl Register {
         if version < 3 {
             Self::migration_3(&tx)?;
         }
+        if version < 4 {
+            Self::migration_4(&tx)?;
+        }
         tx.commit()?;
         Ok(Self { db, pfad, scheiben: RefCell::default(), scheibe_grenze: SCHEIBE_GRENZE })
     }
@@ -327,6 +333,47 @@ impl Register {
                  WHERE nr = old.scheibe;
              END;
              PRAGMA user_version = 3;",
+        )?;
+        Ok(())
+    }
+
+    /// Schema 4: erkannter Text je Seite und gültiger Text.
+    fn migration_4(db: &Connection) -> Ergebnis<()> {
+        db.execute_batch(
+            "-- Stand des gelesenen Inhalts, zu dem die OCR lief
+             ALTER TABLE datei ADD COLUMN ocr_geaendert INTEGER;
+             ALTER TABLE datei ADD COLUMN ocr_groesse   INTEGER;
+             ALTER TABLE datei ADD COLUMN ocr_verfahren INTEGER;
+             ALTER TABLE datei ADD COLUMN ocr_fehler    TEXT;
+             -- Erkannter Text je Seite. Nur für Seiten ohne oder mit schwachem
+             -- eingebettetem Text. Der eingebettete Text bleibt in `seite`.
+             CREATE TABLE ocr (
+                 datei        INTEGER NOT NULL REFERENCES datei(id) ON DELETE CASCADE,
+                 nr           INTEGER NOT NULL,
+                 -- ohne_text, scan_schwach, digital_schwach
+                 fall         TEXT NOT NULL,
+                 text         TEXT NOT NULL,
+                 zeichen      INTEGER NOT NULL,
+                 tokens       INTEGER NOT NULL,
+                 wortartig    INTEGER NOT NULL,
+                 -- mittlere Sicherheit laut Tesseract, 0 bis 100
+                 konfidenz    INTEGER NOT NULL,
+                 dauer_ms     INTEGER NOT NULL,
+                 -- 1: gilt statt des eingebetteten Textes
+                 uebernommen  INTEGER NOT NULL,
+                 PRIMARY KEY (datei, nr)
+             ) WITHOUT ROWID;
+             -- Gültiger Text je Seite: erkannt, wo übernommen, sonst eingebettet.
+             -- Grundlage für die Suche.
+             CREATE VIEW seite_text AS
+                 SELECT s.datei, s.nr,
+                        CASE WHEN o.uebernommen THEN o.text      ELSE s.text      END AS text,
+                        CASE WHEN o.uebernommen THEN o.zeichen   ELSE s.zeichen   END AS zeichen,
+                        CASE WHEN o.uebernommen THEN o.tokens    ELSE s.tokens    END AS tokens,
+                        CASE WHEN o.uebernommen THEN o.wortartig ELSE s.wortartig END AS wortartig,
+                        CASE WHEN o.uebernommen THEN 'ocr'       ELSE 'pdf'       END AS quelle
+                 FROM seite s LEFT JOIN ocr o ON o.datei = s.datei AND o.nr = s.nr;
+             PRAGMA user_version = 4;",
         )?;
         Ok(())
     }
@@ -449,6 +496,7 @@ impl Register {
             )?;
         let inhalt = self.inhalt_stand()?;
         let vorschau = self.vorschau_stand()?;
+        let ocr = self.ocr_stand()?;
 
         let typen = self
             .db
@@ -505,6 +553,7 @@ impl Register {
             datum_geaendert,
             inhalt,
             vorschau,
+            ocr,
             typen,
             jahre,
             letzter_lauf,
@@ -543,6 +592,13 @@ impl Register {
     ) -> Ergebnis<()> {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM seite WHERE datei = ?1", [id])?;
+        // Die Erkennung gehört zum alten Inhalt
+        tx.execute("DELETE FROM ocr WHERE datei = ?1", [id])?;
+        tx.execute(
+            "UPDATE datei SET ocr_geaendert = NULL, ocr_groesse = NULL, ocr_verfahren = NULL, ocr_fehler = NULL
+             WHERE id = ?1",
+            [id],
+        )?;
         let (seiten, erstellt, fehler) = match inhalt {
             Ok(inhalt) => {
                 let mut einfuegen = tx.prepare(
@@ -770,6 +826,7 @@ mod tests {
         assert_eq!((s.dateien, s.mit_datum, s.datum_geaendert), (2, 1, 1));
         assert_eq!((s.inhalt.pdfs, s.inhalt.ausstehend), (2, 2));
         assert_eq!((s.vorschau.pdfs, s.vorschau.ausstehend), (2, 2));
+        assert_eq!(s.ocr.pdfs, 0);
         let datum: String = r.db.query_row("SELECT datum_dokument FROM datei WHERE id = 2", [], |z| z.get(0)).unwrap();
         assert_eq!(datum, "2026-11-16");
     }

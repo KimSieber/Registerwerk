@@ -281,13 +281,18 @@ impl Register {
 
     /// Dateien mit Vorschauen, deren Pfad alle Wörter von `muster` enthält.
     /// Nur zum Prüfen der Vorschauen, die eigentliche Suche folgt in Stufe 2.
-    pub fn dateien_mit_vorschau(&self, muster: &str, max: u32) -> Ergebnis<Vec<DateiVorschau>> {
+    ///
+    /// `nur_ocr`: nur Dateien mit erkanntem Text (OCR), zum Prüfen der Erkennung.
+    pub fn dateien_mit_vorschau(&self, muster: &str, nur_ocr: bool, max: u32) -> Ergebnis<Vec<DateiVorschau>> {
         let woerter: Vec<String> = muster.split_whitespace().map(|w| format!("%{}%", w.replace(['%', '_'], ""))).collect();
         let mut sql = String::from(
             "SELECT d.id FROM datei d WHERE EXISTS (SELECT 1 FROM vorschau v WHERE v.datei = d.id)",
         );
         for i in 0..woerter.len() {
             sql.push_str(&format!(" AND d.pfad LIKE ?{}", i + 1));
+        }
+        if nur_ocr {
+            sql.push_str(" AND EXISTS (SELECT 1 FROM ocr o WHERE o.datei = d.id)");
         }
         sql.push_str(&format!(" ORDER BY d.datum_dokument DESC, d.pfad LIMIT {max}"));
         let ids = self
@@ -401,8 +406,9 @@ mod tests {
 
         let d = r.datei_vorschau(a).unwrap().unwrap();
         assert_eq!(d.seiten.iter().map(|s| s.nr).collect::<Vec<_>>(), vec![1, 2]);
-        assert_eq!(r.dateien_mit_vorschau("a.p", 10).unwrap().len(), 1);
-        assert_eq!(r.dateien_mit_vorschau("", 10).unwrap().len(), 1);
+        assert_eq!(r.dateien_mit_vorschau("a.p", false, 10).unwrap().len(), 1);
+        assert_eq!(r.dateien_mit_vorschau("", false, 10).unwrap().len(), 1);
+        assert_eq!(r.dateien_mit_vorschau("", true, 10).unwrap().len(), 0);
     }
 
     #[test]

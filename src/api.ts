@@ -10,6 +10,8 @@ export interface AppInfo {
   verzeichnisse: string[];
   register_ordner: string | null;
   pdfium_ordner: string | null;
+  tessdata_ordner: string | null;
+  tesseract_version: string;
 }
 
 export interface LaufErgebnis {
@@ -140,6 +142,63 @@ export interface DateiVorschau {
   seiten: VorschauSeite[];
 }
 
+export type Fall = "ohne_text" | "scan_schwach" | "digital_schwach";
+
+export interface OcrStand {
+  pdfs: number;
+  erledigt: number;
+  ausstehend: number;
+  ausstehend_online: number;
+  fehler: number;
+  seiten_ohne_text: number;
+  seiten_scan_schwach: number;
+  seiten_digital_schwach: number;
+  seiten_erkannt: number;
+  seiten_uebernommen: number;
+  erkenn_ms: number;
+  nachher_ohne_text: number;
+  nachher_schwach: number;
+  fehler_liste: FehlerZeile[];
+}
+
+export interface OcrMessung {
+  faeden: number;
+  render_ms: number;
+  render_wartet_ms: number;
+  erkenn_ms: number;
+  erkenn_leer_ms: number;
+  schreib_ms: number;
+  pixel: number;
+}
+
+export interface OcrErgebnis {
+  dauer_ms: number;
+  ausstehend: number;
+  erkannt: number;
+  seiten: number;
+  uebernommen: number;
+  fehler: number;
+  nur_online: number;
+  veraendert: number;
+  abgebrochen: boolean;
+  messung: OcrMessung;
+}
+
+export interface SeitenText {
+  nr: number;
+  pdf_text: string;
+  pdf_guete: number | null;
+  pdf_zeichen: number;
+  bildanteil: number;
+  fall: Fall | null;
+  ocr_text: string | null;
+  ocr_guete: number | null;
+  ocr_zeichen: number | null;
+  ocr_konfidenz: number | null;
+  ocr_ms: number | null;
+  uebernommen: boolean;
+}
+
 export interface RegisterStand {
   dateien: number;
   bytes: number;
@@ -150,6 +209,7 @@ export interface RegisterStand {
   datum_geaendert: number;
   inhalt: InhaltStand;
   vorschau: VorschauStand;
+  ocr: OcrStand;
   typen: TypZeile[];
   jahre: JahrZeile[];
   letzter_lauf: LetzterLauf | null;
@@ -173,7 +233,16 @@ export function vorschauenErzeugen(beiFortschritt: (f: Fortschritt) => void) {
   return invoke<VorschauErgebnis>("vorschauen_erzeugen", { kanal });
 }
 
-export const dateienMitVorschau = (muster: string) => invoke<DateiVorschau[]>("dateien_mit_vorschau", { muster });
+export function ocrAusfuehren(beiFortschritt: (f: Fortschritt) => void) {
+  const kanal = new Channel<Fortschritt>();
+  kanal.onmessage = beiFortschritt;
+  return invoke<OcrErgebnis>("ocr_ausfuehren", { kanal });
+}
+
+export const dateienMitVorschau = (muster: string, nurOcr: boolean) =>
+  invoke<DateiVorschau[]>("dateien_mit_vorschau", { muster, nurOcr });
+
+export const seitentexte = (datei: number) => invoke<SeitenText[]>("seitentexte", { datei });
 
 /** Adresse eines Vorschaubildes. Unter Windows bildet Tauri eigene Protokolle auf http ab. */
 export const vorschauUrl = (datei: number, seite: number) =>
