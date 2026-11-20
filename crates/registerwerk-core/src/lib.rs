@@ -5,8 +5,11 @@
 //! darüber. Der lesende Teil soll sich später für eine Web-Oberfläche
 //! wiederverwenden lassen (Konzept, Abschnitt 4).
 
+pub mod bild;
 pub mod dateibaum;
 pub mod datum;
+pub mod dokumente;
+pub mod formate;
 pub mod guete;
 pub mod inhalte;
 pub mod konfiguration;
@@ -14,6 +17,7 @@ pub mod ocr;
 pub mod pdf;
 pub mod register;
 pub mod scheiben;
+pub mod suche;
 pub mod vorschau;
 pub mod textebene;
 pub mod vorschauen;
@@ -27,6 +31,7 @@ pub use konfiguration::Konfiguration;
 pub use ocr::{OcrErgebnis, OcrStand, SeitenText};
 pub use register::{LaufErgebnis, Register, RegisterStand};
 pub use scheiben::{DateiVorschau, VorschauStand};
+pub use suche::{Anfrage, DateiDetails, SuchErgebnis, SucheAngaben, SucheAufbau, Treffer, Zaehler};
 pub use textebene::{TextebeneErgebnis, TextebeneStand};
 pub use vorschauen::{Messung, VorschauErgebnis};
 
@@ -63,7 +68,21 @@ pub fn inhalte_lesen(
     abbrechen: &AtomicBool,
 ) -> Ergebnis<InhaltErgebnis> {
     let pdfium = pdf::einbinden(pdfium_ordner)?;
-    inhalte::lesen(konfig, register, |pfad| pdf::lesen(pdfium, pfad), fortschritt, abbrechen)
+    inhalte::lesen(
+        konfig,
+        register,
+        |pfad| {
+            if formate::ist_dokument(pfad) {
+                dokumente::lesen(pfad)
+            } else if formate::ist_bild(pfad) {
+                Ok(bild::inhalt())
+            } else {
+                pdf::lesen(pdfium, pfad)
+            }
+        },
+        fortschritt,
+        abbrechen,
+    )
 }
 
 /// Erzeugt die Vorschauen aller ausstehenden PDFs mit PDFium aus
@@ -81,7 +100,18 @@ pub fn vorschauen_erzeugen(
     vorschauen::erzeugen(
         konfig,
         register,
-        |pfad, seite| vorschau::pdf_rendern_je_seite(pdfium, pfad, seite),
+        |pfad, seite| {
+            if formate::ist_bild(pfad) {
+                // Ein Bild ist eine Seite
+                let bild = bild::laden(pfad)?;
+                if !seite(bild) {
+                    return Err(vorschauen::ABGEBROCHEN.into());
+                }
+                Ok(1)
+            } else {
+                vorschau::pdf_rendern_je_seite(pdfium, pfad, seite)
+            }
+        },
         |bild| vorschau::erzeugen(bild, Some(1)),
         faeden,
         fortschritt,
@@ -111,7 +141,17 @@ pub fn ocr_ausfuehren(
     ocr::erkennen(
         konfig,
         register,
-        |pfad, nummern, seite| ocr::pdf_rendern(pdfium, pfad, nummern, seite),
+        |pfad, nummern, seite| {
+            if formate::ist_bild(pfad) {
+                // Ein Bild hat nur Seite 1, erkannt mit 300 dpi angenommen
+                if nummern.contains(&1) && !seite(1, bild::fuer_ocr(pfad)?, ocr::DPI) {
+                    return Err(vorschauen::ABGEBROCHEN.into());
+                }
+                Ok(())
+            } else {
+                ocr::pdf_rendern(pdfium, pfad, nummern, seite)
+            }
+        },
         || {
             let mut erkenner = registerwerk_ocr::Erkenner::neu(tessdata, ocr::SPRACHEN)?;
             Ok(Box::new(move |bild: &ocr::Graubild, dpi: u32| {

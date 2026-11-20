@@ -282,3 +282,84 @@ export const seitentexte = (datei: number) => invoke<SeitenText[]>("seitentexte"
 export const vorschauUrl = (datei: number, seite: number) =>
   (navigator.userAgent.includes("Windows") ? "http://vorschau.localhost" : "vorschau://localhost") +
   `/${datei}/${seite}`;
+
+// ---------- Suche (Stufe 2, v0.0.6) ----------
+
+export interface Anfrage {
+  text: string;
+  von: string | null;
+  bis: string | null;
+  endungen: string[];
+  ordner: string | null;
+  nach_datum: boolean;
+  max: number;
+}
+
+export interface Treffer {
+  datei: number;
+  pfad: string;
+  name: string;
+  endung: string;
+  datum: string | null;
+  seiten: number | null;
+  trefferseiten: number[];
+  beste_seite: number | null;
+  punkte: number;
+  im_namen: boolean;
+  unscharf: boolean;
+}
+
+export interface SuchErgebnis {
+  treffer: Treffer[];
+  gesamt: number;
+  woerter: string[];
+  uebergangen: string[];
+  aehnliche: [string, string[]][];
+  dauer_ms: number;
+}
+
+export interface Zaehler {
+  wert: string;
+  anzahl: number;
+}
+
+export interface SucheAngaben {
+  dateien: number;
+  ausstehend: number;
+  ordner: Zaehler[];
+  endungen: Zaehler[];
+  jahre: Zaehler[];
+}
+
+export interface DateiDetails {
+  id: number;
+  pfad: string;
+  name: string;
+  endung: string;
+  groesse: number | null;
+  geaendert: number;
+  nur_online: boolean;
+  datum: string | null;
+  datum_quelle: string | null;
+  seiten: number | null;
+  vorschau: VorschauSeite[];
+}
+
+export interface SucheAufbau {
+  dateien: number;
+  seiten: number;
+  dauer_ms: number;
+  abgebrochen: boolean;
+}
+
+export const suchen = (anfrage: Anfrage) => invoke<SuchErgebnis>("suchen", { anfrage });
+export const sucheAngaben = () => invoke<SucheAngaben>("suche_angaben");
+export const dateiDetails = (datei: number) => invoke<DateiDetails | null>("datei_details", { datei });
+export const originalOeffnen = (datei: number) => invoke<void>("original_oeffnen", { datei });
+export const imFinderZeigen = (datei: number) => invoke<void>("im_finder_zeigen", { datei });
+
+export function sucheAufbauen(beiFortschritt: (f: Fortschritt) => void) {
+  const kanal = new Channel<Fortschritt>();
+  kanal.onmessage = beiFortschritt;
+  return invoke<SucheAufbau>("suche_aufbauen", { kanal });
+}

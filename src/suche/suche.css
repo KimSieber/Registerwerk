@@ -1,0 +1,789 @@
+/* Suche (Stufe 2, v0.0.6): Aufbau und Bedienung wie Bilderwerk, Farben von Registerwerk. */
+
+:root {
+  --bg: var(--grund);
+  --leise: var(--text-leise);
+  --linie: var(--rand);
+  --bildgrund: #e9edf4;
+  --akzent-weich: rgba(197, 125, 12, 0.12);
+  --fehler: #c2412d;
+  --schatten: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 28px rgba(0, 0, 0, 0.07);
+  --radius: 12px;
+  --dauer: 420ms;
+  --kurve: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bildgrund: #222d44;
+    --akzent-weich: rgba(242, 169, 59, 0.14);
+    --fehler: #ff8a80;
+    --schatten: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.35);
+  }
+}
+
+/* ---------- Rahmen: Reiter oben, darunter Suche oder Register ---------- */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+.rahmen {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.reiter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--linie);
+  background: var(--flaeche);
+}
+
+.reiter__name {
+  font-weight: 650;
+  margin-right: 10px;
+}
+
+.rahmen__inhalt {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rahmen__seite {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Schaltflächen in der Suche ohne die Gestaltung der Register-Seite.
+   :where hält die Spezifität niedrig, Klassen gestalten weiter. */
+:where(.suchansicht, .reiter) button {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-weight: inherit;
+  cursor: default;
+  filter: none;
+}
+
+:where(.suchansicht) input,
+:where(.suchansicht) select {
+  font: inherit;
+  color: inherit;
+}
+
+.leise {
+  color: var(--leise);
+}
+
+/* ---------- Suche ---------- */
+
+.suchansicht {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.suche {
+  flex: none;
+  width: min(720px, calc(100% - 48px));
+  margin: 0 auto;
+  padding-top: calc(28vh - 38px);
+  transition: padding-top var(--dauer) var(--kurve), width var(--dauer) var(--kurve);
+}
+
+.suche--kompakt {
+  padding-top: 16px;
+  width: min(960px, calc(100% - 48px));
+}
+
+.suchfeld {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 8px 0 18px;
+  background: var(--flaeche);
+  border: 1px solid var(--linie);
+  border-radius: 26px;
+  box-shadow: var(--schatten);
+  transition: height var(--dauer) var(--kurve), border-color 150ms;
+}
+
+.suche--kompakt .suchfeld { height: 44px; }
+.suchfeld:focus-within { border-color: var(--akzent); }
+
+.suchfeld__lupe {
+  width: 20px; height: 20px; flex: none;
+  fill: none; stroke: var(--leise); stroke-width: 2; stroke-linecap: round;
+}
+
+.suchfeld input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 17px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.suchfeld input::placeholder { color: var(--leise); }
+
+.suchfeld__leeren {
+  flex: none;
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 13px;
+  background: var(--linie);
+  animation: einblenden 200ms var(--kurve);
+}
+
+.suchfeld__leeren svg {
+  width: 13px; height: 13px;
+  fill: none; stroke: var(--leise); stroke-width: 2.4; stroke-linecap: round;
+}
+
+.suchfeld__mehr {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 17px;
+  color: var(--leise);
+  transition: background 150ms, color 150ms;
+}
+
+.suchfeld__mehr:hover, .suchfeld__mehr.aktiv { background: var(--akzent-weich); color: var(--akzent); }
+
+.zaehler {
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px;
+  background: var(--akzent);
+  color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center;
+}
+
+.kriterien {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--dauer) var(--kurve), opacity 250ms;
+}
+
+.kriterien--offen { grid-template-rows: 1fr; opacity: 1; }
+
+.kriterien__innen {
+  overflow: hidden;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  padding: 0 18px;
+}
+
+.kriterien--offen .kriterien__innen {
+  padding: 16px 18px 4px;
+  overflow: visible; /* die Ordnerliste darf über den Rand hinausragen */
+}
+.kriterien--offen { overflow: visible; }
+
+.feld { display: flex; flex-direction: column; gap: 4px; flex: 1 1 150px; min-width: 0; }
+.feld--ordner { flex: 2 1 260px; position: relative; }
+.feld--dateityp { flex: 1 1 100%; }
+.feld--jahr { flex: 0 1 130px; }
+.feld--zeitraum { flex: 0 1 320px; }
+.zeitraum { display: flex; align-items: center; gap: 6px; }
+.zeitraum input { flex: 1; }
+.feld--typen { flex: 0 1 auto; }
+.feld > span { font-size: 12px; color: var(--leise); }
+
+.feld input,
+.feld select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--linie);
+  border-radius: 8px;
+  background: var(--flaeche);
+  outline: 0;
+}
+
+.feld input:focus, .feld select:focus { border-color: var(--akzent); }
+.feld input::placeholder { color: var(--leise); opacity: 0.6; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.chip {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--linie);
+  border-radius: 14px;
+  background: var(--flaeche);
+  font-size: 13px;
+  transition: all 150ms;
+}
+
+.chip:hover { border-color: var(--akzent); }
+.chip--aktiv { background: var(--akzent); border-color: var(--akzent); color: #fff; }
+.chip--klein { height: 24px; padding: 0 9px; font-size: 12.5px; border-radius: 12px; }
+.chip__anzahl { margin-left: 6px; font-size: 11.5px; font-variant-numeric: tabular-nums; opacity: 0.55; }
+.chip--aktiv .chip__anzahl { opacity: 0.8; }
+
+.indexhinweis {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 14px auto 0;
+  font-size: 13px;
+  color: var(--leise);
+}
+
+/* ---------- Ergebnis ---------- */
+
+.arbeitsbereich {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  width: calc(100% - 32px);
+  margin: 18px auto 0;
+}
+
+.ergebnis {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  animation: einblenden var(--dauer) var(--kurve);
+}
+
+.ergebnis__kopf {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  row-gap: 6px;
+  column-gap: 12px;
+  width: min(960px, 100%);
+  margin: 0 auto;
+  padding: 0 6px 10px;
+  font-size: 13px;
+}
+
+.ergebnis__kopf > span:first-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ergebnis__werkzeuge { display: flex; align-items: center; gap: 14px; flex: none; }
+
+.regler { width: 110px; accent-color: var(--akzent); }
+
+.umschalter {
+  display: flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--linie);
+}
+
+.umschalter button {
+  width: 30px; height: 24px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 6px;
+  opacity: 0.55;
+}
+
+.umschalter button.aktiv { background: var(--flaeche); opacity: 1; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.umschalter svg { width: 15px; height: 15px; fill: none; stroke: var(--text); stroke-width: 1.8; stroke-linecap: round; }
+
+/* Reiter oben: Umschalter mit Text */
+.umschalter--text button { width: auto; padding: 0 14px; font-size: 13px; font-weight: 600; }
+
+.umschalter__einzeln {
+  width: 30px; height: 26px;
+  display: grid; place-items: center;
+  border-radius: 7px;
+  background: var(--linie);
+  opacity: 0.6;
+}
+.umschalter__einzeln.aktiv { opacity: 1; background: var(--akzent-weich); }
+.umschalter__einzeln svg { width: 15px; height: 15px; fill: none; stroke: var(--text); stroke-width: 1.8; }
+.umschalter__einzeln.aktiv svg { stroke: var(--akzent); }
+
+.raster-scroller, .liste-scroller { flex: 1; min-height: 0; }
+
+/* ---------- Raster ---------- */
+
+.raster {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--kachel, 160px), 1fr));
+  gap: 14px;
+  padding: 6px 6px 28px;
+}
+
+.kachel {
+  min-width: 0;
+  padding: 6px;
+  border-radius: 14px;
+  transition: background 150ms;
+}
+
+.kachel:hover { background: var(--akzent-weich); }
+
+.kachel__bild {
+  position: relative;
+  aspect-ratio: 3 / 4; /* Dokumente sind meist hochkant */
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--bildgrund);
+  transition: box-shadow 150ms;
+}
+
+.kachel--aktiv .kachel__bild { box-shadow: 0 0 0 3px var(--akzent); }
+.kachel--aktiv { background: var(--akzent-weich); }
+
+.kachel__titel {
+  margin-top: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.kachel__datum {
+  font-size: 11.5px;
+  color: var(--leise);
+  font-variant-numeric: tabular-nums;
+  min-height: 1.45em;
+}
+
+/* ---------- Vorschaubild ---------- */
+
+.vorschau__bild {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transform: scale(1.015);
+  transition: opacity 320ms ease, transform 420ms var(--kurve);
+}
+
+.vorschau__bild.geladen { opacity: 1; transform: none; }
+
+.vorschau__symbol {
+  position: absolute; inset: 0;
+  display: grid; place-items: center; align-content: center; gap: 4px;
+  color: var(--leise);
+}
+
+.vorschau__symbol svg {
+  width: 34%; max-width: 46px; min-width: 18px;
+  fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+}
+
+.vorschau__typ { font-size: 10px; letter-spacing: 0.05em; }
+.zeile__vorschau .vorschau__typ { display: none; }
+
+/* ---------- Liste ---------- */
+
+.zeile {
+  display: grid;
+  grid-template-columns: 34px minmax(180px, 1.3fr) 1.5fr 90px 40px;
+  gap: 16px;
+  align-items: center;
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  padding: 4px 12px 4px 6px;
+  border-radius: 8px;
+}
+
+.zeile:hover { background: var(--akzent-weich); }
+.zeile--aktiv, .zeile--aktiv:hover { background: var(--akzent); color: #fff; }
+.zeile--aktiv .leise { color: rgba(255, 255, 255, 0.8); }
+.zeile > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.zeile__vorschau {
+  position: relative;
+  width: 34px; height: 44px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bildgrund);
+}
+
+.zeile__titel { font-weight: 500; }
+.zeile__ablage { font-size: 13px; }
+.zeile__datum { font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.zeile__typ { font-size: 11px; letter-spacing: 0.04em; text-align: right; opacity: 0.6; }
+
+.hinweis {
+  margin: 40px auto 0;
+  color: var(--leise);
+  animation: einblenden var(--dauer) var(--kurve);
+}
+
+.hinweis--fehler { color: var(--fehler); }
+
+@keyframes einblenden {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Knöpfe ---------- */
+
+.knopf {
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--linie);
+  border-radius: 8px;
+  background: var(--flaeche);
+}
+.knopf:hover:not(:disabled) { border-color: var(--akzent); }
+.knopf--klein { height: 26px; padding: 0 10px; font-size: 12px; border-radius: 7px; display: inline-flex; align-items: center; }
+.knopf:disabled { opacity: 0.4; }
+
+/* ---------- Detailbereich ---------- */
+
+.detail {
+  flex: 0 0 420px;
+  min-height: 0;
+  overflow-y: auto;
+  margin-bottom: 16px;
+  padding: 14px;
+  background: var(--flaeche);
+  border: 1px solid var(--linie);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  user-select: text;
+  -webkit-user-select: text;
+  animation: einblenden var(--dauer) var(--kurve);
+}
+
+.detail__bild {
+  position: relative;
+  flex: none;
+  aspect-ratio: 3 / 4;
+  max-height: 64vh;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bildgrund);
+  cursor: zoom-in;
+}
+
+.detail__seiten {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--leise);
+  font-variant-numeric: tabular-nums;
+}
+
+.detail__marke {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--akzent-weich);
+  color: var(--akzent);
+}
+
+.detail__knoepfe { display: flex; flex-wrap: wrap; gap: 6px; }
+.detail__meldung { font-size: 12px; color: var(--leise); word-break: break-word; }
+.detail__meldung--fehler { color: var(--fehler); }
+.detail__titel { margin: 2px 0 0; font-size: 15px; font-weight: 600; word-break: break-word; }
+
+.detail__gruppe { border-top: 1px solid var(--linie); padding-top: 8px; }
+.detail__gruppe h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--leise);
+}
+
+.detail__liste { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; }
+.detail__zeile { display: contents; }
+.detail__zeile dt { color: var(--leise); }
+.detail__zeile dd { margin: 0; word-break: break-word; }
+
+.detail__chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.detail__chip {
+  min-width: 26px;
+  padding: 1px 8px;
+  border: 1px solid var(--linie);
+  border-radius: 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.detail__chip:hover { border-color: var(--akzent); }
+.detail__chip--aktiv { background: var(--akzent); border-color: var(--akzent); color: #fff; }
+
+.detail__fuss {
+  margin-top: auto;
+  padding-top: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--leise);
+}
+
+/* ---------- Schieber zwischen Ergebnis und Details ---------- */
+
+.teiler {
+  flex: 0 0 14px;
+  margin-bottom: 16px;
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+}
+.teiler::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 150ms;
+}
+.teiler:hover::after, body.zieht .teiler::after { background: var(--akzent); }
+body.zieht { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+
+/* ---------- Großansicht über dem ganzen Fenster ---------- */
+
+.grossansicht {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 24px 14px;
+  background: rgba(14, 14, 15, 0.98);
+  color: #ececee;
+  animation: einblenden 200ms var(--kurve);
+  cursor: zoom-out;
+}
+.grossansicht__kopf {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 4px 10px;
+  font-size: 14px;
+  cursor: default;
+}
+.grossansicht__titel { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grossansicht__position { color: #8d8d93; font-variant-numeric: tabular-nums; }
+.grossansicht__zu {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.grossansicht__zu:hover { background: rgba(255, 255, 255, 0.18); }
+.grossansicht__zu svg { width: 15px; height: 15px; fill: none; stroke: #ececee; stroke-width: 2; stroke-linecap: round; }
+.grossansicht__bild { position: relative; flex: 1; min-height: 0; }
+.grossansicht__fuss {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 4px 0;
+  font-size: 12px;
+  color: #8d8d93;
+}
+.grossansicht__fuss span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Gespeicherter Text im Detailbereich */
+.detail__gruppe summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--leise);
+}
+.detail__text {
+  margin: 6px 0 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- Seite mit Vergrößerung (Detailbereich, Großansicht) ---------- */
+
+.seitenbild {
+  position: absolute;
+  inset: 0;
+}
+.seitenbild__rahmen {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.seitenbild__rahmen--zoom {
+  overflow: auto;
+  cursor: grab;
+  display: grid;
+}
+.seitenbild__rahmen--zoom:active { cursor: grabbing; }
+.seitenbild__bild {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.seitenbild__rahmen--zoom .seitenbild__bild {
+  position: static;
+  max-width: none;
+  margin: auto; /* kleiner als der Rahmen: mittig */
+  object-fit: fill;
+}
+.seitenbild__zoom {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--flaeche);
+  border: 1px solid var(--linie);
+  opacity: 0;
+  transition: opacity 150ms;
+  font-size: 12px;
+}
+.seitenbild:hover .seitenbild__zoom,
+.seitenbild__rahmen--zoom + .seitenbild__zoom { opacity: 1; }
+.seitenbild__zoom button {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.seitenbild__zoom button:hover { background: var(--akzent-weich); }
+.seitenbild--dunkel .seitenbild__zoom { background: rgba(40, 40, 44, 0.9); border-color: rgba(255, 255, 255, 0.12); color: #ececee; }
+.grossansicht__bild .seitenbild { cursor: default; }
+
+/* Dateityp-Gruppen mit aufklappbaren einzelnen Endungen */
+.chipgruppe { display: inline-flex; }
+.chip--links { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.chip--rechts {
+  width: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  margin-left: -1px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.chip--rechts svg {
+  width: 13px; height: 13px;
+  fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transition: transform 200ms var(--kurve);
+}
+.chip--offen svg { transform: rotate(180deg); }
+.chip--offen { border-color: var(--akzent); }
+.chip--teil { border-color: var(--akzent); color: var(--akzent); }
+.chips--einzeln {
+  margin-top: 6px;
+  padding: 6px;
+  border-radius: 10px;
+  background: var(--akzent-weich);
+}
+
+.umschalter--klein button { height: 24px; padding: 0 10px; font-size: 12px; }
+
+/* ---------- Ordnerwahl als aufklappbarer Baum ---------- */
+
+.ordner { position: relative; }
+.ordner__feld {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--linie);
+  border-radius: 8px;
+  background: var(--flaeche);
+  text-align: left;
+}
+.ordner__feld:hover, .ordner__feld--offen { border-color: var(--akzent); }
+.ordner__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ordner__feld svg { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--leise); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ordner__liste {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--flaeche);
+  border: 1px solid var(--linie);
+  border-radius: 10px;
+  box-shadow: var(--schatten);
+  animation: einblenden 150ms var(--kurve);
+}
+.ordner__zeile {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding-right: 8px;
+  border-radius: 6px;
+}
+.ordner__zeile:hover { background: var(--akzent-weich); }
+.ordner__zeile--aktiv .ordner__name { color: var(--akzent); font-weight: 600; }
+.ordner__pfeil {
+  width: 20px; height: 20px;
+  flex: none;
+  display: grid; place-items: center;
+  border-radius: 4px;
+}
+.ordner__pfeil svg {
+  width: 13px; height: 13px;
+  fill: none; stroke: var(--leise); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transition: transform 150ms var(--kurve);
+}
+.ordner__pfeil--auf svg { transform: rotate(90deg); }
+.ordner__name { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ordner__anzahl { font-size: 11.5px; color: var(--leise); font-variant-numeric: tabular-nums; }
+
+.seitenbild__rahmen--klick { cursor: zoom-in; }
+.detail__bild, .grossansicht__bild .seitenbild { cursor: default; }

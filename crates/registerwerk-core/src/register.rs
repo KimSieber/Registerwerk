@@ -14,6 +14,8 @@
 //!   `datei`, Sicht `seite_text` mit dem gültigen Text je Seite
 //! - 5 (v0.0.5): Lage der Wörter in `ocr`, Stand der Textebene in `ocr` und
 //!   `datei`
+//! - 6 (v0.0.6): Suchindex (`suche.rs`), Stand der Suche in `datei`
+//! - 7 (v0.0.6): ohne Index über den Text mit Leerraum
 //!
 //! Die Vorschauen selbst liegen nicht in dieser Datei, sondern in Scheiben
 //! (`vorschau-0001.db`, …) im selben Ordner, je etwa [`SCHEIBE_GRENZE`] groß.
@@ -34,7 +36,7 @@ use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
 /// Konzept: 1 bis 2 GB. **Annahme**
@@ -43,9 +45,11 @@ pub const SCHEIBE_GRENZE: u64 = 1_500_000_000;
 /// Version des Verfahrens, mit dem Vorschauen erzeugt werden. Erhöhen, wenn
 /// sich Auflösung, Format, Qualität oder Farberkennung ändern. Dann werden
 /// alle Vorschauen neu erzeugt.
-pub const VORSCHAU_VERFAHREN: i64 = 2;
+pub const VORSCHAU_VERFAHREN: i64 = 3;
 // 1: ravif (rav1e) Stufe 8, Qualität 25, 4:4:4
 // 2: libavif mit libaom Stufe 8, Qualität 25, Farbe 4:2:0, Graustufen 4:0:0
+// 3: kurze Kante 1024 px statt fester Maßstab bezogen auf A4, lange Kante
+//    höchstens 3072 px (v0.0.6)
 
 /// Version des Verfahrens, mit dem Inhalte gelesen werden. Wird sie erhöht,
 /// gelten alle bisher gelesenen PDFs als ausstehend und werden neu gelesen.
@@ -61,6 +65,8 @@ pub struct Register {
     /// Geöffnete Scheiben, nach Nummer. Ohne Ordner (Tests) im Arbeitsspeicher.
     pub(crate) scheiben: RefCell<HashMap<i64, Connection>>,
     pub(crate) scheibe_grenze: u64,
+    /// Wortliste der unscharfen Suche, beim ersten Gebrauch aufgebaut.
+    pub(crate) wortliste: RefCell<Option<std::sync::Arc<fst::Map<Vec<u8>>>>>,
 }
 
 /// Ergebnis eines Abgleichs zwischen Dateibaum und Register.
@@ -204,6 +210,7 @@ impl Register {
     fn einrichten(mut db: Connection, pfad: Option<PathBuf>) -> Ergebnis<Self> {
         wal_einschalten(&db)?;
         db.pragma_update(None, "foreign_keys", "ON")?;
+        rusqlite::vtab::array::load_module(&db)?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |z| z.get(0))?;
         if version > SCHEMA_VERSION {
@@ -256,8 +263,14 @@ impl Register {
         if version < 5 {
             Self::migration_5(&tx)?;
         }
+        if version < 6 {
+            crate::suche::migration_6(&tx)?;
+        }
+        if version < 7 {
+            crate::suche::migration_7(&tx)?;
+        }
         tx.commit()?;
-        Ok(Self { db, pfad, scheiben: RefCell::default(), scheibe_grenze: SCHEIBE_GRENZE })
+        Ok(Self { db, pfad, scheiben: RefCell::default(), scheibe_grenze: SCHEIBE_GRENZE, wortliste: RefCell::default() })
     }
 
     /// Schema 2: Text je Seite, Verarbeitungsstand, Dokumentdatum für jede Datei.
@@ -590,13 +603,13 @@ impl Register {
         })
     }
 
-    /// Bedingung für PDFs, deren Inhalt (neu) gelesen werden muss.
-    const AUSSTEHEND: &'static str = "endung = 'pdf' AND (
+    /// Bedingung für lesbare Dateien (`formate.rs`), deren Inhalt (neu) gelesen werden muss.
+    const AUSSTEHEND: &'static str = concat!("endung IN ", crate::lesbar_sql!(), " AND (
             inhalt_verfahren IS NULL OR inhalt_verfahren < ?1
             OR inhalt_geaendert IS NOT geaendert
-            OR (groesse IS NOT NULL AND inhalt_groesse IS NOT groesse))";
+            OR (groesse IS NOT NULL AND inhalt_groesse IS NOT groesse))");
 
-    /// PDFs, deren Inhalt noch nicht oder nicht zum aktuellen Stand gelesen ist.
+    /// Lesbare Dateien (PDF, Office, Text), deren Inhalt noch nicht oder nicht zum aktuellen Stand gelesen ist.
     pub fn ausstehend(&self) -> Ergebnis<Vec<Ausstehend>> {
         let sql = format!("SELECT id, pfad, nur_online FROM datei WHERE {} ORDER BY pfad", Self::AUSSTEHEND);
         let liste = self
@@ -670,14 +683,36 @@ impl Register {
         Ok(())
     }
 
+    /// Nur für Werkzeuge wie `pdf_pruefen`: führt SQL auf dem Register aus.
+    pub fn sql_ausfuehren(&self, sql: &str) -> Ergebnis<()> {
+        self.db.execute_batch(sql)?;
+        Ok(())
+    }
+
+    /// Nur für Werkzeuge: eine Zahl aus der ersten Spalte der ersten Zeile.
+    pub fn sql_zahl(&self, sql: &str) -> Ergebnis<i64> {
+        Ok(self.db.query_row(sql, [], |z| z.get::<_, Option<i64>>(0))?.unwrap_or(0))
+    }
+
+    /// Nur für Werkzeuge: Zeilen aus Text und Zahl.
+    pub fn sql_liste(&self, sql: &str) -> Ergebnis<Vec<(String, i64)>> {
+        let liste = self
+            .db
+            .prepare(sql)?
+            .query_map([], |z| Ok((z.get(0)?, z.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(liste)
+    }
+
     fn inhalt_stand(&self) -> Ergebnis<InhaltStand> {
         let zahl = |z: &rusqlite::Row, i: usize| -> rusqlite::Result<u64> { Ok(z.get::<_, Option<i64>>(i)?.unwrap_or(0) as u64) };
         let mut s = InhaltStand::default();
         let sql = format!(
             "SELECT count(*), sum(NOT ({a})), sum({a}), sum(({a}) AND nur_online),
                     sum(NOT ({a}) AND inhalt_fehler IS NOT NULL)
-             FROM datei WHERE endung = 'pdf'",
-            a = Self::AUSSTEHEND
+             FROM datei WHERE endung IN {l}",
+            a = Self::AUSSTEHEND,
+            l = crate::lesbar_sql!()
         );
         (s.pdfs, s.gelesen, s.ausstehend, s.ausstehend_online, s.fehler) =
             self.db.query_row(&sql, [INHALT_VERFAHREN], |z| {

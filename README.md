@@ -9,12 +9,13 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** v0.0.5 (November 2026). Der Dateibaum der konfigurierten
-Verzeichnisse, der Text jeder PDF-Seite und eine Vorschau jeder Seite werden
-ins Register eingelesen. Seiten ohne Text werden per OCR erkannt, in Scans
-kommt der erkannte Text als unsichtbare Textebene in die PDF. Die Suche
-folgt. Die Umsetzung läuft als Pilot auf
-einem kleinen Teil des Archivs.
+**Stand:** v0.0.6 (November 2026). Der Dateibaum der konfigurierten
+Verzeichnisse, der Text jeder PDF-Seite, der Text von Office-, Pages- und
+Textdateien und eine Vorschau jeder PDF-Seite und jedes Bildes werden ins
+Register eingelesen. Seiten ohne Text und Bilder werden per OCR erkannt, in
+Scans kommt der erkannte Text als unsichtbare Textebene in die PDF. Die Suche
+ist fehlertolerant, mit Filtern nach Ordner, Datum und Dateityp. Die Umsetzung
+läuft als Pilot auf einem kleinen Teil des Archivs.
 
 ## Warum
 
@@ -76,10 +77,12 @@ der Datenbank.
 
 - **Anwendung:** Tauri (Rust) mit Web-Oberfläche, lauffähig auf macOS, Windows
   und Linux
-- **Register:** SQLite mit Volltextindex, verschlüsselt
+- **Register:** SQLite, Suchindex mit FTS5 und Trigrammen, verschlüsselt (ab Stufe 3)
 - **PDF:** PDFium für Text und Rendering
 - **OCR:** Tesseract, nur für Seiten ohne Text
-- **Vorschau:** jede Seite in 1024 px bezogen auf A4, AVIF mit Qualität 25,
+- **Weitere Formate:** Text aus Word, Excel, PowerPoint, OpenDocument, Pages,
+  Keynote, txt und md ohne fremdes Programm. Bilder bekommen Vorschau und OCR
+- **Vorschau:** jede Seite mit 1024 px an der kurzen Kante, AVIF mit Qualität 25,
   kodiert mit libavif und libaom, abgelegt in Vorschau-Scheiben (eigene
   SQLite-Dateien neben dem Register)
 
@@ -88,14 +91,19 @@ Alle Entscheidungen, Messwerte und offenen Punkte stehen im
 in der Entwicklungsdokumentation unter `docs/`:
 [v0.0.1](docs/v0.0.1%20Entwicklungsdokumentation.md),
 [v0.0.2](docs/v0.0.2%20Entwicklungsdokumentation.md),
-[v0.0.3](docs/v0.0.3%20Entwicklungsdokumentation.md).
+[v0.0.3](docs/v0.0.3%20Entwicklungsdokumentation.md),
+[v0.0.4](docs/v0.0.4%20Entwicklungsdokumentation.md),
+[v0.0.5](docs/v0.0.5%20Entwicklungsdokumentation.md),
+[v0.0.6](docs/v0.0.6%20Entwicklungsdokumentation.md).
 
 ## Aufbau des Repos
 
 ```
-crates/registerwerk-core/   Kern in Rust: Konfiguration, Dateibaum, PDFs, Vorschauen, Register
+crates/registerwerk-core/   Kern in Rust: Konfiguration, Dateibaum, PDFs, Office-Formate,
+                            Bilder, Vorschauen, OCR, Register, Suche
 src-tauri/                  Tauri-Hülle: Fenster und Befehle für die Oberfläche
-src/                        Oberfläche (React, TypeScript, Vite)
+src/                        Oberfläche (React, TypeScript, Vite): Rahmen, Register-Seite
+src/suche/                  Suchansicht (Aufbau wie Bilderwerk)
 config.beispiel.toml        Vorlage für die Konfiguration
 docs/                       Dokumentation, darin konzept.md
 docs/icons/                 App-Icon in allen Größen (PNG, SVG, ICNS, ICO)
@@ -105,7 +113,7 @@ tools/                      Hilfsskripte: Analyse der Konzeptphase (Python, nur
                             Laden von PDFium
 tools/pdf_pruefen/          Prüfwerkzeug: PDFs mit dem Kern lesen, ohne Register,
                             Tempotest der Vorschauen, Messung der OCR, Probe der
-                            Textebene
+                            Textebene, Messung der Suche an einer Registerkopie
 crates/registerwerk-ocr/    Tesseract, statisch aus dem Quelltext gebaut
 bibliotheken/               per Skript geladene Bibliotheken, nicht versioniert
 ```
@@ -134,6 +142,8 @@ cargo run --release -p pdf_pruefen -- --still <Ordner>       # PDFs prüfen
 cargo run --release -p pdf_pruefen -- --vorschau 150 <Ordner> # Tempotest Vorschauen
 cargo run --release -p pdf_pruefen -- --ocr 100 <Ordner>     # Messung der OCR
 cargo run --release -p pdf_pruefen -- --textebene 20 <Ordner> # Probe der Textebene, Kopien in target/
+cargo run --release -p pdf_pruefen -- --suche                # Messung der Suche an einer Registerkopie in target/
+cargo run --release -p pdf_pruefen -- --anfrage "Edeka Quittung"  # Suche in dieser Kopie
 ```
 
 PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.

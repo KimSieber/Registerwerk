@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 19.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.5). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 20.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.6). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -38,10 +38,11 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 
 - Indizieren aller Dateien der konfigurierten Verzeichnisse nach Behandlungsstufe
 - Volltext aller Seiten, nicht nur der ersten
-- Vorschau aller Seiten
+- Text aus Office-, OpenDocument-, Pages-, Keynote- und Textdateien (seit v0.0.6)
+- Vorschau aller Seiten, auch für einzelne Bilder im Archiv (seit v0.0.6)
 - Fehlertolerante Suche mit Gewichtung von Dateiname und Pfad
 - Öffnen des Originals aus dem Cloud-Ordner
-- OCR für Seiten ohne Text
+- OCR für Seiten ohne Text und für einzelne Bilder im Archiv
 - Anwendung mit eigener Oberfläche für Indizierung, Suche und Anzeige
 
 ### Nicht enthalten
@@ -136,7 +137,17 @@ Begründung für "Nur Metadaten" bei eBooks: Ihr Inhalt würde sonst bei fast je
 
 - **PDF** ist der Regelfall und wird vollständig verarbeitet.
 - **Nicht lesbare oder gepackte Formate** werden in jeder Stufe nur mit Metadaten erfasst. Archive werden nicht entpackt. Beispiele: zip, Notizbuch-Formate, Tracking-Dateien.
-- **Weitere Dokumenttypen** wie Word, Pages, Tabellen und einzelne Bilder im Archiv starten mit Metadaten. Ihre Textauslese ist eine spätere Ausbaustufe.
+- **Office, OpenDocument, Pages, Keynote und Text** werden seit v0.0.6 gelesen, ohne fremdes Programm. Vorschauen gibt es dafür nicht, sie bräuchten LibreOffice oder die Vorschau des Betriebssystems.
+
+  | Format | Seiten im Register |
+  |---|---|
+  | Word (docx, docm, dotx, dotm), OpenDocument (odt, ods, odp), Pages und Keynote ab 2013 | eine Seite mit dem ganzen Text |
+  | Excel (xlsx, xlsm, xltx, xltm) | eine Seite je Tabellenblatt |
+  | PowerPoint (pptx, pptm) | eine Seite je Folie |
+  | txt, md | eine Seite, UTF-8, sonst Latin-1 |
+
+- **Einzelne Bilder im Archiv** (jpg, jpeg, png, tif, tiff, bmp, gif, webp) bekommen seit v0.0.6 eine Vorschau und OCR. Der erkannte Text kommt nur ins Register. Meist sind es versehentlich als Bild gespeicherte Belege. Bildordner bleiben ausgeschlossen, sie deckt Bilderwerk ab.
+- **Nicht gelesen** werden doc, xls, ppt, Numbers, Pages vor 2013 und HEIC. Sie bleiben bei Name und Datum.
 
 ## 7. Verarbeitung von PDFs
 
@@ -196,16 +207,19 @@ Umgesetzt in v0.0.5:
 
 | Merkmal | Festlegung |
 |---|---|
-| Umfang | jede Seite jedes voll verarbeiteten Dokuments |
-| Auflösung | 1024 px Breite bezogen auf A4, das sind rund 124 dpi. Schmalere Seiten wie Kassenbelege werden im selben Maßstab gerendert |
+| Umfang | jede Seite jedes voll verarbeiteten PDFs, jedes einzelne Bild |
+| Auflösung | kurze Kante 1024 px, unabhängig von der Seitengröße in der PDF. A4 wird 1024 × 1448 px, das sind rund 124 dpi (seit v0.0.6) |
 | Format | AVIF, Qualität 25, kodiert mit libavif und libaom (Stufe 8) |
 | Farbe | farbige Seiten in 4:2:0, Seiten ohne sichtbare Farbe als echte Graustufen (4:0:0) |
 | Farberkennung | Ein Pixel gilt als farbig, wenn seine Farbkanäle um mehr als 48 auseinanderliegen. Eine Seite gilt als farbig ab 0,1 % farbiger Pixel. **Annahme**, im Pilot stichprobenartig bestätigt |
-| Übergrößen | längste Kante höchstens 2048 px, etwa bei Plänen. **Annahme** |
+| Lange Seiten | lange Kante höchstens 3072 px. Ein Kassenbon 1:6 wird 512 px breit. **Annahme** |
+| Bilder | gedreht nach den EXIF-Angaben, eingepasst wie Seiten, nie vergrößert |
 
 Begründung:
 
 - 640 px sind lesbar, aber leicht unscharf. Das ermüdet beim Suchen und Lesen.
+- Bis v0.0.5 galt ein fester Maßstab bezogen auf A4, schmale Seiten wurden schmaler. Die Seitengröße einer PDF ist aber nicht verlässlich: Im Pilot liegt ein A4-Scan mit 300 dpi auf einer Seite von 57 × 81 mm, er wurde 279 px breit und unlesbar. Kassenbons waren rund 280 px breit und unscharf. Seit v0.0.6 zählt deshalb die kurze Kante.
+- 640 px wurden am 19.11.2026 (v0.0.6) noch einmal an 10 Pilotseiten mit den Einstellungen der Anwendung geprüft: halber Speicher (rund 15 statt 30 KB je Seite, Archiv rund 20 statt 40 GB), aber normale Schrift kaum noch lesbar. Verworfen, es bleibt bei 1024 px.
 - 1600 px bringen nur beim extremen Vergrößern einen Unterschied.
 - AVIF Q25 war im direkten Vergleich mit WebP Q50 bei normaler Ansicht nicht zu unterscheiden, auch bei Farbseiten. Die Dateien sind gut ein Drittel so groß.
 - Kleine Vorschauen halten das Blättern flüssig, auch falls das Register später auf einem Netzlaufwerk oder im Web liegt.
@@ -213,7 +227,9 @@ Begründung:
 
 Die Vorschau ist eine abgeleitete Kopie. Ihre starke Kompression berührt die Originale nicht.
 
-Die Einstellungen entsprechen dem Vergleich der Konzeptphase, der ebenfalls libavif nutzte (über Pillow). Im Pilot (v0.0.3) ergaben sich 27,2 KB je Seite, genau der Wert aus der Stichprobe. Beim Durchsehen war kein Unterschied zum Original zu erkennen.
+Die Einstellungen entsprechen dem Vergleich der Konzeptphase, der ebenfalls libavif nutzte (über Pillow). Im Pilot (v0.0.3) ergaben sich 27,2 KB je Seite, genau der Wert aus der Stichprobe. Beim Durchsehen war kein Unterschied zum Original zu erkennen. Mit der Regel nach der kurzen Kante (v0.0.6) sind es 361 MB statt 295 MB, rund 32 KB je Seite. Der Zuwachs kommt aus den Belegen.
+
+In Detailbereich und Großansicht lässt sich die Vorschau von 25 bis 400 % vergrößern. Über 100 % wird sie weicher, für Kleingedrucktes bleibt das Original.
 
 ## 9. Datum eines Dokuments
 
@@ -279,27 +295,50 @@ Ein vollständiger Neuaufbau aus den Dateien ist jederzeit möglich. Im Pilot am
 
 ## 11. Suche und Anzeige
 
-- Fehlertolerante Volltextsuche, die Tippfehler und OCR-Fehler verkraftet
-- Dateiname und Pfad zählen stärker als der Inhalt. Vorbild ist das Verhalten der bisherigen Systemsuche.
-- Priorisierung nach dem Dokumentdatum aus Abschnitt 9
-- Deutsche Besonderheiten: Umlaute, zusammengesetzte Wörter
-- Trefferliste mit Vorschaubild, Seitenansicht zum Blättern, Öffnen des Originals
-- Einträge der Stufe "Nur Metadaten" erscheinen mit Pfad und Name
-- Oberfläche in Deutsch, hell und dunkel. **Annahme**
+Umgesetzt in v0.0.6 (Stufe 2). Einzelheiten in der Entwicklungsdokumentation v0.0.6.
 
-Gewichtung, Filter nach Ordner und Jahr und die Darstellung der Treffer werden am laufenden Piloten eingestellt.
+### Suchindex
+
+- SQLite FTS5 in der Index-Datenbank, ohne eigene Kopie des Textes. Er lässt sich jederzeit aus `seite` und `ocr` neu aufbauen.
+- Trigramme über Name und Ordner jeder Datei und über den gültigen Text je Seite **ohne Leerraum und Bindestriche**. So findet die Suche Teile von Wörtern („Bewässerung“ in „Bewässerungssystem“), zusammengesetzte Wörter und Wörter, die die OCR auseinandergerissen hat („Rech nung“). Groß- und Kleinschreibung und Akzente zählen nicht.
+- Eine Wortliste (Wörter je Seite, `fts5vocab`) für Tipp- und OCR-Fehler. Findet ein Suchwort weniger als 3 Dokumente, kommen ähnliche Wörter dazu (Abstand 1 bis 7 Zeichen, ab 8 Zeichen Abstand 2). **Annahme**
+- Der Index wird nach jedem Einlesen, jedem Lesen der Inhalte und jeder OCR nachgeführt. Auslöser im Register merken, welche Dateien neu indiziert werden müssen.
+
+### Treffer
+
+- Jedes Suchwort muss vorkommen, im Dateinamen, im Ordner oder auf einer Seite. Wörter unter 3 Zeichen werden übergangen.
+- Treffer je Dokument. Gewichtung: Dateiname 8, Ordner 3, Text 1. Steht ein Wort nur über eine Wortgrenze hinweg im Text, zählt es 0,7, über ein ähnliches Wort die Hälfte. **Annahme**
+- Sortierung nach Relevanz oder nach dem Dokumentdatum (Abschnitt 9), neueste zuerst.
+- Filter: Ordner samt Unterordnern, Jahr, Datum von–bis (ein unscharfes Datum wie „2019“ passt bei Überschneidung), Dateityp in Gruppen oder einzeln.
+- Ohne Suchwort, nur mit Filter, zeigt die Suche alle passenden Dokumente, neueste zuerst. Ordner geben oft das Thema vor, das im Dokument selbst nicht steht.
+
+### Anzeige
+
+Aufbau und Bedienung wie Bilderwerk:
+- Suchfeld, Suche beim Tippen.
+- Kriterien mit Ordnerbaum.
+- Raster oder Liste mit Vorschau.
+- Detailbereich mit Seiten, Angaben und gespeichertem Text.
+- Großansicht mit Vergrößern.
+- Original öffnen oder im Finder zeigen.
+- Kein Textausschnitt, keine Hervorhebung: Gesucht werden Dokumente im Ganzen.
+- Oberfläche in Deutsch, hell und dunkel nach System.
 
 ## 12. Technik
 
 | Bereich | Festlegung | Stand |
 |---|---|---|
 | Anwendung | Tauri 2 mit Rust, lauffähig auf macOS, Windows und Linux | entschieden, im Einsatz seit v0.0.1 |
-| Oberfläche | React mit TypeScript und Vite | entschieden, im Einsatz seit v0.0.1 |
+| Oberfläche | React mit TypeScript und Vite, Listen mit `react-virtuoso` | entschieden, im Einsatz seit v0.0.1 |
 | Aufbau | Kern als eigene Rust-Bibliothek ohne Oberfläche, die Tauri-Anwendung ist nur eine Hülle darüber | entschieden. Hält den lesenden Teil für eine Web-Oberfläche wiederverwendbar |
-| Datenbank | SQLite mit Volltextindex, verschlüsselt | entschieden. Bis Stufe 3 unverschlüsselt, der Wechsel auf die verschlüsselnde Variante ist eine Einstellung der Bibliothek |
+| Datenbank | SQLite, verschlüsselt | entschieden. Bis Stufe 3 unverschlüsselt, der Wechsel auf die verschlüsselnde Variante ist eine Einstellung der Bibliothek |
+| Suchindex | SQLite FTS5 mit Trigrammen im Register, Wortliste als Automat (`fst`) | entschieden, im Einsatz seit v0.0.6 |
+| Office, OpenDocument | `zip` und `quick-xml`, eigene Auslese | entschieden, im Einsatz seit v0.0.6 |
+| Pages, Keynote | eigener Leser für die Textspeicher der IWA-Archive, entpackt mit `snap` | entschieden, im Einsatz seit v0.0.6 |
+| Bilder | `image` (jpeg, png, tiff, bmp, gif, webp) | entschieden, im Einsatz seit v0.0.6 |
 | PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
 | OCR | Tesseract 5.5.2, Sprachen Deutsch und Englisch, Sprachdaten `tessdata`. Statisch aus dem Quelltext gebaut (mit Leptonica, über CMake), eigene schmale Anbindung an die C-Schnittstelle. Keine Installation auf dem Gerät | entschieden, im Einsatz seit v0.0.4 |
-| Vorschau | AVIF Q25, 1024 px bezogen auf A4. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3 |
+| Vorschau | AVIF Q25, kurze Kante 1024 px. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3, Größenregel seit v0.0.6 |
 | Zugangsdaten | lokaler Schlüsselbund des Betriebssystems, wie in Stellwerk | Annahme |
 
 Die Oberfläche muss AVIF auf allen Zielsystemen anzeigen. Die Bilder kommen über ein eigenes Protokoll (`vorschau://`) aus dem Register. Unter macOS geprüft in v0.0.3. Windows und Linux sind offen. Wo die eingebettete Browser-Komponente AVIF nicht kann, dekodiert der Rust-Teil das Bild und reicht es weiter.
@@ -344,7 +383,7 @@ Gemessen am 18.11.2026 auf dem Notebook beim Neuaufbau, Anwendung im Release-Mod
 | Rendern | 17 ms je Seite, ein Faden, zu 96 % ausgelastet. Der Engpass |
 | Kodieren | 65 ms je Seite und Faden, 8 Fäden zu 46 % ausgelastet |
 
-Hochgerechnet auf 1,5 Mio. Seiten: rund 8 Stunden und rund 40 GB. Mehrere Render-Prozesse könnten das Tempo noch einmal etwa verdoppeln. Das lohnt sich bei diesen Werten nicht.
+Hochgerechnet auf 1,5 Mio. Seiten (Schätzung bis v0.0.5): rund 8 Stunden und rund 40 GB. Für die rund 400.000 Seiten des neuen Mengengerüsts: gut 2 Stunden. Mehrere Render-Prozesse könnten das Tempo noch einmal etwa verdoppeln. Das lohnt sich bei diesen Werten nicht.
 
 ### OCR im Pilot (v0.0.4)
 
@@ -359,19 +398,35 @@ Gemessen am 18.11.2026 auf dem Notebook, Anwendung im Release-Modus:
 | Rendern mit 300 dpi | 58 ms je Seite, ein Faden |
 | Erkennen | 1,7 s je Seite und Faden, 8 Fäden zu 99 % ausgelastet. Der Engpass |
 
-Hochgerechnet auf 1,5 Mio. Seiten: rund 160.000 Seiten ohne Text, etwa 9 bis 10 Stunden auf dem Notebook.
+Hochgerechnet auf 1,5 Mio. Seiten (Schätzung bis v0.0.5): rund 160.000 Seiten ohne Text, etwa 9 bis 10 Stunden auf dem Notebook. Für rund 400.000 Seiten: rund 43.000 Seiten ohne Text, etwa 2,5 Stunden.
+
+### Suche im Pilot (v0.0.6)
+
+Gemessen mit `pdf_pruefen --suche` auf einer Kopie des Pilot-Registers (10.972 Seiten, 19,7 MB Text):
+
+| Größe | Wert |
+|---|---|
+| Suchindex | 68 MB, 3,4-mal der Text, rund 6 KB je Seite |
+| Aufbau | rund 8 bis 9 s |
+| Wortliste | 255.000 Wörter, 136 ms bis sie im Speicher liegt |
+| Antwortzeit | Median 1 bis 3 ms, höchstens 10 ms (Notebook) |
+
+Ein zweiter Trigramm-Index über den Text mit Leerraum hätte den Index verdoppelt und fand nichts zusätzlich. Er entfiel.
 
 ### Mengengerüst (Schätzung)
 
 | Größe | Wert |
 |---|---|
-| Dateien in der Cloud insgesamt | über 600.000, rund 0,9 TB einschließlich Fotos |
-| Dokumente ohne Fotos | rund 500.000, rund 500 GB |
-| Seiten | rund 1,5 Mio. bei 3 Seiten je Dokument |
-| Vorschauen in AVIF Q25 | rund 39 GB |
-| Volltext und Suchindex | einige GB, nicht gemessen |
+| Daten in der Cloud insgesamt | rund 0,9 TB |
+| davon nicht im Register | Musik 192 GB, Sicherungen 203 GB, Kamera-Uploads 35 GB, Bilder im Archiv knapp 400 GB, eBooks 11 GB (nur Name und Datum) |
+| Archivmaterial | höchstens rund 100 GB (Größen der Dropbox, November 2026) |
+| Seiten | rund 400.000 bei 255 KB je Seite im Original |
+| Vorschauen | rund 13 GB (32 KB je Seite) |
+| Text, OCR, Metadaten | rund 1,5 GB (4 KB je Seite) |
+| Suchindex | rund 2,5 GB (6 KB je Seite) |
+| Register zusammen | **rund 17 GB**, realistisch 10 bis 20 GB |
 
-Die Hochrechnung nimmt an, dass das übrige Archiv den beiden geprüften Verzeichnissen ähnelt. Das ist nicht geprüft. Die Zahl von 500.000 Dokumenten ist eine Schätzung, eine Inventur der übrigen Verzeichnisse steht aus.
+Die Hochrechnung nimmt an, dass das übrige Archiv den beiden geprüften Verzeichnissen ähnelt. Das ist nicht geprüft. Die tatsächliche Größe zeigt die Erstindizierung (Stufe 6). Bis v0.0.5 war von 1,5 Mio. Seiten und rund 40 GB die Rede, das schloss die Bilder im Archiv mit ein.
 
 ## 14. Pilot und Stufen
 
@@ -390,7 +445,7 @@ Der Pilot umfasst nur die zwei Hauptverzeichnisse des aktuellen Archivs mit rund
 | 5 | OCR für Seiten ohne Text, Zurückschreiben in Scans | Suchqualität auf dem Pilotbestand geprüft |
 | 6 | Erstindizierung des gesamten Archivs in Tranchen | vollständiges Register |
 
-Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird.
+Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird. Stufe 2 folgte in v0.0.6. Als Nächstes sind die Ordnerregeln dran, mit Auswahl und Ausschluss von Verzeichnissen in der Oberfläche (Kims Wunsch).
 
 ### Stand der Umsetzung
 
@@ -401,6 +456,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.3 | Vorschauen aller Seiten als AVIF in Scheiben, Seitenansicht zum Prüfen, Neuaufbau des Pilot-Registers getestet | Stufe 1 abgeschlossen |
 | v0.0.4 | Tesseract statisch eingebaut, OCR der Seiten ohne Text ins Register, gültiger Text je Seite, Textvergleich in der Prüfansicht | erster Teil von Stufe 5 |
 | v0.0.5 | Textebene in Scans zurückgeschrieben, Lage der Wörter aus Tesseract, Grenze "ohne Text" bei 10 Zeichen, Lesen gedrehter Seiten korrigiert | Stufe 5 abgeschlossen |
+| v0.0.6 | Suchindex und Suche mit Filtern, Suchansicht wie Bilderwerk, Text aus Office, OpenDocument, Pages und Text, Vorschau und OCR für Bilder, Vorschauen nach der kurzen Kante | Stufe 2 abgeschlossen, Teile von Stufe 3 (Dateitypen) |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -414,7 +470,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | Zurücksetzen auf "nur online" per Programm | Stufe 4 |
-| Textauslese für Word, Pages, Tabellen und Bilder | nach Stufe 6 |
+| Ordnerregeln und Behandlungsstufen in der Oberfläche wählen | Stufe 3, als Nächstes |
+| Text aus doc, xls, ppt, Numbers, Pages vor 2013. HEIC-Bilder | später |
+| Antwortzeiten der Suche im ganzen Archiv | Stufe 6 |
+| Vergrößern über 100 %: Original bei Bedarf hoch aufgelöst rendern | später |
 | Verhalten eines europäischen Cloud-Anbieters bei der Replikation des Registers | vor einem Anbieterwechsel |
 | Lösung für mobile Geräte | gesondert |
 
@@ -429,7 +488,8 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Auf den Cloud-Anbieter warten | nein | seit Jahren ohne Ergebnis |
 | Programmiersprache | kein Swift | bindet an Apple und schließt Wiederverwendung im Web aus |
 | Zugriff auf Dateien | Dateisystem, keine Anbieter-Schnittstelle | Unabhängigkeit vom Anbieter |
-| Vorschau | alle Seiten, 1024 px, AVIF Q25 | lesbar, klein, flüssig beim Blättern |
+| Vorschau | alle Seiten, kurze Kante 1024 px, lange höchstens 3072 px, AVIF Q25 | lesbar, klein, flüssig beim Blättern. Die Seitengröße in PDFs ist unzuverlässig (v0.0.6) |
+| Vorschau 640 px | nein | normale Schrift kaum lesbar, zweimal geprüft |
 | Vorschau nur der ersten Seite | nein | alle Seiten müssen schnell erreichbar sein |
 | OCR-Werkzeug | Tesseract | schon im Einsatz, unabhängig von Apple |
 | OCR wofür | nur für Seiten ohne Text (höchstens 10 Zeichen), der erkannte Text gilt ab 11 Zeichen | bei schwachem Text war der eingebettete Text im Pilot nicht schlechter, oft besser als Tesseract |
@@ -454,7 +514,12 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Anbindung von PDFium | `pdfium-render`, Bibliothek per Skript geladen, nicht im Repo | fertige Builds für alle Zielsysteme, freizügige Lizenzen, keine Binärdateien im Repo |
 | "Nur online" bis Stufe 4 | nicht öffnen, bleiben ausstehend | Öffnen löst den Download aus. Erstindizierung mit von Hand offline gestellten Ordnern |
 | Verarbeitungsstand | Änderungsdatum und Größe beim Lesen, dazu eine Verfahrensversion | geänderte Dateien und Verfahren werden gezielt neu gelesen, ein Abbruch kostet nichts |
-| Suchindex | erst mit der Suche | die Wahl hängt an der fehlertoleranten Suche, die Texttabelle je Seite ist die Grundlage |
+| Suchindex | SQLite FTS5 mit Trigrammen im Register, Text ohne Leerraum, Wortliste für ähnliche Wörter | bleibt im Register (Verschlüsselung, Neuaufbau). Findet Teilwörter und auseinandergerissene Wörter (v0.0.6) |
+| Treffer | je Dokument, Name vor Ordner vor Text, ohne Textausschnitt | gesucht werden Dokumente, nicht Stellen |
+| Ordnerwahl in der Suche | aufklappbarer Baum | die Bedeutung eines Ordners ergibt sich aus dem übergeordneten |
+| Office, Pages | Text ja, Vorschau nein | Text ohne fremdes Programm. Vorschau bräuchte LibreOffice |
+| Bilder im Archiv | Vorschau und OCR, Text nur ins Register | meist versehentlich als Bild gespeicherte Belege |
+| Oberfläche der Suche | wie Bilderwerk | Wiedererkennung in der Reihe |
 | Entfernen aus dem Register | nur in vollständig gelesenen Verzeichnissen | ein fehlender Cloud-Ordner darf das Register nicht leeren |
 | AVIF-Encoder | libavif mit libaom, Stufe 8 | bei gleicher Qualität und Größe knapp 3-mal so schnell wie rav1e. Kostet einen C-Bau mit CMake |
 | Einteilung der Scheiben | nach Erfassungsreihenfolge, neue Scheibe ab rund 1,5 GB | Delta-Läufe ändern nur die jüngste Scheibe |
@@ -482,6 +547,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Tesseract als Programm aufrufen und mitliefern | braucht eine eigene Installation oder Bündelung, ist schwerer zu pflegen |
 | Scheiben nach Jahr des Dokumentdatums | ein nachträglich gescanntes altes Dokument hätte eine alte Scheibe geändert |
 | Eine einzige große Datenbankdatei | jede Änderung beträfe die ganze Datei, die Arbeitskopie bräuchte doppelten Platz, ein Schaden träfe alles |
+| Suchindex mit Tantivy | eigene Indexdateien außerhalb von SQLite, Fremdkörper bei Verschlüsselung und Replikation |
+| Zweiter Trigramm-Index über den Text mit Leerraum | doppelte Größe, fand nichts zusätzlich (Messung v0.0.6) |
+| Ordnerwahl über die Suche nach Ordnernamen | der Name allein trägt die Bedeutung oft nicht |
+| Vorschauen im festen Maßstab bezogen auf A4 | falsche Seitengrößen in PDFs machten Belege unlesbar |
 
 ## 18. Werkzeuge
 
@@ -490,6 +559,6 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
 - `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
-- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
+- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

@@ -124,7 +124,7 @@ mod tests {
         fs::write(a.join("2020-01-02 Auszug.pdf"), b"%PDF auszug").unwrap();
         fs::write(a.join("kaputt.pdf"), b"kaputt").unwrap();
         fs::write(a.join("online.pdf"), b"").unwrap();
-        fs::write(a.join("notiz.txt"), b"keine pdf").unwrap();
+        fs::write(a.join("archiv.zip"), b"nicht lesbar").unwrap();
         let konfig = Konfiguration {
             cloud_ordner: tmp.path().to_path_buf(),
             verzeichnisse: vec!["A".into()],

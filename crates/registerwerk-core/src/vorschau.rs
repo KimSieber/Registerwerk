@@ -14,14 +14,15 @@ use std::path::Path;
 use libavif_sys as avif;
 use pdfium_render::prelude::*;
 
-/// Breite einer A4-Seite in der Vorschau. Alle Seiten werden im selben
-/// Maßstab gerendert, schmale Belege werden also schmaler.
-pub const BREITE_A4: f32 = 1024.0;
-/// Breite von A4 in PDF-Punkten (210 mm).
-const A4_PUNKTE: f32 = 595.276;
-/// Längste Seite einer Vorschau in Pixeln. Begrenzt Übergrößen wie Pläne.
-/// **Annahme**
-pub const MAX_KANTE: u16 = 2048;
+/// Kurze Kante einer Vorschau in Pixeln, unabhängig von der Seitengröße in
+/// der PDF (v0.0.6). Eine A4-Seite hochkant wird 1024 px breit wie bisher.
+/// Die Seitengröße einer PDF ist nicht verlässlich: Scan-Apps legen etwa
+/// einen A4-Scan mit 300 dpi auf eine Seite von 57 × 81 mm. Im festen
+/// Maßstab wurde er dann 279 px breit und unlesbar.
+pub const KURZE_KANTE: f32 = 1024.0;
+/// Längste Kante einer Vorschau in Pixeln. Lange Kassenbons werden dadurch
+/// schmaler als 1024 px, bleiben aber lesbar (1:6 ergibt 512 px). **Annahme**
+pub const MAX_KANTE: u16 = 3072;
 
 /// AVIF-Qualität nach libavif, 0 bis 100 (Konzept: Q25).
 pub const QUALITAET: i32 = 25;
@@ -55,11 +56,12 @@ pub struct Vorschau {
     pub avif: Vec<u8>,
 }
 
-/// Maßstab in Pixel je PDF-Punkt, begrenzt durch [`MAX_KANTE`].
+/// Maßstab in Pixel je PDF-Punkt: kurze Kante [`KURZE_KANTE`], lange Kante
+/// höchstens [`MAX_KANTE`].
 pub fn massstab(breite_pt: f32, hoehe_pt: f32) -> f32 {
-    let regel = BREITE_A4 / A4_PUNKTE;
-    let laengste = breite_pt.max(hoehe_pt).max(1.0);
-    regel.min(MAX_KANTE as f32 / laengste)
+    let kurz = breite_pt.min(hoehe_pt).max(1.0);
+    let lang = breite_pt.max(hoehe_pt).max(1.0);
+    (KURZE_KANTE / kurz).min(MAX_KANTE as f32 / lang)
 }
 
 /// Rendert eine Seite für die Vorschau. Weiß als Hintergrund, Formularfelder
@@ -222,14 +224,21 @@ mod tests {
     }
 
     #[test]
-    fn massstab_bezogen_auf_a4() {
-        let a4 = massstab(A4_PUNKTE, 841.89);
-        assert!((A4_PUNKTE * a4 - 1024.0).abs() < 0.5);
-        // Kassenbon: gleicher Maßstab
-        assert_eq!(massstab(226.0, 600.0), a4);
-        // Plan in A0: längste Seite begrenzt
-        let a0 = massstab(2384.0, 3370.0);
-        assert!((3370.0 * a0 - MAX_KANTE as f32).abs() < 0.5);
+    fn massstab_nach_kurzer_kante() {
+        let px = |b: f32, h: f32| {
+            let m = massstab(b, h);
+            ((b * m).round() as u32, (h * m).round() as u32)
+        };
+        // A4 hochkant und quer wie bisher
+        assert_eq!(px(595.276, 841.89), (1024, 1448));
+        assert_eq!(px(841.89, 595.276), (1448, 1024));
+        // A4-Scan auf zu kleiner Seite (Pilot: 162 × 229 pt): trotzdem 1024 px breit
+        assert_eq!(px(162.0, 229.0), (1024, 1448));
+        // Kassenbon 1:3,25 und 1:6: lange Kante begrenzt
+        assert_eq!(px(226.0, 735.0), (945, 3072));
+        assert_eq!(px(226.0, 1356.0), (512, 3072));
+        // Plan in A0: gleich groß wie A4
+        assert_eq!(px(2384.0, 3370.0), (1024, 1448));
     }
 
     #[test]

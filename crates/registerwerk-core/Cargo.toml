@@ -21,7 +21,17 @@ registerwerk-ocr = { path = "../registerwerk-ocr" }
 # vorhandenen Bytes der Datei bleiben dabei unverändert.
 lopdf = { version = "0.47", default-features = false }
 flate2 = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+# "array": Listen als Parameter (rarray) für die Filter der Suche
+rusqlite = { version = "0.32", features = ["bundled", "array"] }
+# Text aus Word, Excel, PowerPoint und OpenDocument (v0.0.6): ZIP mit XML
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
+# Pages und Keynote: Snappy-komprimierte Protobuf-Archive (IWA)
+snap = "1"
+# Vorschauen für einzelne Bilder im Archiv (v0.0.6)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "bmp", "gif", "webp"] }
+# Wortliste der unscharfen Suche als Automat (v0.0.6)
+fst = { version = "0.4", features = ["levenshtein"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml = "0.8"

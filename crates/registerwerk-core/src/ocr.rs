@@ -250,14 +250,15 @@ fn bedingung_seite(s: &str) -> String {
     format!("({s}.zeichen < {min})", min = guete::MIN_ZEICHEN)
 }
 
-/// Bedingung für PDFs, deren OCR (neu) laufen muss. Der Inhalt muss aktuell
+/// Bedingung für PDFs und Bilder, deren OCR (neu) laufen muss. Der Inhalt muss aktuell
 /// gelesen sein. `?1` ist [`INHALT_VERFAHREN`], `?2` [`OCR_VERFAHREN`].
 fn bedingung_datei() -> String {
     format!(
-        "d.endung = 'pdf' AND d.inhalt_fehler IS NULL
+        "d.endung IN {} AND d.inhalt_fehler IS NULL
          AND d.inhalt_verfahren >= ?1 AND d.inhalt_geaendert IS d.geaendert
          AND (d.groesse IS NULL OR d.inhalt_groesse IS d.groesse)
          AND EXISTS (SELECT 1 FROM seite s WHERE s.datei = d.id AND {})",
+        crate::vorschau_sql!(),
         bedingung_seite("s")
     )
 }

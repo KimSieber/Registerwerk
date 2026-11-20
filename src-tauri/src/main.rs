@@ -10,8 +10,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use registerwerk_core::{
-    DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis, Register, RegisterStand,
-    SeitenText, TextebeneErgebnis, VorschauErgebnis,
+    Anfrage, DateiDetails, DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis,
+    Register, RegisterStand, SeitenText, SuchErgebnis, SucheAngaben, SucheAufbau, TextebeneErgebnis,
+    VorschauErgebnis,
 };
 use serde::Serialize;
 use tauri::http::{Request, Response, StatusCode};
@@ -166,12 +167,17 @@ async fn register_stand(app: AppHandle) -> Result<Option<RegisterStand>, String>
 async fn dateibaum_einlesen(app: AppHandle) -> Result<LaufErgebnis, String> {
     let (_, konfig) = konfig_laden(&app)?;
     let ordner = register_ordner(&app, &konfig)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
         let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
-        registerwerk_core::dateibaum_einlesen(&konfig, &mut register).map_err(|e| e.to_string())
+        let lauf = registerwerk_core::dateibaum_einlesen(&konfig, &mut register).map_err(|e| e.to_string())?;
+        // Neue Dateien sind sofort über ihren Namen auffindbar
+        register.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).map_err(|e| e.to_string())?;
+        Ok(lauf)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    leser_zuruecksetzen(&app);
+    ergebnis
 }
 
 /// Liest die Inhalte aller ausstehenden PDFs ins Register. Meldet den
@@ -195,7 +201,7 @@ async fn inhalte_lesen(
         let zustand = app2.state::<Lesen>();
         let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
         let mut zuletzt = Instant::now() - Duration::from_secs(1);
-        registerwerk_core::inhalte_lesen(
+        let e = registerwerk_core::inhalte_lesen(
             &konfig,
             &mut register,
             &pdfium,
@@ -207,11 +213,14 @@ async fn inhalte_lesen(
             },
             &zustand.abbrechen,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        index_nachfuehren(&mut register, &zustand.abbrechen)?;
+        Ok(e)
     })
     .await
     .map_err(|e| e.to_string());
     zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
     ergebnis?
 }
 
@@ -243,7 +252,7 @@ async fn vorschauen_erzeugen(
         let zustand = app2.state::<Lesen>();
         let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
         let mut zuletzt = Instant::now() - Duration::from_secs(1);
-        registerwerk_core::vorschauen_erzeugen(
+        let e = registerwerk_core::vorschauen_erzeugen(
             &konfig,
             &mut register,
             &pdfium,
@@ -255,11 +264,14 @@ async fn vorschauen_erzeugen(
             },
             &zustand.abbrechen,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        index_nachfuehren(&mut register, &zustand.abbrechen)?;
+        Ok(e)
     })
     .await
     .map_err(|e| e.to_string());
     zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
     ergebnis?
 }
 
@@ -288,7 +300,7 @@ async fn ocr_ausfuehren(
         let zustand = app2.state::<Lesen>();
         let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
         let mut zuletzt = Instant::now() - Duration::from_secs(1);
-        registerwerk_core::ocr_ausfuehren(
+        let e = registerwerk_core::ocr_ausfuehren(
             &konfig,
             &mut register,
             &pdfium,
@@ -301,11 +313,14 @@ async fn ocr_ausfuehren(
             },
             &zustand.abbrechen,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        index_nachfuehren(&mut register, &zustand.abbrechen)?;
+        Ok(e)
     })
     .await
     .map_err(|e| e.to_string());
     zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
     ergebnis?
 }
 
@@ -352,7 +367,7 @@ async fn textebene_schreiben(
         let zustand = app2.state::<Lesen>();
         let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
         let mut zuletzt = Instant::now() - Duration::from_secs(1);
-        registerwerk_core::textebene_schreiben(
+        let e = registerwerk_core::textebene_schreiben(
             &konfig,
             &mut register,
             &pdfium,
@@ -366,11 +381,64 @@ async fn textebene_schreiben(
             },
             &zustand.abbrechen,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        index_nachfuehren(&mut register, &zustand.abbrechen)?;
+        Ok(e)
     })
     .await
     .map_err(|e| e.to_string());
     zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
+    ergebnis?
+}
+
+/// Führt den Suchindex nach einem Lauf nach, außer der Lauf wurde abgebrochen.
+fn index_nachfuehren(register: &mut Register, abbrechen: &AtomicBool) -> Result<(), String> {
+    if abbrechen.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    register.suche_aktualisieren(|_| {}, abbrechen).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Schließt das Register zum Lesen. Der nächste Zugriff öffnet es neu und
+/// sieht damit auch eine neue Wortliste.
+fn leser_zuruecksetzen(app: &AppHandle) {
+    if let Ok(mut offen) = app.state::<Leser>().0.lock() {
+        *offen = None;
+    }
+}
+
+/// Baut den Suchindex für alle Dateien auf, deren Index fehlt oder veraltet
+/// ist. Meldet den Fortschritt über `kanal`. Abbrechen über `inhalte_abbrechen`.
+#[tauri::command]
+async fn suche_aufbauen(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    kanal: Channel<Fortschritt>,
+) -> Result<SucheAufbau, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    if zustand.laeuft.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft bereits ein Vorgang.".into());
+    }
+    zustand.abbrechen.store(false, Ordering::SeqCst);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
+        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        register
+            .suche_aktualisieren(
+                |f| {
+                    let _ = kanal.send(f.clone());
+                },
+                &zustand.abbrechen,
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
     ergebnis?
 }
 
@@ -411,6 +479,92 @@ async fn seitentexte(app: AppHandle, datei: i64) -> Result<Vec<SeitenText>, Stri
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Sucht Dokumente (Stufe 2).
+#[tauri::command]
+async fn suchen(app: AppHandle, anfrage: Anfrage) -> Result<SuchErgebnis, String> {
+    tauri::async_runtime::spawn_blocking(move || mit_leser(&app, |r| r.suchen(&anfrage).map_err(|e| e.to_string())))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Ordner, Dateitypen und Jahre für die Filter der Suche.
+#[tauri::command]
+async fn suche_angaben(app: AppHandle) -> Result<SucheAngaben, String> {
+    tauri::async_runtime::spawn_blocking(move || mit_leser(&app, |r| r.suche_angaben().map_err(|e| e.to_string())))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Angaben zu einer Datei für den Detailbereich.
+#[tauri::command]
+async fn datei_details(app: AppHandle, datei: i64) -> Result<Option<DateiDetails>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mit_leser(&app, |r| r.datei_details(datei).map_err(|e| e.to_string()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Voller Pfad einer Datei im Cloud-Ordner dieses Geräts.
+fn original_pfad(app: &AppHandle, datei: i64) -> Result<PathBuf, String> {
+    let (_, konfig) = konfig_laden(app)?;
+    let d = mit_leser(app, |r| r.datei_details(datei).map_err(|e| e.to_string()))?
+        .ok_or_else(|| "Die Datei steht nicht mehr im Register.".to_string())?;
+    let pfad = konfig.cloud_ordner.join(&d.pfad);
+    if !pfad.exists() {
+        return Err(format!("Datei nicht gefunden: {}", pfad.display()));
+    }
+    Ok(pfad)
+}
+
+/// Öffnet eine Datei mit dem Standardprogramm des Systems oder zeigt sie im
+/// Dateimanager. Eine "nur online"-Datei lädt der Cloud-Client dabei.
+fn im_system(pfad: &std::path::Path, zeigen: bool) -> Result<(), String> {
+    use std::process::Command;
+    #[cfg(target_os = "macos")]
+    let mut befehl = {
+        let mut b = Command::new("open");
+        if zeigen {
+            b.arg("-R");
+        }
+        b.arg(pfad);
+        b
+    };
+    #[cfg(target_os = "windows")]
+    let mut befehl = {
+        let mut b = Command::new("explorer");
+        if zeigen {
+            b.arg(format!("/select,{}", pfad.display()));
+        } else {
+            b.arg(pfad);
+        }
+        b
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut befehl = {
+        let mut b = Command::new("xdg-open");
+        b.arg(if zeigen { pfad.parent().unwrap_or(pfad) } else { pfad });
+        b
+    };
+    befehl.spawn().map(|_| ()).map_err(|e| format!("Öffnen: {e}"))
+}
+
+/// Öffnet das Original mit dem Standardprogramm.
+#[tauri::command]
+async fn original_oeffnen(app: AppHandle, datei: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || im_system(&original_pfad(&app, datei)?, false))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Zeigt das Original im Finder bzw. Dateimanager.
+#[tauri::command]
+async fn im_finder_zeigen(app: AppHandle, datei: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || im_system(&original_pfad(&app, datei)?, true))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Liefert eine Vorschau für `vorschau://localhost/<datei>/<seite>`.
@@ -455,7 +609,13 @@ fn main() {
             ocr_ausfuehren,
             textebene_schreiben,
             dateien_mit_vorschau,
-            seitentexte
+            seitentexte,
+            suche_aufbauen,
+            suchen,
+            suche_angaben,
+            datei_details,
+            original_oeffnen,
+            im_finder_zeigen
         ])
         .run(tauri::generate_context!())
         .expect("Registerwerk konnte nicht gestartet werden");

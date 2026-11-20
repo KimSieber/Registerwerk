@@ -66,11 +66,12 @@ pub struct DateiVorschau {
     pub seiten: Vec<VorschauSeite>,
 }
 
-/// Bedingung für PDFs, deren Vorschauen (neu) erzeugt werden müssen.
-const AUSSTEHEND: &str = "endung = 'pdf' AND (
+/// Bedingung für Dateien mit Vorschau (PDFs und Bilder, `formate.rs`), deren
+/// Vorschauen (neu) erzeugt werden müssen.
+const AUSSTEHEND: &str = concat!("endung IN ", crate::vorschau_sql!(), " AND (
         vorschau_verfahren IS NULL OR vorschau_verfahren < ?1
         OR vorschau_geaendert IS NOT geaendert
-        OR (groesse IS NOT NULL AND vorschau_groesse IS NOT groesse))";
+        OR (groesse IS NOT NULL AND vorschau_groesse IS NOT groesse))");
 
 impl Register {
     /// Setzt die Größe, ab der eine Scheibe voll ist. Für Tests.
@@ -317,8 +318,9 @@ impl Register {
         let sql = format!(
             "SELECT count(*), sum(NOT ({a})), sum({a}), sum(({a}) AND nur_online),
                     sum(NOT ({a}) AND vorschau_fehler IS NOT NULL)
-             FROM datei WHERE endung = 'pdf'",
-            a = AUSSTEHEND
+             FROM datei WHERE endung IN {v}",
+            a = AUSSTEHEND,
+            v = crate::vorschau_sql!()
         );
         (s.pdfs, s.erzeugt, s.ausstehend, s.ausstehend_online, s.fehler) =
             self.db.query_row(&sql, [VORSCHAU_VERFAHREN], |z| {
