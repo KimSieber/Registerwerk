@@ -5,13 +5,15 @@ import {
   Fortschritt,
   FehlerZeile,
   InhaltErgebnis,
-  LaufErgebnis,
   OcrErgebnis,
   RegisterStand,
   TextebeneErgebnis,
   VorschauErgebnis,
+  GEAENDERT,
+  OnlineOrdner,
   appInfo,
-  dateibaumEinlesen,
+  nurOnlineOrdner,
+  ordnerImFinder,
   inhalteAbbrechen,
   inhalteLesen,
   ocrAusfuehren,
@@ -19,14 +21,15 @@ import {
   textebeneSchreiben,
   vorschauenErzeugen,
 } from "./api";
+import { LaufMeldung, useEinlesen } from "./Einlesen";
+import { NAMEN } from "./ordner/stufen";
 import VorschauPruefen from "./VorschauPruefen";
 import { alsAnteil, alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
 
 export default function Verwaltung() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [stand, setStand] = useState<RegisterStand | null>(null);
-  const [lauf, setLauf] = useState<LaufErgebnis | null>(null);
-  const [laeuft, setLaeuft] = useState(false);
+  const { laeuft, lauf, fehler: einlesenFehler, einlesen, rueckfrage } = useEinlesen();
   const [fehler, setFehler] = useState<string | null>(null);
   // Laufender Vorgang, der ins Register schreibt. Es läuft höchstens einer.
   const [vorgang, setVorgang] = useState<"inhalte" | "vorschauen" | "ocr" | "probelauf" | "textebene" | null>(
@@ -51,27 +54,20 @@ export default function Verwaltung() {
     }
   }, []);
 
+  // Beim Start und nach jedem Einlesen oder Speichern der Regeln (auch im Reiter „Ordner“)
   useEffect(() => {
-    appInfo()
-      .then((i) => {
-        setInfo(i);
-        if (!i.konfig_fehler) void standLaden();
-      })
-      .catch((e) => setFehler(String(e)));
+    const laden = () =>
+      appInfo()
+        .then((i) => {
+          setInfo(i);
+          if (!i.konfig_fehler) void standLaden();
+        })
+        .catch((e) => setFehler(String(e)));
+    void laden();
+    window.addEventListener(GEAENDERT, laden);
+    return () => window.removeEventListener(GEAENDERT, laden);
   }, [standLaden]);
 
-  async function einlesen() {
-    setLaeuft(true);
-    setFehler(null);
-    try {
-      setLauf(await dateibaumEinlesen());
-      await standLaden();
-    } catch (e) {
-      setFehler(String(e));
-    } finally {
-      setLaeuft(false);
-    }
-  }
 
   async function inhalteStarten() {
     setVorgang("inhalte");
@@ -181,19 +177,21 @@ export default function Verwaltung() {
           {info.konfig_pfad && <p className="pfad">{info.konfig_pfad}</p>}
         </section>
       )}
-      {fehler && (
+      {(fehler || einlesenFehler) && (
         <section className="hinweis fehler">
           <strong>Fehler</strong>
-          <p>{fehler}</p>
+          <p>{fehler ?? einlesenFehler}</p>
         </section>
       )}
+      {rueckfrage}
 
       <section className="karte">
         <div className="karte-kopf">
           <div>
             <h2>Dateibaum</h2>
             <p className="unterzeile">
-              Liest nur Namen, Größe und Datum. Es wird keine Datei geöffnet und nichts aus der Cloud geladen.
+              Liest nur Namen, Größe und Datum der gewählten Ordner. Es wird keine Datei geöffnet und nichts aus der
+              Cloud geladen.
             </p>
           </div>
           <button onClick={einlesen} disabled={!bereit || laeuft}>
@@ -203,15 +201,32 @@ export default function Verwaltung() {
 
         {bereit && (
           <dl className="angaben">
-            <dt>Cloud-Ordner</dt>
-            <dd className="pfad">{info.cloud_ordner}</dd>
-            <dt>Verzeichnisse</dt>
+            <dt>Gerät</dt>
+            <dd>{info.geraet}</dd>
+            <dt>Äste</dt>
             <dd>
-              {info.verzeichnisse.map((v) => (
-                <span key={v} className="marke">
-                  {v}
+              {info.aeste.map((a) => (
+                <span key={a.name} className="marke" title={a.ort}>
+                  {a.name}
+                  {a.fehlt && <small> · nicht gefunden</small>}
                 </span>
               ))}
+              {info.aeste.length === 0 && (
+                <span className="leise">Noch kein Ordner gewählt: Reiter „Ordner“, „Ordner hinzufügen …“.</span>
+              )}
+            </dd>
+            <dt>Ordner</dt>
+            <dd>
+              {info.regeln_fehler && <span className="achtung">{info.regeln_fehler}</span>}
+              {info.regeln.map((r) => (
+                <span key={r.ordner} className={`marke marke--${r.stufe}`} title={NAMEN[r.stufe]}>
+                  {r.ordner}
+                  {r.stufe !== "voll" && <small> · {NAMEN[r.stufe]}</small>}
+                </span>
+              ))}
+              {!info.regeln_fehler && info.regeln.length === 0 && (
+                <span className="leise">Noch kein Ordner gewählt. Die Auswahl steht im Reiter „Ordner“.</span>
+              )}
             </dd>
             <dt>Register</dt>
             <dd className="pfad">{info.register_ordner}</dd>
@@ -270,6 +285,7 @@ export default function Verwaltung() {
             </p>
           )}
 
+          {!liest && <NurOnlineHinweis lokal={lokalAusstehend} online={stand.inhalt.ausstehend_online} />}
           {inhaltLauf && <InhaltMeldung e={inhaltLauf} />}
           {stand.inhalt.fehler_liste.length > 0 && (
             <FehlerListe anzahl={stand.inhalt.fehler} liste={stand.inhalt.fehler_liste} />
@@ -306,12 +322,13 @@ export default function Verwaltung() {
           ) : (
             <p className="stand-zeile">
               {vAusstehend === 0
-                ? "Für alle PDFs und Bilder liegen Vorschauen vor."
+                ? "Für alle PDFs, Bilder und Textdateien liegen Vorschauen vor."
                 : `Für ${alsZahl(vLokalAusstehend)} Dateien stehen Vorschauen an` +
                   (v.ausstehend_online > 0 ? `, ${alsZahl(v.ausstehend_online)} weitere liegen nur online.` : ".")}
             </p>
           )}
 
+          {vorgang !== "vorschauen" && <NurOnlineHinweis lokal={vLokalAusstehend} online={v.ausstehend_online} vorschau />}
           {vorschauLauf && <VorschauMeldung e={vorschauLauf} />}
 
           {v.seiten > 0 && (
@@ -505,24 +522,50 @@ export default function Verwaltung() {
   );
 }
 
-function LaufMeldung({ lauf }: { lauf: LaufErgebnis }) {
+/**
+ * Dateien, die ausstehen und nur online liegen: Registerwerk öffnet sie nicht, weil das den Download
+ * auslösen würde. Der Hinweis nennt die Ordner, damit sie sich in der Cloud offline verfügbar machen
+ * lassen, und zeigt sie auf Wunsch im Finder.
+ */
+function NurOnlineHinweis({ lokal, online, vorschau = false }: { lokal: number; online: number; vorschau?: boolean }) {
+  const [ordner, setOrdner] = useState<OnlineOrdner[] | null>(null);
+  const [fehler, setFehler] = useState<string | null>(null);
+  // Nach jedem Einlesen ist die Liste überholt
+  useEffect(() => setOrdner(null), [online]);
+  if (online === 0) return null;
+  const laden = () =>
+    nurOnlineOrdner(vorschau)
+      .then(setOrdner)
+      .catch((e) => setFehler(String(e)));
   return (
-    <div className="lauf">
-      <p>
-        Durchlauf {lauf.lauf} in {alsDauer(lauf.dauer_ms)}: {alsZahl(lauf.gesehen)} Dateien gesehen,{" "}
-        <b>{alsZahl(lauf.neu)} neu</b>, <b>{alsZahl(lauf.geaendert)} geändert</b>,{" "}
-        <b>{alsZahl(lauf.entfernt)} entfernt</b>, {alsZahl(lauf.unveraendert)} unverändert.
+    <div className="nur-online">
+      <p className="achtung">
+        {lokal === 0 && <>Der Knopf ist inaktiv, weil alle ausstehenden Dateien nur online liegen. </>}
+        {alsZahl(online)} Dateien liegen nur online. Registerwerk lädt sie nicht selbst: den Ordner im Finder
+        „Offline verfügbar machen“, den Download abwarten und danach „Dateibaum einlesen“.{" "}
+        {ordner === null && (
+          <button className="knopf knopf--leise" onClick={laden}>
+            Ordner zeigen
+          </button>
+        )}
       </p>
-      {lauf.fehlende_verzeichnisse.length > 0 && (
-        <p className="achtung">
-          Nicht gefunden: {lauf.fehlende_verzeichnisse.join(", ")}. Für diese Verzeichnisse wurde nichts entfernt.
-        </p>
-      )}
-      {lauf.nicht_lesbar > 0 && (
-        <p className="achtung">
-          {alsZahl(lauf.nicht_lesbar)} Einträge waren nicht lesbar ({lauf.unvollstaendige_verzeichnisse.join(", ")}).
-          Für diese Verzeichnisse wurde nichts entfernt.
-        </p>
+      {fehler && <p className="achtung">{fehler}</p>}
+      {ordner?.length === 0 && <p className="leise">Das Register nennt dazu gerade keinen Ordner. Bitte den Dateibaum einlesen.</p>}
+      {ordner && ordner.length > 0 && (
+        <ul className="nur-online__liste">
+          {ordner.map((o) => (
+            <li key={o.ordner}>
+              <span className="pfad">{o.ordner}</span>
+              <span className="nur-online__zahl">{alsZahl(o.dateien)}</span>
+              <button
+                className="knopf knopf--leise"
+                onClick={() => ordnerImFinder(o.ordner).catch((e) => setFehler(String(e)))}
+              >
+                Im Finder
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

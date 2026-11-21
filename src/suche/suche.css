@@ -74,7 +74,7 @@ body {
 
 /* Schaltflächen in der Suche ohne die Gestaltung der Register-Seite.
    :where hält die Spezifität niedrig, Klassen gestalten weiter. */
-:where(.suchansicht, .reiter) button {
+:where(.suchansicht, .reiter, .regelansicht) button {
   padding: 0;
   border-radius: 0;
   background: none;

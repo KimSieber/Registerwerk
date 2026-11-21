@@ -68,7 +68,7 @@ pub struct DateiVorschau {
 
 /// Bedingung für Dateien mit Vorschau (PDFs und Bilder, `formate.rs`), deren
 /// Vorschauen (neu) erzeugt werden müssen.
-const AUSSTEHEND: &str = concat!("endung IN ", crate::vorschau_sql!(), " AND (
+const AUSSTEHEND: &str = concat!("stufe = 1 AND endung IN ", crate::vorschau_sql!(), " AND (
         vorschau_verfahren IS NULL OR vorschau_verfahren < ?1
         OR vorschau_geaendert IS NOT geaendert
         OR (groesse IS NOT NULL AND vorschau_groesse IS NOT groesse))");
@@ -129,6 +129,24 @@ impl Register {
         let nr: i64 = self.db.query_row("SELECT coalesce(max(nr), 0) + 1 FROM scheibe", [], |z| z.get(0))?;
         self.db.execute("INSERT INTO scheibe (nr, datei) VALUES (?1, ?2)", params![nr, dateiname(nr)])?;
         Ok(nr)
+    }
+
+    /// Ordner mit Dateien, deren Vorschau aussteht und die nur online liegen,
+    /// nach Ordner. Das Gegenstück zu `Register::nur_online_ordner` für die
+    /// Vorschauen: Es können andere Dateien sein als beim Inhalt.
+    pub fn nur_online_ordner_vorschau(&self) -> Ergebnis<Vec<crate::OnlineOrdner>> {
+        let sql = format!(
+            "SELECT substr(pfad, 1, max(length(pfad) - length(name) - 1, 0)) AS ordner, count(*)
+             FROM datei WHERE nur_online AND {AUSSTEHEND} GROUP BY ordner ORDER BY ordner"
+        );
+        let liste = self
+            .db
+            .prepare(&sql)?
+            .query_map([VORSCHAU_VERFAHREN], |z| {
+                Ok(crate::OnlineOrdner { ordner: z.get(0)?, dateien: z.get::<_, i64>(1)? as u64 })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(liste)
     }
 
     /// PDFs, deren Vorschauen fehlen oder nicht zum Stand der Datei passen.
@@ -318,7 +336,7 @@ impl Register {
         let sql = format!(
             "SELECT count(*), sum(NOT ({a})), sum({a}), sum(({a}) AND nur_online),
                     sum(NOT ({a}) AND vorschau_fehler IS NOT NULL)
-             FROM datei WHERE endung IN {v}",
+             FROM datei WHERE stufe = 1 AND endung IN {v}",
             a = AUSSTEHEND,
             v = crate::vorschau_sql!()
         );
@@ -376,6 +394,7 @@ mod tests {
                 endung: "pdf".into(),
                 groesse: 100,
                 geaendert: 1,
+                stufe: crate::regeln::Stufe::Voll,
             })
             .collect();
         Durchlauf { dateien, gelesene_verzeichnisse: vec!["A".into()], ..Default::default() }
@@ -411,6 +430,33 @@ mod tests {
         assert_eq!(r.dateien_mit_vorschau("a.p", false, 10).unwrap().len(), 1);
         assert_eq!(r.dateien_mit_vorschau("", false, 10).unwrap().len(), 1);
         assert_eq!(r.dateien_mit_vorschau("", true, 10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn fehler_bei_tiff_wird_einmal_neu_versucht() {
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            let mut r = Register::oeffnen(tmp.path()).unwrap();
+            r.abgleichen(&durchlauf(&["A/a.pdf", "A/fax.pdf"])).unwrap();
+            r.db.execute("UPDATE datei SET endung = 'tif' WHERE pfad = 'A/fax.pdf'", []).unwrap();
+            for p in ["A/a.pdf", "A/fax.pdf"] {
+                let i = id(&r, p);
+                r.vorschauen_speichern(i, 1, 100, &Err("Fax3 is unsupported".into())).unwrap();
+            }
+            assert!(r.vorschau_ausstehend().unwrap().is_empty());
+            // Stand vor v0.0.7
+            r.db.execute("DELETE FROM merkmal WHERE name = 'fax_tiff'", []).unwrap();
+        }
+        {
+            let mut r = Register::oeffnen(tmp.path()).unwrap();
+            let offen: Vec<String> = r.vorschau_ausstehend().unwrap().into_iter().map(|a| a.pfad).collect();
+            assert_eq!(offen, vec!["A/fax.pdf"]);
+            let i = id(&r, "A/fax.pdf");
+            r.vorschauen_speichern(i, 1, 100, &Err("immer noch".into())).unwrap();
+        }
+        // Nur einmal
+        let r = Register::oeffnen(tmp.path()).unwrap();
+        assert!(r.vorschau_ausstehend().unwrap().is_empty());
     }
 
     #[test]

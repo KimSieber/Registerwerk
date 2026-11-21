@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use registerwerk_core::{
     Anfrage, DateiDetails, DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis,
-    Register, RegisterStand, SeitenText, SuchErgebnis, SucheAngaben, SucheAufbau, TextebeneErgebnis,
-    VorschauErgebnis,
+    OnlineOrdner, OrdnerPruefung, Regeln, Register, RegisterStand, SeitenText, Stufe, SuchErgebnis, SucheAngaben, SucheAufbau,
+    TextebeneErgebnis, VorschauErgebnis,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::http::{Request, Response, StatusCode};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, UriSchemeResponder};
@@ -27,9 +27,47 @@ struct Lesen {
     abbrechen: AtomicBool,
 }
 
+/// Abbruch einer laufenden Ordnerprüfung.
+#[derive(Default)]
+struct Pruefen(AtomicBool);
+
+/// Eine Ordnerregel für die Oberfläche.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegelZeile {
+    /// Pfad relativ zum Cloud-Ordner, leer für den Cloud-Ordner selbst.
+    ordner: String,
+    stufe: Stufe,
+}
+
+/// Ein Ordner im Baum der Regeln.
+#[derive(Serialize)]
+struct BaumEintrag {
+    name: String,
+    pfad: String,
+    hat_unterordner: bool,
+    bibliothek: bool,
+    /// Dateien im Register in diesem Ordner samt Unterordnern.
+    im_register: u64,
+    /// Davon ausstehend und nur online.
+    nur_online: u64,
+    /// Nur bei Ästen: Ort auf diesem Gerät, wenn hier einer zugewiesen ist.
+    ort: Option<String>,
+    /// Nur bei Ästen: Den Ordner gibt es auf diesem Gerät nicht.
+    fehlt: bool,
+    /// Geräte, die den Ordner gesehen haben.
+    geraete: Vec<String>,
+}
+
 /// Geöffnetes Register zum Lesen der Vorschauen, mit seinem Ordner.
 #[derive(Default)]
 struct Leser(Mutex<Option<(PathBuf, Register)>>);
+
+#[derive(Serialize)]
+struct AstInfo {
+    name: String,
+    ort: String,
+    fehlt: bool,
+}
 
 #[derive(Serialize)]
 struct AppInfo {
@@ -37,8 +75,13 @@ struct AppInfo {
     /// Pfad der gefundenen Konfigurationsdatei.
     konfig_pfad: Option<String>,
     konfig_fehler: Option<String>,
-    cloud_ordner: Option<String>,
-    verzeichnisse: Vec<String>,
+    /// Name dieses Geräts.
+    geraet: String,
+    /// Äste dieses Geräts: Name, Ort, vorhanden.
+    aeste: Vec<AstInfo>,
+    /// Ordnerregeln aus `regeln.toml` im Register-Ordner.
+    regeln: Vec<RegelZeile>,
+    regeln_fehler: Option<String>,
     register_ordner: Option<String>,
     /// Ordner, aus dem PDFium geladen wird.
     pdfium_ordner: Option<String>,
@@ -67,13 +110,87 @@ fn konfig_pfad(app: &AppHandle) -> Option<PathBuf> {
     pfad.is_file().then_some(pfad)
 }
 
+/// Name dieses Geräts, wie ihn das System nennt.
+fn geraetename() -> String {
+    use std::process::Command;
+    let aus = |programm: &str, args: &[&str]| {
+        Command::new(programm)
+            .args(args)
+            .output()
+            .ok()
+            .map(|a| String::from_utf8_lossy(&a.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let name = if cfg!(target_os = "macos") { aus("scutil", &["--get", "ComputerName"]) } else { None };
+    name.or_else(|| std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty()))
+        .or_else(|| aus("hostname", &[]))
+        .unwrap_or_else(|| "Gerät".into())
+}
+
+/// Schützt das Schreiben der Konfiguration und die einmalige Umstellung auf
+/// Äste: Die Oberfläche fragt beim Start mehrfach gleichzeitig an.
+static KONFIG_SCHREIBEN: Mutex<()> = Mutex::new(());
+
+/// Lädt die Konfiguration dieses Geräts. Gibt es noch keine, entsteht eine
+/// leere im Konfigurationsordner der Anwendung. Dabei werden einmalig
+/// erledigt: der Gerätename und die Umstellung einer Konfiguration aus der
+/// Zeit vor den Ästen samt Regeln und Register (`umstellen_auf_aeste`).
 fn konfig_laden(app: &AppHandle) -> Result<(PathBuf, Konfiguration), String> {
-    let pfad = konfig_pfad(app).ok_or_else(|| {
-        "Keine Konfiguration gefunden. Bitte config.beispiel.toml nach config.local.toml kopieren und die Pfade eintragen."
-            .to_string()
-    })?;
-    let konfig = Konfiguration::laden(&pfad).map_err(|e| e.to_string())?;
+    let fehler = |e: registerwerk_core::Fehler| e.to_string();
+    let pfad = match konfig_pfad(app) {
+        Some(pfad) => pfad,
+        None => {
+            let _sperre = KONFIG_SCHREIBEN.lock().map_err(|e| e.to_string())?;
+            let ordner = app.path().app_config_dir().map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&ordner).map_err(|e| e.to_string())?;
+            let pfad = ordner.join(registerwerk_core::konfiguration::DATEINAME);
+            if !pfad.is_file() {
+                let mut neu = Konfiguration::default();
+                neu.geraet = geraetename();
+                neu.speichern(&pfad).map_err(fehler)?;
+            }
+            pfad
+        }
+    };
+    let konfig = Konfiguration::laden(&pfad).map_err(fehler)?;
+    if !konfig.ist_alt() && !konfig.geraet.trim().is_empty() {
+        return Ok((pfad, konfig));
+    }
+
+    let _sperre = KONFIG_SCHREIBEN.lock().map_err(|e| e.to_string())?;
+    // Ein anderer Aufruf kann inzwischen fertig sein
+    let mut konfig = Konfiguration::laden(&pfad).map_err(fehler)?;
+    if konfig.geraet.trim().is_empty() {
+        konfig.geraet = geraetename();
+    }
+    if konfig.ist_alt() {
+        let ordner = register_ordner(app, &konfig)?;
+        if registerwerk_core::umstellen_auf_aeste(&konfig, &ordner).map_err(fehler)? {
+            // Namen und Ordner stehen im Suchindex: einmal neu aufbauen
+            let mut register = Register::oeffnen(&ordner).map_err(fehler)?;
+            register.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).map_err(fehler)?;
+        }
+        // legt die Regeln aus der früheren Liste an, falls es noch keine gibt
+        registerwerk_core::regeln_laden(&konfig, &ordner).map_err(fehler)?;
+        leser_zuruecksetzen(app);
+    }
+    // Ab jetzt stehen nur noch Gerät und Äste in der Datei
+    konfig.speichern(&pfad).map_err(fehler)?;
+    let konfig = Konfiguration::laden(&pfad).map_err(fehler)?;
     Ok((pfad, konfig))
+}
+
+/// Ändert die Konfiguration dieses Geräts und schreibt sie.
+fn konfig_aendern<T>(
+    app: &AppHandle,
+    aenderung: impl FnOnce(&mut Konfiguration) -> Result<T, String>,
+) -> Result<T, String> {
+    let (pfad, _) = konfig_laden(app)?;
+    let _sperre = KONFIG_SCHREIBEN.lock().map_err(|e| e.to_string())?;
+    let mut konfig = Konfiguration::laden(&pfad).map_err(|e| e.to_string())?;
+    let ergebnis = aenderung(&mut konfig)?;
+    konfig.speichern(&pfad).map_err(|e| e.to_string())?;
+    Ok(ergebnis)
 }
 
 /// Sucht den Ordner mit der PDFium-Bibliothek in dieser Reihenfolge:
@@ -122,24 +239,44 @@ fn register_ordner(app: &AppHandle, konfig: &Konfiguration) -> Result<PathBuf, S
     }
 }
 
+fn regeln_laden(konfig: &Konfiguration, ordner: &std::path::Path) -> Result<Regeln, String> {
+    registerwerk_core::regeln_laden(konfig, ordner).map_err(|e| e.to_string())
+}
+
+fn zeilen(regeln: &Regeln) -> Vec<RegelZeile> {
+    regeln.eintraege().map(|(ordner, stufe)| RegelZeile { ordner: ordner.to_string(), stufe }).collect()
+}
+
 #[tauri::command]
 fn app_info(app: AppHandle) -> AppInfo {
     let mut info = AppInfo {
         version: env!("CARGO_PKG_VERSION"),
-        konfig_pfad: konfig_pfad(&app).map(|p| p.display().to_string()),
+        konfig_pfad: None,
         konfig_fehler: None,
-        cloud_ordner: None,
-        verzeichnisse: Vec::new(),
+        geraet: String::new(),
+        aeste: Vec::new(),
+        regeln: Vec::new(),
+        regeln_fehler: None,
         register_ordner: None,
         pdfium_ordner: pdfium_ordner(&app).map(|p| p.display().to_string()),
         tessdata_ordner: tessdata_ordner(&app).map(|p| p.display().to_string()),
         tesseract_version: registerwerk_core::ocr_version(),
     };
     match konfig_laden(&app) {
-        Ok((_, konfig)) => {
-            info.register_ordner = register_ordner(&app, &konfig).ok().map(|p| p.display().to_string());
-            info.cloud_ordner = Some(konfig.cloud_ordner.display().to_string());
-            info.verzeichnisse = konfig.verzeichnisse;
+        Ok((pfad, konfig)) => {
+            info.konfig_pfad = Some(pfad.display().to_string());
+            let ordner = register_ordner(&app, &konfig);
+            match ordner.as_ref().map_err(|e| e.clone()).and_then(|o| regeln_laden(&konfig, o)) {
+                Ok(regeln) => info.regeln = zeilen(&regeln),
+                Err(fehler) => info.regeln_fehler = Some(fehler),
+            }
+            info.register_ordner = ordner.ok().map(|p| p.display().to_string());
+            info.aeste = konfig
+                .aeste
+                .iter()
+                .map(|(name, ort)| AstInfo { name: name.clone(), ort: ort.display().to_string(), fehlt: !ort.is_dir() })
+                .collect();
+            info.geraet = konfig.geraet;
         }
         Err(fehler) => info.konfig_fehler = Some(fehler),
     }
@@ -162,22 +299,245 @@ async fn register_stand(app: AppHandle) -> Result<Option<RegisterStand>, String>
     .map_err(|e| e.to_string())?
 }
 
-/// Liest den Dateibaum der konfigurierten Verzeichnisse ins Register.
+/// Liest den Dateibaum der Ordner mit Regel ins Register.
+///
+/// Würde der Abgleich wegen der Regeln Text und Vorschauen entfernen, ändert
+/// er ohne `bestaetigt` nichts. Das Ergebnis trägt dann `probe` und nennt, was
+/// entfernt würde. Die Oberfläche fragt nach und ruft erneut mit `bestaetigt`.
 #[tauri::command]
-async fn dateibaum_einlesen(app: AppHandle) -> Result<LaufErgebnis, String> {
+async fn dateibaum_einlesen(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    bestaetigt: bool,
+) -> Result<LaufErgebnis, String> {
     let (_, konfig) = konfig_laden(&app)?;
     let ordner = register_ordner(&app, &konfig)?;
+    if zustand.laeuft.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft bereits ein Vorgang.".into());
+    }
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let regeln = regeln_laden(&konfig, &ordner)?;
         let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
-        let lauf = registerwerk_core::dateibaum_einlesen(&konfig, &mut register).map_err(|e| e.to_string())?;
-        // Neue Dateien sind sofort über ihren Namen auffindbar
-        register.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).map_err(|e| e.to_string())?;
+        let lauf = registerwerk_core::dateibaum_einlesen(&konfig, &regeln, &mut register, bestaetigt)
+            .map_err(|e| e.to_string())?;
+        if !lauf.probe {
+            // Neue Dateien sind sofort über ihren Namen auffindbar
+            register.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).map_err(|e| e.to_string())?;
+        }
         Ok(lauf)
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
     leser_zuruecksetzen(&app);
-    ergebnis
+    ergebnis?
+}
+
+/// Die Ordnerregeln aus `regeln.toml`.
+#[tauri::command]
+async fn regeln_lesen(app: AppHandle) -> Result<Vec<RegelZeile>, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    tauri::async_runtime::spawn_blocking(move || regeln_laden(&konfig, &ordner).map(|r| zeilen(&r)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Schreibt die Ordnerregeln nach `regeln.toml`. Sie wirken beim nächsten
+/// Einlesen des Dateibaums.
+#[tauri::command]
+async fn regeln_speichern(app: AppHandle, regeln: Vec<RegelZeile>) -> Result<Vec<RegelZeile>, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut neu = Regeln::default();
+        for zeile in &regeln {
+            neu.setzen(&zeile.ordner, Some(zeile.stufe)).map_err(|e| e.to_string())?;
+        }
+        neu.speichern(&ordner).map_err(|e| e.to_string())?;
+        Ok(zeilen(&neu))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Die direkten Unterordner eines Ordners (Pfad im Register, `Ast/…`), mit
+/// der Zahl der Dateien, die das Register dort kennt. Der leere Pfad liefert
+/// die Äste: die dieses Geräts und die, die nur Regeln oder Register kennen.
+#[tauri::command]
+async fn ordner_liste(app: AppHandle, ordner: String) -> Result<Vec<BaumEintrag>, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let register = register_ordner(&app, &konfig)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut liste = registerwerk_core::dateibaum::unterordner(&konfig, &ordner).map_err(|e| e.to_string())?;
+        let r = if register.join(registerwerk_core::register::DATEINAME).is_file() {
+            Some(Register::oeffnen(&register).map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
+        if ordner.is_empty() {
+            // Äste, die es hier nicht gibt: aus den Regeln und dem Register
+            let mut weitere: Vec<String> = regeln_laden(&konfig, &register)?
+                .eintraege()
+                .map(|(pfad, _)| Konfiguration::ast_von(pfad).to_string())
+                .collect();
+            if let Some(r) = &r {
+                weitere.extend(r.gesehene_aeste().map_err(|e| e.to_string())?);
+            }
+            weitere.sort();
+            weitere.dedup();
+            for name in weitere {
+                if !name.is_empty() && !liste.iter().any(|e| e.name == name) {
+                    liste.push(registerwerk_core::OrdnerEintrag {
+                        pfad: name.clone(),
+                        name,
+                        hat_unterordner: false,
+                        bibliothek: false,
+                        ort: None,
+                        fehlt: true,
+                    });
+                }
+            }
+            liste.sort_by_key(|e| e.name.to_lowercase());
+        }
+        let pfade: Vec<String> = liste.iter().map(|e| e.pfad.clone()).collect();
+        let n = pfade.len();
+        let (zahlen, online, geraete) = match &r {
+            Some(r) => (
+                r.dateien_je_ordner(&pfade).map_err(|e| e.to_string())?,
+                r.nur_online_je_ordner(&pfade).map_err(|e| e.to_string())?,
+                r.geraete_je_ordner(&pfade).map_err(|e| e.to_string())?,
+            ),
+            None => (vec![0; n], vec![0; n], vec![Vec::new(); n]),
+        };
+        Ok(liste
+            .into_iter()
+            .zip(zahlen.into_iter().zip(online).zip(geraete))
+            .map(|(e, ((im_register, nur_online), geraete))| BaumEintrag {
+                name: e.name,
+                pfad: e.pfad,
+                hat_unterordner: e.hat_unterordner,
+                bibliothek: e.bibliothek,
+                im_register,
+                nur_online,
+                ort: e.ort,
+                fehlt: e.fehlt,
+                geraete,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Öffnet den Auswahldialog des Systems für einen Ordner. `None`, wenn
+/// abgebrochen wurde.
+#[tauri::command]
+async fn ordner_waehlen(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let wahl = app.dialog().file().set_title("Ordner für Registerwerk wählen").blocking_pick_folder();
+        match wahl {
+            Some(ordner) => ordner.into_path().map(|p| Some(p.display().to_string())).map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Nimmt einen Ordner dieses Geräts als Ast auf. Ohne Namen heißt der Ast wie
+/// der Ordner. Mit `zuweisen` bekommt ein Ast, den es schon gibt, auf diesem
+/// Gerät diesen Ort.
+#[tauri::command]
+async fn ast_hinzufuegen(app: AppHandle, ort: String, name: Option<String>, zuweisen: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ort = PathBuf::from(ort);
+        if !ort.is_dir() {
+            return Err(format!("Ordner nicht gefunden: {}", ort.display()));
+        }
+        konfig_aendern(&app, |konfig| {
+            if zuweisen {
+                let name = registerwerk_core::konfiguration::ast_name(name.as_deref().unwrap_or_default())
+                    .map_err(|e| e.to_string())?;
+                konfig.aeste.insert(name.clone(), ort);
+                Ok(name)
+            } else {
+                konfig.ast_hinzufuegen(&ort, name.as_deref()).map_err(|e| e.to_string())
+            }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Löst einen Ast von diesem Gerät: Sein Ort steht nicht mehr in der
+/// Konfiguration. Regeln und Register bleiben unberührt.
+#[tauri::command]
+async fn ast_loesen(app: AppHandle, name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        konfig_aendern(&app, |konfig| {
+            konfig.aeste.remove(&name);
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Entfernt einen Ordner, den es nicht mehr gibt, aus dem Register: seinen
+/// Bestand samt Unterordnern und seine Regeln. Liefert die Zahl der
+/// entfernten Dateien.
+#[tauri::command]
+async fn ordner_entfernen(app: AppHandle, zustand: State<'_, Lesen>, ordner: String) -> Result<u64, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let register = register_ordner(&app, &konfig)?;
+    if zustand.laeuft.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft bereits ein Vorgang.".into());
+    }
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let ordner = registerwerk_core::dateibaum::relativ_normalisieren(&ordner);
+        if ordner.is_empty() {
+            return Err("Kein Ordner angegeben.".to_string());
+        }
+        let regeln = regeln_laden(&konfig, &register)?;
+        let mut neu = Regeln::default();
+        for (pfad, stufe) in regeln.eintraege() {
+            if pfad != ordner && !pfad.starts_with(&format!("{ordner}/")) {
+                neu.setzen(pfad, Some(stufe)).map_err(|e| e.to_string())?;
+            }
+        }
+        neu.speichern(&register).map_err(|e| e.to_string())?;
+        let mut r = Register::oeffnen(&register).map_err(|e| e.to_string())?;
+        let dateien = r.ordner_entfernen(&ordner).map_err(|e| e.to_string())?;
+        r.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).map_err(|e| e.to_string())?;
+        Ok(dateien)
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
+    ergebnis?
+}
+
+/// Zählt die Dateien eines Ordners samt Unterordnern nach Typ. Liest nur
+/// Verzeichnisse, lädt nichts herunter und schreibt nichts.
+#[tauri::command]
+async fn ordner_pruefen(app: AppHandle, ordner: String) -> Result<OrdnerPruefung, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    app.state::<Pruefen>().0.store(false, Ordering::SeqCst);
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registerwerk_core::dateibaum::ordner_pruefen(&konfig, &ordner, &app2.state::<Pruefen>().0)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn ordner_pruefen_abbrechen(zustand: State<'_, Pruefen>) {
+    zustand.0.store(true, Ordering::SeqCst);
 }
 
 /// Liest die Inhalte aller ausstehenden PDFs ins Register. Meldet den
@@ -512,7 +872,12 @@ fn original_pfad(app: &AppHandle, datei: i64) -> Result<PathBuf, String> {
     let (_, konfig) = konfig_laden(app)?;
     let d = mit_leser(app, |r| r.datei_details(datei).map_err(|e| e.to_string()))?
         .ok_or_else(|| "Die Datei steht nicht mehr im Register.".to_string())?;
-    let pfad = konfig.cloud_ordner.join(&d.pfad);
+    let Some(pfad) = konfig.ort(&d.pfad) else {
+        return Err(format!(
+            "Das Original liegt auf diesem Gerät nicht vor: Den Ast „{}“ gibt es hier nicht.",
+            Konfiguration::ast_von(&d.pfad)
+        ));
+    };
     if !pfad.exists() {
         return Err(format!("Datei nicht gefunden: {}", pfad.display()));
     }
@@ -567,6 +932,156 @@ async fn im_finder_zeigen(app: AppHandle, datei: i64) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Kennzahlen des Registers für das Datenbank-Symbol.
+#[derive(Serialize)]
+struct RegisterInfo {
+    ordner: String,
+    /// In diesem Ordner liegt ein Register.
+    vorhanden: bool,
+    /// Der Ordner steht in der Konfiguration. Sonst ist es der Datenordner
+    /// der Anwendung im Benutzerprofil.
+    gewaehlt: bool,
+    index_bytes: u64,
+    scheiben: u64,
+    scheiben_bytes: u64,
+    dateien: u64,
+    seiten: u64,
+    vorschauen: u64,
+    /// Geräte mit dem Zeitpunkt ihres letzten Durchlaufs.
+    geraete: Vec<(String, Option<i64>)>,
+    geraet: String,
+    regeln: usize,
+}
+
+fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result<RegisterInfo, String> {
+    let mut info = RegisterInfo {
+        ordner: ordner.display().to_string(),
+        vorhanden: ordner.join(registerwerk_core::register::DATEINAME).is_file(),
+        gewaehlt: konfig.register_ordner.is_some(),
+        index_bytes: 0,
+        scheiben: 0,
+        scheiben_bytes: 0,
+        dateien: 0,
+        seiten: 0,
+        vorschauen: 0,
+        geraete: Vec::new(),
+        geraet: konfig.geraet.clone(),
+        regeln: 0,
+    };
+    if let Ok(eintraege) = std::fs::read_dir(ordner) {
+        for e in eintraege.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let bytes = e.metadata().map(|m| m.len()).unwrap_or(0);
+            if name.starts_with("register.db") {
+                info.index_bytes += bytes;
+            } else if name.starts_with("vorschau-") && name.contains(".db") {
+                info.scheiben_bytes += bytes;
+                info.scheiben += name.ends_with(".db") as u64;
+            }
+        }
+    }
+    if info.vorhanden {
+        let r = Register::oeffnen(ordner).map_err(|e| e.to_string())?;
+        let stand = r.stand().map_err(|e| e.to_string())?;
+        info.dateien = stand.dateien;
+        info.seiten = stand.inhalt.seiten;
+        info.vorschauen = stand.vorschau.seiten;
+        info.geraete = r.geraete().map_err(|e| e.to_string())?;
+    }
+    if let Ok(Some(regeln)) = Regeln::laden(ordner) {
+        info.regeln = regeln.eintraege().count();
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+async fn register_info(app: AppHandle) -> Result<RegisterInfo, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    tauri::async_runtime::spawn_blocking(move || register_info_von(&konfig, &ordner))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Wählt einen anderen Ordner für das Register, etwa nachdem es verschoben
+/// wurde. Liegt dort noch keines, geschieht ohne `bestaetigt` nichts: Die
+/// Oberfläche fragt erst nach, ob dort ein neues, leeres entstehen soll.
+/// Liefert die Kennzahlen des Ordners und ob er jetzt gilt.
+#[tauri::command]
+async fn register_waehlen(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    ordner: String,
+    bestaetigt: bool,
+) -> Result<(RegisterInfo, bool), String> {
+    if zustand.laeuft.load(Ordering::SeqCst) {
+        return Err("Es läuft gerade ein Vorgang. Bitte erst abwarten.".into());
+    }
+    let (_, konfig) = konfig_laden(&app)?;
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let ordner = PathBuf::from(ordner);
+        if !ordner.is_dir() {
+            return Err(format!("Ordner nicht gefunden: {}", ordner.display()));
+        }
+        let info = register_info_von(&konfig, &ordner)?;
+        if !info.vorhanden && !bestaetigt {
+            return Ok((info, false));
+        }
+        konfig_aendern(&app2, |k| {
+            k.register_ordner = Some(ordner.clone());
+            Ok(())
+        })?;
+        leser_zuruecksetzen(&app2);
+        Ok((info, true))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Zeigt den Ordner des Registers im Finder bzw. Dateimanager.
+#[tauri::command]
+async fn register_im_finder(app: AppHandle) -> Result<(), String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    tauri::async_runtime::spawn_blocking(move || im_system(&ordner, true))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Ordner mit Dateien, die nur online liegen und deren Inhalt aussteht, mit
+/// `vorschau` deren Vorschau aussteht.
+#[tauri::command]
+async fn nur_online_ordner(app: AppHandle, vorschau: bool) -> Result<Vec<OnlineOrdner>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mit_leser(&app, |r| {
+            if vorschau { r.nur_online_ordner_vorschau() } else { r.nur_online_ordner() }.map_err(|e| e.to_string())
+        })
+    })
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Zeigt einen Ordner des Cloud-Ordners im Finder bzw. Dateimanager, etwa um
+/// ihn dort offline verfügbar zu machen.
+#[tauri::command]
+async fn ordner_im_finder(app: AppHandle, ordner: String) -> Result<(), String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let relativ = registerwerk_core::dateibaum::relativ_normalisieren(&ordner);
+        if relativ.split('/').any(|teil| teil == "..") {
+            return Err(format!("Ordner \"{ordner}\" ist ungültig"));
+        }
+        let pfad = konfig.ort(&relativ).unwrap_or_default();
+        if !pfad.is_dir() {
+            return Err(format!("Ordner nicht gefunden: {}", pfad.display()));
+        }
+        im_system(&pfad, true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Liefert eine Vorschau für `vorschau://localhost/<datei>/<seite>`.
 /// Läuft außerhalb des Fensters, damit das Lesen die Oberfläche nicht aufhält.
 fn vorschau_protokoll(app: AppHandle, anfrage: Request<Vec<u8>>, antwort: UriSchemeResponder) {
@@ -596,6 +1111,8 @@ fn main() {
     tauri::Builder::default()
         .manage(Lesen::default())
         .manage(Leser::default())
+        .manage(Pruefen::default())
+        .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("vorschau", |ctx, anfrage, antwort| {
             vorschau_protokoll(ctx.app_handle().clone(), anfrage, antwort)
         })
@@ -603,6 +1120,20 @@ fn main() {
             app_info,
             register_stand,
             dateibaum_einlesen,
+            regeln_lesen,
+            regeln_speichern,
+            ordner_liste,
+            ordner_pruefen,
+            ordner_pruefen_abbrechen,
+            nur_online_ordner,
+            ordner_im_finder,
+            register_info,
+            register_waehlen,
+            register_im_finder,
+            ordner_waehlen,
+            ast_hinzufuegen,
+            ast_loesen,
+            ordner_entfernen,
             inhalte_lesen,
             inhalte_abbrechen,
             vorschauen_erzeugen,

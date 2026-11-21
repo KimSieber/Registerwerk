@@ -1,0 +1,352 @@
+/* Ordnerregeln (Stufe 3, v0.0.7): Baum des Cloud-Ordners mit der Stufe je Ordner, rechts die Prüfung. */
+
+.regelansicht {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.regelansicht h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.regelansicht h4 { margin: 10px 0 2px; font-size: 12.5px; font-weight: 650; }
+
+.regel__kopf {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--linie);
+}
+.regel__titel { flex: 1; min-width: 0; }
+.regel__titel p { font-size: 13px; }
+.regel__knoepfe { flex: none; display: flex; align-items: center; gap: 10px; font-size: 13px; }
+
+.regel__meldung { flex: none; margin: 12px 20px; }
+.regel__meldung + .regel__meldung { margin-top: 0; }
+.regel__lauf { padding: 0 14px 10px; border: 1px solid var(--linie); border-radius: 10px; background: var(--flaeche); font-size: 13px; }
+.regel__lauf .lauf { border-top: 0; }
+.regel__lauf { max-height: 46vh; overflow-y: auto; }
+
+.regel__koerper {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(340px, 460px);
+}
+
+/* ---------- Schaltflächen mit eigener Klasse: gelten in jeder Ansicht ---------- */
+
+.knopf {
+  flex: none;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--knopf);
+  color: var(--knopf-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.knopf:hover:not(:disabled) { filter: brightness(1.12); }
+.knopf:disabled { opacity: 0.5; cursor: default; }
+.knopf--leise { background: var(--linie); color: var(--text); }
+.knopf--gefahr { background: var(--fehler-text); color: var(--flaeche); }
+
+/* ---------- Baum ---------- */
+
+.baum {
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px 12px 28px;
+  border-right: 1px solid var(--linie);
+  background: var(--flaeche);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.baum__leer { padding: 12px; }
+.baum__zeile {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding-right: 6px;
+  border-radius: 7px;
+}
+.baum__zeile:hover { background: var(--akzent-weich); }
+.baum__zeile--gewaehlt { background: var(--akzent-weich); box-shadow: inset 2px 0 0 var(--akzent); }
+.baum__name {
+  flex: 1;
+  min-width: 60px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.baum__zeile--aus .baum__name { color: var(--leise); }
+.baum__zeile--gewaehlt .baum__name { color: var(--text); font-weight: 600; }
+.baum__anzahl { flex: none; font-size: 11.5px; color: var(--leise); font-variant-numeric: tabular-nums; }
+.baum__marke {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--linie);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--leise);
+}
+.baum__punkt { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--akzent); }
+
+/* ---------- Wahl der Stufe: kräftig eigene Regel, blass geerbt ---------- */
+
+.stufenwahl {
+  flex: none;
+  display: flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--linie);
+}
+.stufenwahl__knopf {
+  display: inline-grid;
+  place-items: center;
+  height: 22px;
+  min-width: 42px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--leise);
+  white-space: nowrap;
+}
+button.stufenwahl__knopf { cursor: pointer; }
+button.stufenwahl__knopf:hover { color: var(--text); }
+.stufenwahl__knopf--geerbt { background: var(--flaeche); color: var(--text); opacity: 0.75; }
+.stufenwahl__knopf--eigene { color: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); }
+.stufenwahl__knopf--eigene.stufenwahl__knopf--voll { background: #b06c06; }
+.stufenwahl__knopf--eigene.stufenwahl__knopf--metadaten { background: #4a6296; }
+.stufenwahl__knopf--eigene.stufenwahl__knopf--ausgeschlossen { background: #6b7385; }
+button.stufenwahl__knopf--eigene:hover { color: #fff; }
+
+/* ---------- Rechte Seite ---------- */
+
+.regel__seite {
+  min-width: 0;
+  overflow-y: auto;
+  padding: 14px 16px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.regel__karte {
+  flex: none;
+  padding: 14px 16px;
+  border: 1px solid var(--linie);
+  border-radius: 10px;
+  background: var(--flaeche);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.legende { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.legende > div { display: grid; grid-template-columns: 84px 1fr; gap: 10px; align-items: start; }
+.legende dt { display: flex; }
+.legende dd { margin: 0; color: var(--leise); font-size: 12.5px; }
+
+.regelliste { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.regelliste li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.regelliste .stufenwahl__knopf { flex: none; width: 84px; }
+.regelliste__pfad {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.regelliste__pfad:hover { color: var(--akzent); }
+.regelliste__weg { flex: none; width: 22px; height: 22px; border-radius: 5px; color: var(--leise); font-size: 16px; line-height: 1; cursor: pointer; }
+.regelliste__weg:hover { background: var(--linie); color: var(--text); }
+
+/* ---------- Prüfung eines Ordners ---------- */
+
+.pruefung__kopf { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.pruefung__kopf > div { min-width: 0; }
+.pruefung__zahlen { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.pruefung__zahlen > div {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 12px;
+}
+.pruefung__wert { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.pruefung__tabelle { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pruefung__tabelle th { font-weight: 500; color: var(--leise); font-size: 11.5px; text-align: left; padding: 2px 0 4px; }
+.pruefung__tabelle td { padding: 3px 0; border-top: 1px solid var(--linie); }
+.pruefung__tabelle .zahl { text-align: right; padding-left: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pruefung__ordner { text-align: left; color: var(--akzent); font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
+.pruefung__ordner:disabled { opacity: 0.5; cursor: default; }
+.pruefung__bibliotheken summary { cursor: pointer; color: var(--leise); }
+.pruefung__bibliotheken ul { margin: 6px 0 0; padding-left: 18px; max-height: 180px; overflow-y: auto; }
+.pruefung__fuss { font-size: 12px; }
+.endungen { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.endungen__eintrag { padding: 1px 8px; border: 1px solid var(--linie); border-radius: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* ---------- Rückfrage vor dem Entfernen ---------- */
+
+.dialog__grund {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(10, 16, 30, 0.45);
+}
+.dialog {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 22px 24px;
+  border-radius: 14px;
+  border: 1px solid var(--rand);
+  background: var(--flaeche);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13.5px;
+}
+.dialog h2 { font-size: 16px; }
+.dialog__liste { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.dialog__knoepfe { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+.dialog .leise { color: var(--text-leise); }
+
+.marke small { color: var(--text-leise); }
+.marke--ausgeschlossen { text-decoration: line-through; color: var(--text-leise); }
+
+/* ---------- Liste der betroffenen Dateien ---------- */
+
+.betroffen { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.betroffen__liste {
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--rand);
+  border-radius: 8px;
+  background: var(--bg);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.betroffen__liste section + section { margin-top: 12px; }
+.betroffen__liste h3 { margin: 0 0 4px; font-size: 12.5px; font-weight: 650; }
+.betroffen__liste ul { list-style: none; margin: 0; padding: 0; }
+.betroffen__liste li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+  border-top: 1px solid var(--rand);
+  font-size: 12px;
+}
+.betroffen__pfad { font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
+.betroffen__seiten { flex: none; color: var(--text-leise); font-variant-numeric: tabular-nums; }
+.betroffen__endungen { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 0 0 6px; font-size: 12px; }
+.betroffen__endungen span { padding: 0 7px; border: 1px solid var(--rand); border-radius: 6px; }
+.betroffen__fuss { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12.5px; }
+.lauf__betroffen summary { cursor: pointer; }
+.lauf__betroffen .betroffen { margin-top: 8px; }
+
+/* ---------- Dateien, die nur online liegen ---------- */
+
+.baum__online { flex: none; padding: 0 7px; border-radius: 999px; background: var(--akzent-weich); font-size: 11px; white-space: nowrap; }
+.nur-online { display: flex; flex-direction: column; gap: 8px; }
+.nur-online .knopf { height: 24px; padding: 0 10px; font-size: 12px; }
+.nur-online__liste {
+  list-style: none;
+  margin: 0;
+  padding: 6px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--rand);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.nur-online__liste li { display: flex; align-items: center; gap: 10px; padding: 3px 0; border-top: 1px solid var(--rand); }
+.nur-online__liste li:first-child { border-top: 0; }
+.nur-online__liste .pfad { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.nur-online__zahl { flex: none; font-variant-numeric: tabular-nums; color: var(--text-leise); }
+
+/* ---------- Äste und fehlende Ordner ---------- */
+
+.baum__name--ast { font-weight: 650; }
+.baum__ort { margin-left: 10px; font-weight: 400; font-size: 11.5px; color: var(--leise); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.baum__knopf { height: 22px; padding: 0 9px; font-size: 11.5px; }
+.regel__name { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.regel__name form { display: flex; gap: 8px; align-items: center; }
+.regel__name input {
+  flex: 1;
+  max-width: 320px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--linie);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.vermisst { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.fehlende { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.fehlende li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 4px 0; border-top: 1px solid var(--rand); font-size: 12.5px; }
+.fehlende .pfad { font-weight: 600; overflow-wrap: anywhere; }
+.fehlende .knopf { height: 24px; padding: 0 10px; font-size: 12px; }
+
+/* ---------- Datenbank-Symbol rechts oben ---------- */
+
+.registerinfo { margin-left: auto; position: relative; }
+.registerinfo__knopf {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 8px;
+  color: var(--leise);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.registerinfo__knopf:hover, .registerinfo__knopf.aktiv { background: var(--linie); color: var(--text); }
+.registerinfo__knopf svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.registerinfo__feld {
+  position: absolute;
+  right: 0;
+  top: 38px;
+  z-index: 60;
+  width: min(480px, calc(100vw - 32px));
+  padding: 16px 18px;
+  border: 1px solid var(--linie);
+  border-radius: 12px;
+  background: var(--flaeche);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+.registerinfo__feld h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.registerinfo__ort { overflow-wrap: anywhere; font-size: 12px; }
+.registerinfo__zahlen { margin: 0; display: grid; grid-template-columns: 120px 1fr; gap: 5px 12px; }
+.registerinfo__zahlen dt { color: var(--leise); }
+.registerinfo__zahlen dd { margin: 0; font-variant-numeric: tabular-nums; }
+.registerinfo__knoepfe { display: flex; justify-content: flex-end; gap: 8px; }
+.registerinfo__frage { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg); }
+.registerinfo__hinweis { font-size: 12px; }

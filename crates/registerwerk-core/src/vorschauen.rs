@@ -144,7 +144,7 @@ where
 
         // Rendern
         let liste_r = &liste;
-        let cloud = &konfig.cloud_ordner;
+        let orte = konfig;
         let tx = meldung_tx;
         let render_faden = s.spawn(move || {
             let mut abgebrochen = false;
@@ -154,7 +154,7 @@ where
                     abgebrochen = true;
                     break;
                 }
-                let pfad = cloud.join(&eintrag.pfad);
+                let pfad = orte.ort_oder_nichts(&eintrag.pfad);
                 let meta = std::fs::metadata(&pfad).ok();
                 let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 if eintrag.nur_online || groesse == 0 {
@@ -308,13 +308,10 @@ mod tests {
         fs::write(a.join("b.pdf"), "12").unwrap();
         fs::write(a.join("kaputt.pdf"), "kaputt").unwrap();
         fs::write(a.join("online.pdf"), "").unwrap();
-        let konfig = Konfiguration {
-            cloud_ordner: tmp.path().to_path_buf(),
-            verzeichnisse: vec!["A".into()],
-            register_ordner: None,
-        };
+        // Ast "A" liegt im Ordner A: Die Pfade im Register heißen "A/…"
+        let konfig = Konfiguration::mit_ast("A", &tmp.path().join("A"));
         let mut register = Register::oeffnen(&tmp.path().join("register")).unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         (tmp, konfig, register)
     }
 
@@ -354,7 +351,7 @@ mod tests {
         fs::write(&a, "1").unwrap();
         let spaeter = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
         fs::File::options().write(true).open(&a).unwrap().set_modified(spaeter).unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         let e = lauf(&konfig, &mut register);
         assert_eq!((e.erzeugt, e.seiten, e.aufgeraeumt), (1, 1, 3));
         let s = register.stand().unwrap().vorschau;

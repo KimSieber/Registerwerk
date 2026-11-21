@@ -16,6 +16,8 @@
 //!   `datei`
 //! - 6 (v0.0.6): Suchindex (`suche.rs`), Stand der Suche in `datei`
 //! - 7 (v0.0.6): ohne Index über den Text mit Leerraum
+//! - 8 (v0.0.7): Stufe der Ordnerregel in `datei`
+//! - 9 (v0.0.7): Geräte, je Gerät gesehene Ordner, Merkmale des Registers
 //!
 //! Die Vorschauen selbst liegen nicht in dieser Datei, sondern in Scheiben
 //! (`vorschau-0001.db`, …) im selben Ordner, je etwa [`SCHEIBE_GRENZE`] groß.
@@ -30,13 +32,17 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 
-use crate::dateibaum::Durchlauf;
+use std::collections::BTreeMap;
+
+use crate::dateibaum::{self, Durchlauf};
+use crate::formate::{self, Klasse};
+use crate::regeln::{Regeln, Stufe};
 use crate::guete::{self, Zaehlung};
 use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 9;
 
 /// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
 /// Konzept: 1 bis 2 GB. **Annahme**
@@ -86,6 +92,97 @@ pub struct LaufErgebnis {
     pub fehlende_verzeichnisse: Vec<String>,
     /// Verzeichnisse mit Lesefehlern. Für sie wurde nichts entfernt.
     pub unvollstaendige_verzeichnisse: Vec<String>,
+    /// Von den entfernten Dateien: nicht mehr von den Ordnerregeln erfasst
+    /// (Ordner ausgeschlossen oder ohne Regel, Typ wird ignoriert, Ordner
+    /// einer Bibliothek). Die übrigen gibt es im Dateibaum nicht mehr.
+    pub entfernt_regel: u64,
+    /// Seiten mit Text oder Vorschau, die mit `entfernt_regel` verloren gehen.
+    pub entfernt_regel_seiten: u64,
+    /// Dateien, deren Ordner jetzt auf "nur Metadaten" steht und deren Text
+    /// und Vorschauen deshalb entfernt werden.
+    pub reduziert: u64,
+    pub reduziert_seiten: u64,
+    /// Beim Durchlauf wegen ihres Typs ignorierte Dateien.
+    pub ignoriert: u64,
+    /// Beim Durchlauf übergangene Ordner fremder Bibliotheken.
+    pub uebergangene_ordner: u64,
+    /// Nur geprüft: Das Register ist unverändert.
+    pub probe: bool,
+    /// Die Dateien hinter `entfernt` und `reduziert`, nach Pfad, damit sich
+    /// vor der Bestätigung beurteilen lässt, was wegfällt. Höchstens
+    /// [`BETROFFEN_MAX`] Einträge.
+    pub betroffen: Vec<Betroffen>,
+    /// Ordner, die dieses Gerät früher gesehen hat und jetzt nicht mehr
+    /// findet: verschoben, gelöscht oder nicht eingehängt. Ihr Bestand bleibt
+    /// im Register, bis er ausdrücklich entfernt wird.
+    pub vermisst: Vec<OrdnerBestand>,
+    /// Ordner, die es auf diesem Gerät nie gab: Sie gehören zu einem anderen
+    /// Gerät und bleiben unberührt.
+    pub fremd: Vec<OrdnerBestand>,
+}
+
+/// Ein Ordner, der auf diesem Gerät fehlt, mit seinem Bestand im Register.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OrdnerBestand {
+    /// Pfad im Register (`Ast/…`): der oberste fehlende Ordner.
+    pub ordner: String,
+    /// Dateien im Register in diesem Ordner samt Unterordnern.
+    pub dateien: u64,
+    /// Geräte, die den Ordner gesehen haben.
+    pub geraete: Vec<String>,
+}
+
+/// Ein Ordner mit Dateien, die ausstehen und nur online liegen.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OnlineOrdner {
+    /// Pfad relativ zum Cloud-Ordner.
+    pub ordner: String,
+    pub dateien: u64,
+}
+
+/// Mehr Dateien nennt ein Lauf nicht einzeln.
+pub const BETROFFEN_MAX: usize = 5000;
+
+/// Warum eine Datei nach den Ordnerregeln nicht mehr oder nur noch mit Namen
+/// im Register steht.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Grund {
+    /// Für den Ordner gilt keine Regel.
+    OhneRegel,
+    /// Der Ordner ist ausgeschlossen.
+    Ausgeschlossen,
+    /// Der Dateityp wird in der Stufe Voll ignoriert (`formate::Klasse`).
+    Typ,
+    /// Die Datei liegt in einem Ordner fremder Bibliotheken.
+    Bibliothek,
+    /// Der Ordner steht auf "nur Metadaten": Text und Vorschauen entfallen.
+    NurMetadaten,
+    /// Den Ordner gibt es auf diesem Gerät, die Datei darin nicht mehr:
+    /// gelöscht, verschoben oder umbenannt.
+    Fehlt,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Betroffen {
+    /// Pfad relativ zum Cloud-Ordner.
+    pub pfad: String,
+    pub grund: Grund,
+    /// Seiten mit Text oder Vorschau, die verloren gehen.
+    pub seiten: u64,
+    /// Wann die Datei zuletzt gesehen wurde (Sekunden seit 1970) und von
+    /// welchem Gerät. Eine eben erst auf einem anderen Gerät gesehene Datei
+    /// ist oft nicht gelöscht, sondern noch nicht hierher synchronisiert.
+    pub zuletzt: Option<i64>,
+    pub geraet: Option<String>,
+}
+
+impl LaufErgebnis {
+    /// Der Abgleich würde Einträge entfernen oder auf den Namen kürzen. Das
+    /// soll vorher bestätigt werden: Fehlen allein löscht nie.
+    pub fn bestaetigung_noetig(&self) -> bool {
+        self.entfernt > 0 || self.reduziert > 0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -179,6 +276,21 @@ fn jetzt() -> i64 {
         .unwrap_or(0)
 }
 
+/// Beim Schließen wandert alles aus den Protokolldateien (`-wal`) in die
+/// Datenbanken selbst. Liegt das Register in einem Cloud-Ordner, werden so
+/// nur vollständige Datenbankdateien synchronisiert. Ein nur lesend
+/// geöffnetes Register kann das nicht, der Fehler ist dann ohne Belang.
+impl Drop for Register {
+    fn drop(&mut self) {
+        // Ohne Wartezeit: Arbeitet gerade eine andere Verbindung, erledigt sie es.
+        const LEEREN: &str = "PRAGMA busy_timeout = 0; PRAGMA wal_checkpoint(TRUNCATE)";
+        let _ = self.db.execute_batch(LEEREN);
+        for scheibe in self.scheiben.borrow().values() {
+            let _ = scheibe.execute_batch(LEEREN);
+        }
+    }
+}
+
 impl Register {
     /// Öffnet das Register in `ordner` und legt es bei Bedarf an.
     pub fn oeffnen(ordner: &Path) -> Ergebnis<Self> {
@@ -268,6 +380,49 @@ impl Register {
         }
         if version < 7 {
             crate::suche::migration_7(&tx)?;
+        }
+        if version < 8 {
+            // Stufe der Ordnerregel: 1 voll, 2 nur Metadaten (`regeln.rs`)
+            tx.execute_batch(
+                "ALTER TABLE datei ADD COLUMN stufe INTEGER NOT NULL DEFAULT 1;
+                 PRAGMA user_version = 8;",
+            )?;
+        }
+        if version < 9 {
+            // Mehrere Geräte arbeiten auf demselben Register. Es merkt sich,
+            // welches Gerät einen Ordner gesehen hat: Fehlt ein Ordner auf
+            // einem Gerät, das ihn nie gesehen hat, gehört er zu einem
+            // anderen Gerät. `merkmal` hält einmalige Umstellungen fest.
+            tx.execute_batch(
+                "CREATE TABLE geraet (
+                     id    INTEGER PRIMARY KEY,
+                     name  TEXT NOT NULL UNIQUE
+                 );
+                 CREATE TABLE ordner_gesehen (
+                     ordner   TEXT NOT NULL,
+                     geraet   INTEGER NOT NULL REFERENCES geraet(id) ON DELETE CASCADE,
+                     zuletzt  INTEGER NOT NULL,
+                     PRIMARY KEY (ordner, geraet)
+                 ) WITHOUT ROWID;
+                 CREATE TABLE merkmal (
+                     name  TEXT PRIMARY KEY,
+                     wert  TEXT NOT NULL
+                 ) WITHOUT ROWID;
+                 ALTER TABLE lauf ADD COLUMN geraet INTEGER REFERENCES geraet(id);
+                 PRAGMA user_version = 9;",
+            )?;
+        }
+        // v0.0.7 liest Fax-TIFFs. Ein festgehaltener Fehler gilt sonst, bis
+        // sich die Datei ändert: Diese Dateien werden einmal neu versucht.
+        let versucht: bool = tx.query_row("SELECT count(*) FROM merkmal WHERE name = 'fax_tiff'", [], |z| z.get(0))?;
+        if !versucht {
+            tx.execute_batch(
+                "UPDATE datei SET vorschau_verfahren = NULL, vorschau_fehler = NULL
+                 WHERE vorschau_fehler IS NOT NULL AND endung IN ('tif','tiff');
+                 UPDATE datei SET ocr_verfahren = NULL, ocr_fehler = NULL
+                 WHERE ocr_fehler IS NOT NULL AND endung IN ('tif','tiff');
+                 INSERT INTO merkmal (name, wert) VALUES ('fax_tiff', '1');",
+            )?;
         }
         tx.commit()?;
         Ok(Self { db, pfad, scheiben: RefCell::default(), scheibe_grenze: SCHEIBE_GRENZE, wortliste: RefCell::default() })
@@ -423,16 +578,32 @@ impl Register {
     ///
     /// - Neu ist jeder Pfad, den das Register nicht kennt.
     /// - Geändert ist eine Datei, deren Größe oder Änderungsdatum abweicht.
-    /// - Entfernt ist ein Pfad, der im Register steht und im Dateibaum fehlt.
-    ///   Das gilt nur für Verzeichnisse, die vollständig gelesen wurden.
+    /// - Entfernt ist ein Pfad, der im Register steht und im Durchlauf fehlt:
+    ///   weil es die Datei nicht mehr gibt oder weil die Ordnerregeln sie
+    ///   nicht mehr erfassen. Ausgenommen sind Ordner mit Regel, die auf
+    ///   diesem Gerät fehlen oder nicht vollständig gelesen wurden.
+    /// - Steht der Ordner einer Datei jetzt auf "nur Metadaten", werden ihr
+    ///   Text und ihre Vorschauen entfernt.
     ///
     /// Wechselt eine Datei bei gleichem Änderungsdatum zwischen lokal und
     /// "nur online", ist das keine Änderung des Inhalts. Die letzte bekannte
     /// Größe bleibt dann erhalten.
     pub fn abgleichen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
+        self.abgleich(durchlauf, false)
+    }
+
+    /// Wie [`Register::abgleichen`], lässt das Register aber unverändert.
+    /// Zeigt vorab, was ein Abgleich entfernen würde.
+    pub fn abgleich_pruefen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
+        self.abgleich(durchlauf, true)
+    }
+
+    fn abgleich(&mut self, durchlauf: &Durchlauf, probe: bool) -> Ergebnis<LaufErgebnis> {
         let start = Instant::now();
         let tx = self.db.transaction()?;
-        tx.execute("INSERT INTO lauf (begonnen) VALUES (?1)", [jetzt()])?;
+        tx.execute("INSERT OR IGNORE INTO geraet (name) VALUES (?1)", [&durchlauf.geraet])?;
+        let geraet: i64 = tx.query_row("SELECT id FROM geraet WHERE name = ?1", [&durchlauf.geraet], |z| z.get(0))?;
+        tx.execute("INSERT INTO lauf (begonnen, geraet) VALUES (?1, ?2)", params![jetzt(), geraet])?;
         let lauf = tx.last_insert_rowid();
 
         let mut e = LaufErgebnis {
@@ -440,20 +611,35 @@ impl Register {
             gesehen: durchlauf.dateien.len() as u64,
             nicht_lesbar: durchlauf.nicht_lesbar.len() as u64,
             fehlende_verzeichnisse: durchlauf.fehlende_verzeichnisse.clone(),
+            ignoriert: durchlauf.ignoriert,
+            uebergangene_ordner: durchlauf.uebergangene_ordner,
+            probe,
             ..Default::default()
         };
 
         {
-            let mut suchen = tx.prepare("SELECT id, groesse, geaendert FROM datei WHERE pfad = ?1")?;
+            let betroffen = |pfad: &str, grund: Grund, seiten: Option<i64>, liste: &mut Vec<Betroffen>| {
+                if liste.len() < BETROFFEN_MAX {
+                    liste.push(Betroffen {
+                        pfad: pfad.to_string(),
+                        grund,
+                        seiten: seiten.unwrap_or(0) as u64,
+                        zuletzt: None,
+                        geraet: None,
+                    });
+                }
+            };
+            let mut suchen = tx.prepare("SELECT id, groesse, geaendert, stufe, seiten FROM datei WHERE pfad = ?1")?;
             let mut einfuegen = tx.prepare(
                 "INSERT INTO datei (pfad, name, endung, groesse, geaendert, nur_online,
-                                    datum_dokument, datum_quelle, erfasst_lauf, gesehen_lauf)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                                    datum_dokument, datum_quelle, erfasst_lauf, gesehen_lauf, stufe)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
             )?;
             // Stammt das Dokumentdatum aus dem Änderungsdatum, wandert es mit.
             let mut aktualisieren = tx.prepare(
                 "UPDATE datei SET groesse = ?2, geaendert = ?3, nur_online = ?4, gesehen_lauf = ?5,
-                    datum_dokument = CASE WHEN datum_quelle = ?6 THEN ?7 ELSE datum_dokument END
+                    datum_dokument = CASE WHEN datum_quelle = ?6 THEN ?7 ELSE datum_dokument END,
+                    stufe = ?8
                  WHERE id = ?1",
             )?;
 
@@ -463,18 +649,21 @@ impl Register {
                     e.nur_online += 1;
                 }
                 let groesse_neu = (!leer).then_some(d.groesse as i64);
-                let vorhanden: Option<(i64, Option<i64>, i64)> = suchen
-                    .query_row([&d.pfad], |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?)))
+                let stufe_neu = d.stufe.als_zahl();
+                // id, Größe, Änderungsdatum, Stufe, Seiten
+                type Vorhanden = (i64, Option<i64>, i64, i64, Option<i64>);
+                let vorhanden: Option<Vorhanden> = suchen
+                    .query_row([&d.pfad], |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?, z.get(3)?, z.get(4)?)))
                     .optional()?;
                 match vorhanden {
                     None => {
                         let (datum, quelle) = dokumentdatum(&d.name, None, d.geaendert);
                         einfuegen.execute(params![
-                            d.pfad, d.name, d.endung, groesse_neu, d.geaendert, leer, datum, quelle, lauf
+                            d.pfad, d.name, d.endung, groesse_neu, d.geaendert, leer, datum, quelle, lauf, stufe_neu
                         ])?;
                         e.neu += 1;
                     }
-                    Some((id, groesse_alt, geaendert_alt)) => {
+                    Some((id, groesse_alt, geaendert_alt, stufe_alt, seiten)) => {
                         let gleiches_datum = geaendert_alt == d.geaendert;
                         let gleiche_groesse = groesse_alt == groesse_neu;
                         // Bei gleichem Datum ist ein Wechsel von oder zu 0 Byte
@@ -493,21 +682,122 @@ impl Register {
                             leer,
                             lauf,
                             datum::QUELLE_GEAENDERT,
-                            datum::aus_zeitstempel(d.geaendert)
+                            datum::aus_zeitstempel(d.geaendert),
+                            stufe_neu
                         ])?;
+                        if stufe_alt != stufe_neu && d.stufe == Stufe::Metadaten && Self::inhalt_entfernen(&tx, id)? {
+                            e.reduziert += 1;
+                            e.reduziert_seiten += seiten.unwrap_or(0) as u64;
+                            betroffen(&d.pfad, Grund::NurMetadaten, seiten, &mut e.betroffen);
+                        }
                     }
                 }
             }
 
-            let mut entfernen = tx.prepare(
-                "DELETE FROM datei
-                 WHERE gesehen_lauf <> ?1 AND substr(pfad, 1, length(?2)) = ?2",
+            // Nicht mehr gesehen. Entfernt wird nur mit einem Grund:
+            // - die Ordnerregeln erfassen die Datei nicht mehr, oder
+            // - ihr Ordner ist auf diesem Gerät da und wurde vollständig
+            //   gelesen, die Datei fehlt darin.
+            // Fehlt der Ordner selbst, bleibt der Bestand: Er liegt auf einem
+            // anderen Gerät oder ist gerade nicht erreichbar.
+            let unvollstaendig =
+                |ordner: &str| durchlauf.unvollstaendige_verzeichnisse.iter().any(|v| v == ordner);
+            let fehlend = |ordner: &str| durchlauf.fehlende_verzeichnisse.iter().any(|v| v == ordner);
+            type Fehlende = (i64, String, String, Option<i64>, Option<i64>, Option<String>);
+            let fehlen: Vec<Fehlende> = tx
+                .prepare(
+                    "SELECT d.id, d.pfad, d.endung, d.seiten, l.begonnen, g.name
+                     FROM datei d LEFT JOIN lauf l ON l.id = d.gesehen_lauf LEFT JOIN geraet g ON g.id = l.geraet
+                     WHERE d.gesehen_lauf <> ?1",
+                )?
+                .query_map([lauf], |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?, z.get(3)?, z.get(4)?, z.get(5)?)))?
+                .collect::<Result<_, _>>()?;
+            let mut entfernen = tx.prepare("DELETE FROM datei WHERE id = ?1")?;
+            // oberster fehlender Ordner -> Zahl der Dateien darin
+            let mut ohne_ordner: BTreeMap<String, u64> = BTreeMap::new();
+            for (id, pfad, endung, seiten, zuletzt, zuletzt_geraet) in fehlen {
+                let regel = durchlauf.regeln.fuer_datei(&pfad);
+                if regel.is_some_and(|(ordner, _)| unvollstaendig(ordner)) {
+                    continue;
+                }
+                let grund = match grund_der_regel(&durchlauf.regeln, &pfad, &endung) {
+                    Some(grund) => {
+                        e.entfernt_regel += 1;
+                        e.entfernt_regel_seiten += seiten.unwrap_or(0) as u64;
+                        grund
+                    }
+                    None => {
+                        // Die Regel gilt weiter. Gibt es den Ordner hier?
+                        let (wurzel, _) = regel.expect("ohne Regel gäbe es einen Grund");
+                        let eltern = pfad.rsplit_once('/').map(|(vorn, _)| vorn).unwrap_or("");
+                        if fehlend(wurzel) {
+                            *ohne_ordner.entry(wurzel.to_string()).or_default() += 1;
+                            continue;
+                        }
+                        if !durchlauf.ordner.contains(eltern) {
+                            // der oberste Ordner unter der Regel, den es nicht gibt
+                            let mut oberster = eltern;
+                            while let Some((vorn, _)) = oberster.rsplit_once('/') {
+                                if vorn.len() < wurzel.len() || durchlauf.ordner.contains(vorn) {
+                                    break;
+                                }
+                                oberster = vorn;
+                            }
+                            *ohne_ordner.entry(oberster.to_string()).or_default() += 1;
+                            continue;
+                        }
+                        Grund::Fehlt
+                    }
+                };
+                if e.betroffen.len() < BETROFFEN_MAX {
+                    e.betroffen.push(Betroffen {
+                        pfad,
+                        grund,
+                        seiten: seiten.unwrap_or(0) as u64,
+                        zuletzt,
+                        geraet: zuletzt_geraet,
+                    });
+                }
+                e.entfernt += entfernen.execute([id])? as u64;
+            }
+            // Fehlende Ordner mit Regel stehen auch ohne Bestand in der Liste
+            for ordner in &durchlauf.fehlende_verzeichnisse {
+                ohne_ordner.entry(ordner.clone()).or_default();
+            }
+
+            // Hat dieses Gerät den Ordner früher gesehen, wird er vermisst.
+            // Sonst gehört er zu einem anderen Gerät.
+            let mut gesehen_von = tx.prepare(
+                "SELECT g.id, g.name FROM ordner_gesehen o JOIN geraet g ON g.id = o.geraet
+                 WHERE o.ordner = ?1 ORDER BY g.name",
             )?;
-            for verzeichnis in &durchlauf.gelesene_verzeichnisse {
-                e.entfernt += entfernen.execute(params![lauf, format!("{verzeichnis}/")])? as u64;
+            for (ordner, dateien) in ohne_ordner {
+                let geraete: Vec<(i64, String)> =
+                    gesehen_von.query_map([&ordner], |z| Ok((z.get(0)?, z.get(1)?)))?.collect::<Result<_, _>>()?;
+                let hier = geraete.iter().any(|(id, _)| *id == geraet);
+                let bestand = OrdnerBestand { ordner, dateien, geraete: geraete.into_iter().map(|(_, n)| n).collect() };
+                if hier {
+                    e.vermisst.push(bestand);
+                } else if bestand.dateien > 0 || !bestand.geraete.is_empty() {
+                    e.fremd.push(bestand);
+                } else {
+                    // Regel für einen Ordner, den noch kein Gerät gelesen hat
+                    e.vermisst.push(bestand);
+                }
+            }
+
+            // Dieses Gerät hat die betretenen Ordner jetzt gesehen
+            let mut merken = tx.prepare(
+                "INSERT INTO ordner_gesehen (ordner, geraet, zuletzt) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (ordner, geraet) DO UPDATE SET zuletzt = excluded.zuletzt",
+            )?;
+            let zeit = jetzt();
+            for ordner in &durchlauf.ordner {
+                merken.execute(params![ordner, geraet, zeit])?;
             }
         }
 
+        e.betroffen.sort_by(|a, b| a.pfad.cmp(&b.pfad));
         e.unvollstaendige_verzeichnisse = durchlauf.unvollstaendige_verzeichnisse.clone();
         tx.execute(
             "UPDATE lauf SET beendet = ?2, gesehen = ?3, neu = ?4, geaendert = ?5,
@@ -518,9 +808,45 @@ impl Register {
                 e.unveraendert as i64, e.entfernt as i64, e.nicht_lesbar as i64
             ],
         )?;
-        tx.commit()?;
+        if probe {
+            tx.rollback()?;
+        } else {
+            tx.commit()?;
+        }
         e.dauer_ms = start.elapsed().as_millis() as u64;
         Ok(e)
+    }
+
+    /// Entfernt Text, erkannten Text und Vorschauen einer Datei, deren Ordner
+    /// auf "nur Metadaten" steht. Liefert, ob es etwas zu entfernen gab.
+    fn inhalt_entfernen(tx: &rusqlite::Transaction, id: i64) -> Ergebnis<bool> {
+        let (name, geaendert, gelesen): (String, i64, bool) = tx.query_row(
+            "SELECT name, geaendert,
+                    inhalt_verfahren IS NOT NULL OR vorschau_verfahren IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM vorschau v WHERE v.datei = datei.id)
+             FROM datei WHERE id = ?1",
+            [id],
+            |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?)),
+        )?;
+        if !gelesen {
+            return Ok(false);
+        }
+        tx.execute("DELETE FROM seite WHERE datei = ?1", [id])?;
+        tx.execute("DELETE FROM ocr WHERE datei = ?1", [id])?;
+        tx.execute("DELETE FROM vorschau WHERE datei = ?1", [id])?;
+        // Das Dokumentdatum darf nicht mehr aus dem Inhalt der PDF stammen
+        let (datum, quelle) = dokumentdatum(&name, None, geaendert);
+        tx.execute(
+            "UPDATE datei SET inhalt_geaendert = NULL, inhalt_groesse = NULL, inhalt_verfahren = NULL,
+                              inhalt_fehler = NULL, seiten = NULL, pdf_erstellt = NULL,
+                              vorschau_geaendert = NULL, vorschau_groesse = NULL, vorschau_verfahren = NULL,
+                              vorschau_fehler = NULL,
+                              ocr_geaendert = NULL, ocr_groesse = NULL, ocr_verfahren = NULL, ocr_fehler = NULL,
+                              textebene_fehler = NULL, datum_dokument = ?2, datum_quelle = ?3
+             WHERE id = ?1",
+            params![id, datum, quelle],
+        )?;
+        Ok(true)
     }
 
     pub fn stand(&self) -> Ergebnis<RegisterStand> {
@@ -604,7 +930,7 @@ impl Register {
     }
 
     /// Bedingung für lesbare Dateien (`formate.rs`), deren Inhalt (neu) gelesen werden muss.
-    const AUSSTEHEND: &'static str = concat!("endung IN ", crate::lesbar_sql!(), " AND (
+    const AUSSTEHEND: &'static str = concat!("stufe = 1 AND endung IN ", crate::lesbar_sql!(), " AND (
             inhalt_verfahren IS NULL OR inhalt_verfahren < ?1
             OR inhalt_geaendert IS NOT geaendert
             OR (groesse IS NOT NULL AND inhalt_groesse IS NOT groesse))");
@@ -683,6 +1009,139 @@ impl Register {
         Ok(())
     }
 
+    /// Zahl der Dateien im Register je Ordner (samt Unterordnern), in der
+    /// Reihenfolge von `ordner`. Der leere Pfad zählt alle. Für den Ordnerbaum
+    /// der Regeln.
+    pub fn dateien_je_ordner(&self, ordner: &[String]) -> Ergebnis<Vec<u64>> {
+        let mut alle = self.db.prepare_cached("SELECT count(*) FROM datei")?;
+        // "0" folgt auf "/": der Bereich umfasst genau die Pfade unter dem Ordner
+        let mut unter = self.db.prepare_cached("SELECT count(*) FROM datei WHERE pfad >= ?1 AND pfad < ?2")?;
+        ordner
+            .iter()
+            .map(|o| {
+                let zahl: i64 = if o.is_empty() {
+                    alle.query_row([], |z| z.get(0))?
+                } else {
+                    unter.query_row([format!("{o}/"), format!("{o}0")], |z| z.get(0))?
+                };
+                Ok(zahl as u64)
+            })
+            .collect()
+    }
+
+    /// Entfernt den Bestand eines Ordners samt Unterordnern aus dem Register,
+    /// auch das Wissen, welches Gerät ihn gesehen hat. Für Ordner, die es
+    /// nicht mehr gibt. Liefert die Zahl der entfernten Dateien.
+    pub fn ordner_entfernen(&mut self, ordner: &str) -> Ergebnis<u64> {
+        if ordner.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.db.transaction()?;
+        let (von, bis) = (format!("{ordner}/"), format!("{ordner}0"));
+        let dateien = tx.execute("DELETE FROM datei WHERE pfad >= ?1 AND pfad < ?2", params![von, bis])? as u64;
+        tx.execute(
+            "DELETE FROM ordner_gesehen WHERE ordner = ?1 OR (ordner >= ?2 AND ordner < ?3)",
+            params![ordner, von, bis],
+        )?;
+        tx.commit()?;
+        Ok(dateien)
+    }
+
+    /// Geräte, die einen Ordner gesehen haben, je Ordner in der Reihenfolge
+    /// von `ordner`. Für den Ordnerbaum.
+    pub fn geraete_je_ordner(&self, ordner: &[String]) -> Ergebnis<Vec<Vec<String>>> {
+        let mut sql = self.db.prepare_cached(
+            "SELECT g.name FROM ordner_gesehen o JOIN geraet g ON g.id = o.geraet WHERE o.ordner = ?1 ORDER BY g.name",
+        )?;
+        ordner
+            .iter()
+            .map(|o| Ok(sql.query_map([o], |z| z.get(0))?.collect::<Result<Vec<String>, _>>()?))
+            .collect()
+    }
+
+    /// Ein Merkmal des Registers, etwa eine erledigte einmalige Umstellung.
+    pub fn merkmal(&self, name: &str) -> Ergebnis<Option<String>> {
+        Ok(self.db.query_row("SELECT wert FROM merkmal WHERE name = ?1", [name], |z| z.get(0)).optional()?)
+    }
+
+    /// Die Geräte, die dieses Register kennt, mit dem Zeitpunkt ihres letzten
+    /// Durchlaufs (Sekunden seit 1970), das zuletzt tätige zuerst.
+    pub fn geraete(&self) -> Ergebnis<Vec<(String, Option<i64>)>> {
+        let liste = self
+            .db
+            .prepare(
+                "SELECT g.name, max(l.begonnen) FROM geraet g LEFT JOIN lauf l ON l.geraet = g.id
+                 GROUP BY g.id ORDER BY 2 DESC, g.name",
+            )?
+            .query_map([], |z| Ok((z.get(0)?, z.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(liste)
+    }
+
+    /// Namen der Äste, die irgendein Gerät gesehen hat. Ein Ast, den es auf
+    /// diesem Gerät nicht gibt, steht so trotzdem im Ordnerbaum.
+    pub fn gesehene_aeste(&self) -> Ergebnis<Vec<String>> {
+        let liste = self
+            .db
+            .prepare("SELECT DISTINCT ordner FROM ordner_gesehen WHERE instr(ordner, '/') = 0 ORDER BY ordner")?
+            .query_map([], |z| z.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(liste)
+    }
+
+    /// Einmalige Umstellung auf Äste (v0.0.7): Bis dahin standen die Pfade
+    /// relativ zum einen Cloud-Ordner im Register. Jeder Pfad bekommt den
+    /// Namen des Astes davor, zu dem der Cloud-Ordner geworden ist. Text,
+    /// Vorschauen und OCR bleiben, nur der Suchindex über Name und Ordner
+    /// entsteht neu. Liefert, ob umgestellt wurde.
+    pub fn pfade_voranstellen(&mut self, ast: &str) -> Ergebnis<bool> {
+        const MERKMAL: &str = "pfade_mit_ast";
+        let tx = self.db.transaction()?;
+        let schon: Option<String> =
+            tx.query_row("SELECT wert FROM merkmal WHERE name = ?1", [MERKMAL], |z| z.get(0)).optional()?;
+        if schon.is_some() {
+            return Ok(false);
+        }
+        tx.execute("UPDATE datei SET pfad = ?1 || '/' || pfad, suche_stand = NULL", [ast])?;
+        tx.execute("INSERT INTO merkmal (name, wert) VALUES (?1, ?2)", [MERKMAL, ast])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Ordner mit Dateien, deren Inhalt aussteht und die nur online liegen,
+    /// nach Ordner. Registerwerk lädt sie nicht selbst: Die Liste zeigt, was
+    /// in der Cloud offline verfügbar gemacht werden muss.
+    pub fn nur_online_ordner(&self) -> Ergebnis<Vec<OnlineOrdner>> {
+        let sql = format!(
+            "SELECT substr(pfad, 1, max(length(pfad) - length(name) - 1, 0)) AS ordner, count(*)
+             FROM datei WHERE nur_online AND {} GROUP BY ordner ORDER BY ordner",
+            Self::AUSSTEHEND
+        );
+        let liste = self
+            .db
+            .prepare(&sql)?
+            .query_map([INHALT_VERFAHREN], |z| Ok(OnlineOrdner { ordner: z.get(0)?, dateien: z.get::<_, i64>(1)? as u64 }))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(liste)
+    }
+
+    /// Wie [`Register::nur_online_ordner`], aber als Zahl je Ordner samt
+    /// Unterordnern, in der Reihenfolge von `ordner`. Für den Ordnerbaum.
+    pub fn nur_online_je_ordner(&self, ordner: &[String]) -> Ergebnis<Vec<u64>> {
+        let sql = format!(
+            "SELECT count(*) FROM datei WHERE pfad >= ?2 AND pfad < ?3 AND nur_online AND {}",
+            Self::AUSSTEHEND
+        );
+        let mut unter = self.db.prepare_cached(&sql)?;
+        ordner
+            .iter()
+            .map(|o| {
+                let zahl: i64 = unter.query_row(params![INHALT_VERFAHREN, format!("{o}/"), format!("{o}0")], |z| z.get(0))?;
+                Ok(zahl as u64)
+            })
+            .collect()
+    }
+
     /// Nur für Werkzeuge wie `pdf_pruefen`: führt SQL auf dem Register aus.
     pub fn sql_ausfuehren(&self, sql: &str) -> Ergebnis<()> {
         self.db.execute_batch(sql)?;
@@ -710,7 +1169,7 @@ impl Register {
         let sql = format!(
             "SELECT count(*), sum(NOT ({a})), sum({a}), sum(({a}) AND nur_online),
                     sum(NOT ({a}) AND inhalt_fehler IS NOT NULL)
-             FROM datei WHERE endung IN {l}",
+             FROM datei WHERE stufe = 1 AND endung IN {l}",
             a = Self::AUSSTEHEND,
             l = crate::lesbar_sql!()
         );
@@ -760,6 +1219,25 @@ fn wal_einschalten(db: &Connection) -> rusqlite::Result<()> {
     }
 }
 
+/// Fällt ein nicht mehr gesehener Eintrag wegen der Ordnerregeln aus dem
+/// Register (und nicht, weil es die Datei nicht mehr gibt)? Ohne Blick ins
+/// Dateisystem: Bei Ordnernamen wie "build" gilt die Regel als Grund, auch
+/// wenn die Datei in Wahrheit gelöscht wurde. Das führt höchstens zu einer
+/// Rückfrage mehr.
+fn grund_der_regel(regeln: &Regeln, pfad: &str, endung: &str) -> Option<Grund> {
+    let Some((ordner, stufe)) = regeln.fuer_datei(pfad) else { return Some(Grund::OhneRegel) };
+    match stufe {
+        Stufe::Ausgeschlossen => return Some(Grund::Ausgeschlossen),
+        Stufe::Voll if formate::klasse(endung) == Klasse::Ignoriert => return Some(Grund::Typ),
+        _ => {}
+    }
+    // Ordner zwischen dem Ordner der Regel und der Datei
+    let rest = pfad[ordner.len()..].trim_start_matches('/');
+    let mut teile: Vec<&str> = rest.split('/').collect();
+    teile.pop();
+    teile.into_iter().any(dateibaum::name_wie_bibliothek).then_some(Grund::Bibliothek)
+}
+
 /// Dokumentdatum nach der Reihenfolge im Konzept (Abschnitt 9): Dateiname,
 /// PDF-Erstellungsdatum, Änderungsdatum. Liefert immer ein Datum.
 fn dokumentdatum(name: &str, pdf_erstellt: Option<&str>, geaendert: i64) -> (String, &'static str) {
@@ -780,11 +1258,27 @@ mod tests {
     fn datei(pfad: &str, groesse: u64, geaendert: i64) -> DateiEintrag {
         let name = pfad.rsplit('/').next().unwrap().to_string();
         let endung = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-        DateiEintrag { pfad: pfad.into(), name, endung, groesse, geaendert }
+        DateiEintrag { pfad: pfad.into(), name, endung, groesse, geaendert, stufe: Stufe::Voll }
     }
 
     fn durchlauf(dateien: Vec<DateiEintrag>) -> Durchlauf {
-        Durchlauf { dateien, gelesene_verzeichnisse: vec!["A".into()], ..Default::default() }
+        // alle Ordner der gesehenen Dateien gibt es
+        let mut ordner: std::collections::BTreeSet<String> = ["A".to_string()].into();
+        for d in &dateien {
+            let mut rest = d.pfad.as_str();
+            while let Some((vorn, _)) = rest.rsplit_once('/') {
+                ordner.insert(vorn.to_string());
+                rest = vorn;
+            }
+        }
+        Durchlauf {
+            dateien,
+            geraet: "Notebook".into(),
+            ordner,
+            regeln: Regeln::voll(&["A"]),
+            gelesene_verzeichnisse: vec!["A".into()],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -848,16 +1342,227 @@ mod tests {
     fn entfernt_nur_in_vollstaendig_gelesenen_verzeichnissen() {
         let mut r = Register::im_speicher().unwrap();
         let mut d = durchlauf(vec![datei("A/a.pdf", 1, 1), datei("AB/x.pdf", 1, 1), datei("B/b.pdf", 1, 1)]);
+        d.regeln = Regeln::voll(&["A", "AB", "B"]);
         d.gelesene_verzeichnisse = vec!["A".into(), "AB".into(), "B".into()];
         r.abgleichen(&d).unwrap();
 
         // B fehlt auf diesem Gerät, A ist leer gelesen. "AB" darf nicht als Teil von "A" gelten.
         let mut d = durchlauf(vec![datei("AB/x.pdf", 1, 1)]);
+        d.regeln = Regeln::voll(&["A", "AB", "B"]);
         d.gelesene_verzeichnisse = vec!["A".into(), "AB".into()];
         d.fehlende_verzeichnisse = vec!["B".into()];
+        // a.pdf gibt es nicht mehr: Auch das wird erst nach Bestätigung entfernt
+        let e = r.abgleich_pruefen(&d).unwrap();
+        assert_eq!((e.entfernt, e.entfernt_regel, e.bestaetigung_noetig()), (1, 0, true));
+        let b = &e.betroffen[0];
+        assert_eq!((b.pfad.as_str(), b.grund, b.geraet.as_deref()), ("A/a.pdf", Grund::Fehlt, Some("Notebook")));
+        assert!(b.zuletzt.is_some_and(|z| z > 1_600_000_000));
+        assert_eq!(r.stand().unwrap().dateien, 3);
         let e = r.abgleichen(&d).unwrap();
         assert_eq!(e.entfernt, 1);
         assert_eq!(r.stand().unwrap().dateien, 2);
+        // B hat dieses Gerät früher gesehen: vermisst, aber nicht entfernt
+        assert_eq!(e.vermisst, vec![OrdnerBestand { ordner: "B".into(), dateien: 1, geraete: vec!["Notebook".into()] }]);
+        assert!(e.fremd.is_empty());
+
+        // Ein Ordner mit Lesefehlern behält seinen Bestand, auch wenn ein
+        // Unterordner mit eigener Regel vollständig gelesen wurde
+        let mut d = durchlauf(vec![]);
+        d.ordner.insert("AB".into());
+        d.regeln = Regeln::voll(&["AB", "B", "B/C"]);
+        d.unvollstaendige_verzeichnisse = vec!["B".into()];
+        d.gelesene_verzeichnisse = vec!["AB".into(), "B/C".into()];
+        let e = r.abgleichen(&d).unwrap();
+        assert_eq!(e.entfernt, 1);
+        assert_eq!(r.sql_liste("SELECT pfad, 0 FROM datei").unwrap(), vec![("B/b.pdf".to_string(), 0)]);
+    }
+
+    #[test]
+    fn fehlende_ordner_gehoeren_anderen_geraeten_oder_werden_vermisst() {
+        let mut r = Register::im_speicher().unwrap();
+        // Der Mac mini liest zwei Äste, einer davon mit Unterordnern
+        let mut mini = durchlauf(vec![
+            datei("A/a.pdf", 1, 1),
+            datei("A/2019/b.pdf", 1, 1),
+            datei("A/2019/Tief/c.pdf", 1, 1),
+            datei("Stick/s.pdf", 1, 1),
+        ]);
+        mini.geraet = "Mac mini".into();
+        mini.ordner.insert("Stick".into());
+        mini.regeln = Regeln::voll(&["A", "Stick"]);
+        r.abgleichen(&mini).unwrap();
+
+        // Das Notebook hat den Ast "Stick" nicht, und "A/2019" ist dort nicht
+        // synchronisiert. Beides hat es nie gesehen: fremd, nichts zu entfernen.
+        let mut d = durchlauf(vec![datei("A/a.pdf", 1, 1)]);
+        d.regeln = Regeln::voll(&["A", "Stick"]);
+        d.fehlende_verzeichnisse = vec!["Stick".into()];
+        let e = r.abgleichen(&d).unwrap();
+        assert_eq!((e.entfernt, e.bestaetigung_noetig()), (0, false));
+        assert!(e.vermisst.is_empty());
+        let fremd: Vec<_> = e.fremd.iter().map(|f| (f.ordner.as_str(), f.dateien, f.geraete.join(","))).collect();
+        assert_eq!(fremd, vec![("A/2019", 2, "Mac mini".to_string()), ("Stick", 1, "Mac mini".to_string())]);
+        assert_eq!(r.stand().unwrap().dateien, 4);
+        assert_eq!(
+            r.geraete_je_ordner(&["A".to_string(), "Stick".to_string(), "X".to_string()]).unwrap(),
+            vec![vec!["Mac mini".to_string(), "Notebook".to_string()], vec!["Mac mini".to_string()], vec![]]
+        );
+
+        // Auf dem Mac mini selbst fehlt "A/2019" später: vermisst, weil er
+        // den Ordner kannte. Der Bestand bleibt bis zur Entscheidung.
+        let mut mini2 = durchlauf(vec![datei("A/a.pdf", 1, 1), datei("Stick/s.pdf", 1, 1)]);
+        mini2.geraet = "Mac mini".into();
+        mini2.ordner.insert("Stick".into());
+        mini2.regeln = Regeln::voll(&["A", "Stick"]);
+        let e = r.abgleichen(&mini2).unwrap();
+        assert_eq!(e.entfernt, 0);
+        assert_eq!(
+            e.vermisst,
+            vec![OrdnerBestand { ordner: "A/2019".into(), dateien: 2, geraete: vec!["Mac mini".into()] }]
+        );
+        assert!(e.fremd.is_empty());
+
+        // Ausdrücklich entfernen: Dateien und das Wissen über den Ordner
+        assert_eq!(r.ordner_entfernen("A/2019").unwrap(), 2);
+        let e = r.abgleichen(&mini2).unwrap();
+        assert!(e.vermisst.is_empty() && e.fremd.is_empty());
+        assert_eq!(r.stand().unwrap().dateien, 2);
+        assert_eq!(r.ordner_entfernen("").unwrap(), 0);
+        assert_eq!(r.gesehene_aeste().unwrap(), vec!["A", "Stick"]);
+        let geraete: Vec<String> = r.geraete().unwrap().into_iter().map(|g| g.0).collect();
+        assert_eq!(geraete.len(), 2);
+        assert!(geraete.contains(&"Mac mini".to_string()) && geraete.contains(&"Notebook".to_string()));
+    }
+
+    #[test]
+    fn stellt_pfade_auf_aeste_um() {
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![datei("A/a.pdf", 1, 1), datei("A/x/b.pdf", 1, 1)])).unwrap();
+        assert!(r.pfade_voranstellen("Dropbox").unwrap());
+        // nur einmal
+        assert!(!r.pfade_voranstellen("Dropbox").unwrap());
+        let pfade: Vec<String> = r.sql_liste("SELECT pfad, 0 FROM datei ORDER BY pfad").unwrap().into_iter().map(|p| p.0).collect();
+        assert_eq!(pfade, vec!["Dropbox/A/a.pdf", "Dropbox/A/x/b.pdf"]);
+        assert_eq!(r.merkmal("pfade_mit_ast").unwrap().as_deref(), Some("Dropbox"));
+        assert_eq!(r.sql_zahl("SELECT count(*) FROM datei WHERE suche_stand IS NOT NULL").unwrap(), 0);
+    }
+
+    fn seite(r: &mut Register, pfad: &str) -> i64 {
+        let id: i64 = r.db.query_row("SELECT id FROM datei WHERE pfad = ?1", [pfad], |z| z.get(0)).unwrap();
+        let inhalt = pdf::Inhalt {
+            seiten: vec![pdf::Seite { nr: 1, text: "Rechnung über zwölf Euro".into(), bildanteil: 0.0 }],
+            erstellt: Some("D:20190304120000".into()),
+        };
+        r.inhalt_speichern(id, 100, 10, &Ok(inhalt)).unwrap();
+        id
+    }
+
+    #[test]
+    fn regeln_entfernen_erst_nach_pruefung() {
+        let mut r = Register::im_speicher().unwrap();
+        let mut d = durchlauf(vec![datei("A/a.pdf", 10, 100), datei("A/x/b.pdf", 10, 100), datei("B/c.pdf", 10, 100)]);
+        d.regeln = Regeln::voll(&["A", "B"]);
+        r.abgleichen(&d).unwrap();
+        seite(&mut r, "A/x/b.pdf");
+        seite(&mut r, "B/c.pdf");
+
+        // A/x wird ausgeschlossen, B hat keine Regel mehr
+        let mut regeln = Regeln::voll(&["A"]);
+        regeln.setzen("A/x", Some(Stufe::Ausgeschlossen)).unwrap();
+        let mut d = durchlauf(vec![datei("A/a.pdf", 10, 100)]);
+        d.regeln = regeln;
+        let e = r.abgleich_pruefen(&d).unwrap();
+        assert!(e.probe && e.bestaetigung_noetig());
+        assert_eq!((e.entfernt, e.entfernt_regel, e.entfernt_regel_seiten), (2, 2, 2));
+        // die betroffenen Dateien mit Grund, nach Pfad
+        let liste: Vec<_> = e.betroffen.iter().map(|b| (b.pfad.as_str(), b.grund, b.seiten)).collect();
+        assert_eq!(liste, vec![("A/x/b.pdf", Grund::Ausgeschlossen, 1), ("B/c.pdf", Grund::OhneRegel, 1)]);
+        // die Prüfung ändert nichts
+        assert_eq!(r.stand().unwrap().dateien, 3);
+        assert_eq!(r.stand().unwrap().letzter_lauf.unwrap().lauf, 1);
+
+        let e = r.abgleichen(&d).unwrap();
+        assert_eq!((e.probe, e.entfernt_regel), (false, 2));
+        assert_eq!(r.stand().unwrap().dateien, 1);
+    }
+
+    #[test]
+    fn nennt_ordner_mit_nur_online_dateien() {
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![
+            datei("A/2019/a.pdf", 0, 1),
+            datei("A/2019/b.pdf", 0, 1),
+            datei("A/2020/c.pdf", 0, 1),
+            datei("A/2020/lokal.pdf", 10, 1),
+            datei("A/2020/alt.zip", 0, 1),
+            datei("A/d.pdf", 0, 1),
+        ]))
+        .unwrap();
+        let liste: Vec<_> = r.nur_online_ordner().unwrap().into_iter().map(|o| (o.ordner, o.dateien)).collect();
+        // zip wird nicht gelesen und steht deshalb nicht aus
+        assert_eq!(liste, vec![("A".to_string(), 1), ("A/2019".to_string(), 2), ("A/2020".to_string(), 1)]);
+        let ordner: Vec<String> = ["A", "A/2019", "A/2020", "B"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(r.nur_online_je_ordner(&ordner).unwrap(), vec![4, 2, 1, 0]);
+        // Vorschauen: dieselben PDFs, zip bekommt keine
+        let v: Vec<_> = r.nur_online_ordner_vorschau().unwrap().into_iter().map(|o| (o.ordner, o.dateien)).collect();
+        assert_eq!(v, vec![("A".to_string(), 1), ("A/2019".to_string(), 2), ("A/2020".to_string(), 1)]);
+    }
+
+    #[test]
+    fn zaehlt_dateien_je_ordner() {
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![datei("A/a.pdf", 1, 1), datei("A/B/b.pdf", 1, 1), datei("AB/c.pdf", 1, 1)])).unwrap();
+        let ordner: Vec<String> = ["", "A", "A/B", "AB", "X"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(r.dateien_je_ordner(&ordner).unwrap(), vec![3, 2, 1, 1, 0]);
+    }
+
+    #[test]
+    fn grund_des_entfernens() {
+        let mut regeln = Regeln::voll(&["A"]);
+        regeln.setzen("A/x", Some(Stufe::Ausgeschlossen)).unwrap();
+        regeln.setzen("M", Some(Stufe::Metadaten)).unwrap();
+        assert_eq!(grund_der_regel(&regeln, "A/a.pdf", "pdf"), None);
+        assert_eq!(grund_der_regel(&regeln, "A/tief/unten/a.zip", "zip"), None);
+        assert_eq!(grund_der_regel(&regeln, "A/x/a.pdf", "pdf"), Some(Grund::Ausgeschlossen));
+        assert_eq!(grund_der_regel(&regeln, "B/a.pdf", "pdf"), Some(Grund::OhneRegel));
+        assert_eq!(grund_der_regel(&regeln, "A/main.rs", "rs"), Some(Grund::Typ));
+        assert_eq!(grund_der_regel(&regeln, "A/p/node_modules/q/a.md", "md"), Some(Grund::Bibliothek));
+        assert_eq!(grund_der_regel(&regeln, "A/p/.git/a.txt", "txt"), Some(Grund::Bibliothek));
+        assert_eq!(grund_der_regel(&regeln, "M/lied.xyz", "xyz"), None);
+        // eine Datei, die so heißt wie eine Bibliothek, ist keine
+        assert_eq!(grund_der_regel(&regeln, "A/build", "pdf"), None);
+    }
+
+    #[test]
+    fn nur_metadaten_entfernt_text_und_vorschauen() {
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![datei("A/buch.pdf", 10, 100), datei("A/leer.pdf", 10, 100)])).unwrap();
+        let id = seite(&mut r, "A/buch.pdf");
+        assert_eq!(r.stand().unwrap().datum_pdf, 1);
+        assert_eq!(r.ausstehend().unwrap().len(), 1);
+
+        let mut d = durchlauf(vec![datei("A/buch.pdf", 10, 100), datei("A/leer.pdf", 10, 100)]);
+        d.regeln.setzen("A", Some(Stufe::Metadaten)).unwrap();
+        for e in &mut d.dateien {
+            e.stufe = Stufe::Metadaten;
+        }
+        let e = r.abgleich_pruefen(&d).unwrap();
+        assert_eq!((e.reduziert, e.reduziert_seiten, e.entfernt, e.bestaetigung_noetig()), (1, 1, 0, true));
+        assert_eq!(e.betroffen, vec![Betroffen { pfad: "A/buch.pdf".into(), grund: Grund::NurMetadaten, seiten: 1, zuletzt: None, geraet: None }]);
+        assert_eq!(r.stand().unwrap().inhalt.seiten, 1);
+        r.abgleichen(&d).unwrap();
+        let s = r.stand().unwrap();
+        // Die Dateien bleiben mit Namen, Inhalte werden nicht mehr gelesen
+        assert_eq!((s.dateien, s.inhalt.seiten, s.inhalt.pdfs, s.vorschau.pdfs, s.datum_pdf), (2, 0, 0, 0, 0));
+        assert!(r.ausstehend().unwrap().is_empty() && r.vorschau_ausstehend().unwrap().is_empty());
+        // ein zweiter Lauf hat nichts mehr zu entfernen
+        assert!(!r.abgleichen(&d).unwrap().bestaetigung_noetig());
+
+        // zurück auf Voll: Inhalte stehen wieder aus
+        let d = durchlauf(vec![datei("A/buch.pdf", 10, 100), datei("A/leer.pdf", 10, 100)]);
+        assert!(!r.abgleichen(&d).unwrap().bestaetigung_noetig());
+        assert_eq!(r.ausstehend().unwrap().len(), 2);
+        let _ = id;
     }
 
     #[test]
@@ -888,6 +1593,8 @@ mod tests {
         let r = Register::oeffnen(tmp.path()).unwrap();
         let version: i64 = r.db.query_row("PRAGMA user_version", [], |z| z.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+        // Schema 8: Der Bestand gilt als voll verarbeitet
+        assert_eq!(r.sql_zahl("SELECT count(*) FROM datei WHERE stufe = 1").unwrap(), 2);
         let s = r.stand().unwrap();
         assert_eq!((s.dateien, s.mit_datum, s.datum_geaendert), (2, 1, 1));
         assert_eq!((s.inhalt.pdfs, s.inhalt.ausstehend), (2, 2));

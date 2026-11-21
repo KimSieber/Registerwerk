@@ -258,7 +258,7 @@ fn bedingung_datei() -> String {
          AND d.inhalt_verfahren >= ?1 AND d.inhalt_geaendert IS d.geaendert
          AND (d.groesse IS NULL OR d.inhalt_groesse IS d.groesse)
          AND EXISTS (SELECT 1 FROM seite s WHERE s.datei = d.id AND {})",
-        crate::vorschau_sql!(),
+        crate::ocr_sql!(),
         bedingung_seite("s")
     )
 }
@@ -611,7 +611,7 @@ where
         }
 
         let liste_r = &liste;
-        let cloud = &konfig.cloud_ordner;
+        let orte = konfig;
         let tx = meldung_tx;
         let render_faden = s.spawn(move || {
             let mut abgebrochen = false;
@@ -621,7 +621,7 @@ where
                     abgebrochen = true;
                     break;
                 }
-                let pfad = cloud.join(&auftrag.pfad);
+                let pfad = orte.ort_oder_nichts(&auftrag.pfad);
                 let meta = std::fs::metadata(&pfad).ok();
                 let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                 if auftrag.nur_online || groesse == 0 {
@@ -848,13 +848,10 @@ mod tests {
         for name in ["scan.pdf", "auszug.pdf", "gut.pdf", "kaputt.pdf", "leer.pdf"] {
             fs::write(a.join(name), b"%PDF").unwrap();
         }
-        let konfig = Konfiguration {
-            cloud_ordner: tmp.path().to_path_buf(),
-            verzeichnisse: vec!["A".into()],
-            register_ordner: None,
-        };
+        // Ast "A" liegt im Ordner A: Die Pfade im Register heißen "A/…"
+        let konfig = Konfiguration::mit_ast("A", &tmp.path().join("A"));
         let mut register = Register::im_speicher().unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         crate::inhalte::lesen(&konfig, &mut register, testleser, |_| {}, &AtomicBool::new(false)).unwrap();
         (tmp, konfig, register)
     }
@@ -951,7 +948,7 @@ mod tests {
         fs::write(&scan, b"%PDF neu").unwrap();
         let spaeter = std::time::SystemTime::now() + Duration::from_secs(3600);
         fs::File::options().write(true).open(&scan).unwrap().set_modified(spaeter).unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         // Inhalt noch nicht neu gelesen: keine OCR für diese Datei
         assert!(register.ocr_ausstehend().unwrap().is_empty());
         crate::inhalte::lesen(&konfig, &mut register, testleser, |_| {}, &AtomicBool::new(false)).unwrap();

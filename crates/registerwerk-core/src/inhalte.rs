@@ -57,7 +57,7 @@ pub fn lesen(
             e.abgebrochen = true;
             break;
         }
-        let pfad = konfig.cloud_ordner.join(&eintrag.pfad);
+        let pfad = konfig.ort_oder_nichts(&eintrag.pfad);
         // Vor dem Öffnen noch einmal prüfen: 0 Byte heißt "nur online oder leer".
         // Öffnen würde den Download auslösen.
         let meta = std::fs::metadata(&pfad).ok();
@@ -125,13 +125,10 @@ mod tests {
         fs::write(a.join("kaputt.pdf"), b"kaputt").unwrap();
         fs::write(a.join("online.pdf"), b"").unwrap();
         fs::write(a.join("archiv.zip"), b"nicht lesbar").unwrap();
-        let konfig = Konfiguration {
-            cloud_ordner: tmp.path().to_path_buf(),
-            verzeichnisse: vec!["A".into()],
-            register_ordner: None,
-        };
+        // Ast "A" liegt im Ordner A: Die Pfade im Register heißen "A/…"
+        let konfig = Konfiguration::mit_ast("A", &tmp.path().join("A"));
         let mut register = Register::im_speicher().unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         (tmp, konfig, register)
     }
 
@@ -173,7 +170,7 @@ mod tests {
         fs::write(&brief, b"%PDF brief, neue Fassung").unwrap();
         let spaeter = SystemTime::now() + Duration::from_secs(3600);
         fs::File::options().write(true).open(&brief).unwrap().set_modified(spaeter).unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
 
         let ausstehend = register.ausstehend().unwrap();
         let pfade: Vec<_> = ausstehend.iter().map(|a| a.pfad.as_str()).collect();
@@ -211,7 +208,7 @@ mod tests {
         let (tmp, konfig, mut register) = aufbauen();
         lauf(&konfig, &mut register);
         fs::remove_file(tmp.path().join("A/Brief ohne Datum.pdf")).unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         assert_eq!(register.stand().unwrap().inhalt.seiten, 1);
     }
 }

@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 20.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.6). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 21.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.7). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -29,17 +29,17 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 2. **Das Register enthält nur Kopien und Auszüge.** Es muss sich jederzeit vollständig aus den Dateien neu aufbauen lassen. Die einzige eigene Information des Programms sind die Ordnerregeln, und die liegen als lesbare Textdatei vor.
 3. **Originale werden nicht verschlechtert.** Keine Neukomprimierung, keine Qualitätsreduktion. Einzige zulässige Änderung an einer Datei ist das verlustfreie Ergänzen der Textebene bei Scan-Seiten ohne Text (Abschnitt 7).
 4. **Unabhängig von Betriebssystem und Cloud-Anbieter.** Der Zugriff läuft über das normale Dateisystem. Kein Swift, keine Apple-Dienste, keine Schnittstelle eines Cloud-Anbieters im laufenden Betrieb.
-5. **Nur ein Schreiber.** Es indiziert immer genau ein Gerät. Alle anderen lesen.
+5. **Nur ein Schreiber zur selben Zeit.** Jedes Gerät darf einlesen und ergänzen, aber nie zwei gleichzeitig. Seit v0.0.7 arbeiten mehrere Geräte nacheinander auf demselben Register.
 6. **Kein dauerhaftes Backup-Volumen.** Das Programm legt keine Sicherungskopien an, die später von Hand gesucht und entfernt werden müssten.
 
 ## 3. Umfang
 
 ### Enthalten
 
-- Indizieren aller Dateien der konfigurierten Verzeichnisse nach Behandlungsstufe
+- Indizieren der Ordner, für die eine Regel gilt, nach Behandlungsstufe. Die Ordner können überall auf dem Gerät liegen, nicht nur im Cloud-Ordner (seit v0.0.7)
 - Volltext aller Seiten, nicht nur der ersten
-- Text aus Office-, OpenDocument-, Pages-, Keynote- und Textdateien (seit v0.0.6)
-- Vorschau aller Seiten, auch für einzelne Bilder im Archiv (seit v0.0.6)
+- Text aus Office-, OpenDocument-, Pages-, Keynote- und Textdateien (seit v0.0.6), aus doc, xls und ppt (seit v0.0.7)
+- Vorschau aller Seiten, auch für einzelne Bilder im Archiv (seit v0.0.6) und für Textdateien (seit v0.0.7)
 - Fehlertolerante Suche mit Gewichtung von Dateiname und Pfad
 - Öffnen des Originals aus dem Cloud-Ordner
 - OCR für Seiten ohne Text und für einzelne Bilder im Archiv
@@ -69,7 +69,7 @@ Indexer und Anwendung sind Teile desselben Programms. Der lesende Teil soll so g
 - **Erstindizierung:** auf dem stationären Rechner, in Tranchen, weil das gesamte Archiv dort nicht gleichzeitig lokal liegen kann. Ab Februar 2027 ist dort mehr Platz frei.
 - **Laufender Betrieb:** Prüfung und Delta-Befüllung überwiegend auf dem Notebook. Der stationäre Rechner läuft nicht dauerhaft und hält keine dauerhafte Vollkopie.
 - **Zuwachs:** rund 1.000 bis 2.000 Dokumente pro Jahr, etwa 3 Promille des Bestands.
-- **Ein Schreiber:** Organisatorisch ist sichergestellt, dass das Programm nur auf einem Gerät schreibend geöffnet ist. Technisch sichert eine Sperre mit Stand-Zähler den Gerätewechsel ab (Abschnitt 10).
+- **Ein Schreiber zur selben Zeit:** Organisatorisch ist sichergestellt, dass das Programm nur auf einem Gerät geöffnet ist. Welches Gerät das ist, wechselt: Wer länger an einem Gerät arbeitet, liest dort ein. Eine Sperre mit Stand-Zähler soll den Gerätewechsel technisch absichern (Abschnitt 10), sie ist noch nicht gebaut.
 
 ### Scan-Prozess
 
@@ -82,8 +82,9 @@ Der bestehende Scan-Prozess bleibt unverändert: Scan per Smartphone-App mit Bil
 - Der Indexer durchläuft den Dateibaum und vergleicht ihn mit dem Register.
 - Neu ist jeder Pfad, den das Register nicht kennt. Ein Datum wird dafür nicht gebraucht.
 - Geändert ist eine Datei, deren Größe oder Änderungsdatum abweicht. Ausnahme ist der Wechsel zwischen lokal und "nur online", siehe unten.
-- Entfernt ist ein Pfad, der im Register steht und im Dateibaum fehlt. Der Eintrag und seine Vorschauen werden aus dem Register entfernt. **Annahme**
-- Entfernt wird nur in Verzeichnissen, die der Durchlauf vollständig gelesen hat. Fehlt ein konfiguriertes Verzeichnis auf dem Gerät oder gab es darin Lesefehler, bleibt sein Bestand im Register unangetastet. Ein nicht eingehängter Cloud-Ordner leert so nicht das Register. Umgesetzt in v0.0.1.
+- Entfernt wird nur mit Grund (seit v0.0.7): Für den Ordner gilt keine Regel mehr oder die Stufe „Aus“, der Dateityp wird nicht geführt, die Datei liegt in einem Bibliotheksordner, oder ihr Ordner ist auf diesem Gerät vorhanden und vollständig gelesen und die Datei fehlt darin. **Fehlen allein löscht nie.**
+- Fehlt ein ganzer Ordner oder gab es darin Lesefehler, bleibt sein Bestand im Register unangetastet. Ein nicht eingehängter Cloud-Ordner leert so nicht das Register. Hat das Gerät den Ordner früher gesehen, meldet der Lauf ihn als „vermisst“, sonst als Ordner eines anderen Geräts (Abschnitt 6, Äste und Geräte).
+- Vor dem Entfernen fragt die Oberfläche nach und zeigt die Liste der betroffenen Dateien mit dem Grund. Dazu läuft der Abgleich erst als Probe, die nichts ändert.
 - Verschobene und umbenannte Dateien sollen über einen Inhalts-Hash erkannt werden, damit Text und Vorschauen nicht neu erzeugt werden müssen. **Annahme**, wird mit dem Delta-Lauf umgesetzt.
 
 ### Platzhalter ("nur online")
@@ -98,7 +99,8 @@ Folgen:
 
 - Eine Datei mit 0 Byte gilt als "nur online oder leer".
 - Zum Indizieren öffnet der Indexer die Datei. Der Cloud-Client lädt sie dabei automatisch.
-- Bis zum Delta-Lauf (Stufe 4) öffnet der Indexer nur lokal vorhandene Dateien. "Nur online"-Dateien bleiben ausstehend. Für die Erstindizierung werden die Ordner von Hand offline verfügbar gemacht. Umgesetzt in v0.0.2.
+- Bis zum Delta-Lauf (Stufe 4) öffnet der Indexer nur lokal vorhandene Dateien. "Nur online"-Dateien bleiben ausstehend. Für die Erstindizierung werden die Ordner von Hand offline verfügbar gemacht. Umgesetzt in v0.0.2. Seit v0.0.7 nennt die Oberfläche die Ordner mit solchen Dateien und öffnet sie im Dateimanager.
+- Gemessen ist das nur für die Dropbox. Andere Anbieter können die echte Größe melden, dann würde der Indexer die Datei öffnen und damit laden. **Annahme**, vor der Aufnahme weiterer Cloud-Speicher zu prüfen.
 - Das Gesamtvolumen von "nur online"-Dateien lässt sich über das Dateisystem nicht ermitteln.
 - Wechselt eine Datei bei gleichem Änderungsdatum zwischen lokal und "nur online", gilt sie als unverändert. Das Register behält die letzte bekannte Größe und merkt sich nur den Zustand. Erst ein anderes Änderungsdatum bedeutet einen neuen Inhalt. Umgesetzt in v0.0.1. **Annahme**: Der Cloud-Client lässt das Änderungsdatum beim Auslagern und Laden unverändert. Das wird im Pilot beobachtet.
 - Eine Datei, die bisher nur als Platzhalter gesehen wurde, hat im Register keine Größe.
@@ -113,41 +115,71 @@ Die Anwendung öffnet die Datei über ihren Pfad im Cloud-Ordner. Steht sie auf 
 
 ## 6. Behandlung von Ordnern und Dateitypen
 
+Umgesetzt in v0.0.7.
+
 ### Behandlungsstufen
 
-| Stufe | Was ins Register kommt | Gedacht für |
-|---|---|---|
-| Voll | Pfad, Name, Metadaten, Text, Vorschau | das eigentliche Archiv |
-| Nur Dokumente | wie Voll, aber nur pdf, md und txt. Programmdateien und Bibliotheken werden übergangen | Entwicklungsprojekte |
-| Nur Metadaten | Pfad, Name, Größe, Datum. Kein Inhalt, keine Vorschau | eBooks, Musik |
-| Ausgeschlossen | nichts | Bildordner, die Bilderwerk abdeckt |
+| Stufe | In der Oberfläche | Was ins Register kommt | Gedacht für |
+|---|---|---|---|
+| Voll | Voll | Pfad, Name, Metadaten, Text, Vorschau | das eigentliche Archiv, Dokumente, Projekte |
+| Nur Metadaten | Nur Namen | Pfad, Name, Größe, Datum. Kein Inhalt, keine Vorschau | eBooks, Musik |
+| Ausgeschlossen | Aus | nichts | Bildordner, die Bilderwerk abdeckt |
 
 Begründung für "Nur Metadaten" bei eBooks: Ihr Inhalt würde sonst bei fast jeder Suche Treffer liefern.
 
+Die frühere Stufe "Nur Dokumente" für Entwicklungsprojekte ist entfallen. Die Einteilung der Dateitypen (unten) gilt in jedem Ordner der Stufe Voll und lässt Quelltext und Bibliotheken von selbst aus.
+
 ### Regeln
 
-- Jedes Verzeichnis kann einzeln genannt und einzeln ausgeschlossen werden.
-- Die genaueste Regel gewinnt. Ein ausgeschlossener Unterordner bleibt ausgeschlossen, auch wenn der Oberordner auf Voll steht.
-- Die Regeln stehen in einer lesbaren Textdatei neben dem Register, nicht nur in der Datenbank. Sie überleben damit einen Neuaufbau.
+- **Ohne Regel wird nichts gelesen.** Ordner werden bewusst eingeschlossen.
+- Eine Regel gilt für den Ordner und alle Unterordner. Die genaueste Regel gewinnt: Ein ausgeschlossener Unterordner bleibt ausgeschlossen, auch wenn der Oberordner auf Voll steht, und umgekehrt.
+- Die Regeln stehen in der lesbaren Textdatei `regeln.toml` neben dem Register, nicht in der Datenbank. Sie überleben damit einen Neuaufbau und gelten für alle Geräte.
+- Gewählt werden sie im Reiter "Ordner": ein aufklappbarer Baum mit der Stufe je Ordner. "Ordner prüfen" zählt vorab, was ein Ordner enthält, ohne etwas ins Register zu schreiben.
+- Ein Wechsel der Stufe wirkt beim nächsten Einlesen. "Aus" entfernt die Einträge, "Nur Namen" entfernt Text, Vorschauen und OCR. Beides nach Rückfrage (Abschnitt 5).
 - Die konkrete Zuordnung der Ordner steht in `docs/intern/umgebung.md`.
-- Bis die Behandlungsstufen umgesetzt sind (Stufe 3), nennt eine Konfigurationsdatei nur den Cloud-Ordner und die zu lesenden Verzeichnisse. Sie heißt `config.local.toml` und wird nicht versioniert, eine Vorlage ohne echte Pfade liegt im Repo.
 - Verwaltungsdateien von Cloud-Client und Betriebssystem werden immer übergangen.
+- **Bibliotheksordner** werden übergangen: immer `node_modules`, `__pycache__`, `site-packages`, `venv`, `Pods`, `DerivedData`, `bower_components` und Ordner mit einem Punkt am Anfang. `target`, `build`, `dist` und `vendor` nur neben einer Projektdatei, weil die Namen mehrdeutig sind. Eine eigene Regel auf einem solchen Ordner schließt ihn ein.
+
+### Äste und Geräte
+
+- Ein **Ast** ist ein Ordner eines Geräts, der einen Namen bekommt: der Cloud-Ordner, ein zweiter Cloud-Speicher, Dokumente, ein Wechseldatenträger. Aufgenommen wird er im Reiter "Ordner".
+- Jeder Pfad im Register und in den Regeln beginnt mit dem Namen des Astes. Wo der Ast auf einem Gerät liegt, steht nur in dessen Konfiguration.
+- Die Konfiguration je Gerät (`config.local.toml`, nicht versioniert) enthält den Gerätenamen, wahlweise den Ordner des Registers und die Äste mit ihrem Ort. Die Anwendung schreibt sie selbst. Eine Vorlage ohne echte Pfade liegt im Repo.
+- Das Register merkt sich je Ordner, welches Gerät ihn zuletzt gesehen hat. Fehlt ein Ordner, unterscheidet das zwei Fälle:
+
+  | Fall | Bedeutung | Folge |
+  |---|---|---|
+  | dieses Gerät hat ihn nie gesehen | Ordner eines anderen Geräts | wird übersprungen, Bestand bleibt |
+  | dieses Gerät hat ihn früher gesehen | verschoben, gelöscht oder nicht eingehängt | wird als vermisst gemeldet, Bestand bleibt, bis Kim ihn entfernt oder dem Ast einen neuen Ort zuweist |
 
 ### Dateitypen
 
+In einem Ordner der Stufe Voll entscheidet die Endung. Die Listen sind fest (`formate.rs`).
+
+| Klasse | Was geschieht |
+|---|---|
+| gelesen | Text, je nach Format Vorschau und OCR |
+| nur Name | Name, Ordner, Größe, Datum. Archive werden nicht entpackt |
+| ignoriert | kommt nicht ins Register: Quelltext, Programme, Daten und alles, was in keiner Liste steht |
+
+**Gelesen:**
+
 - **PDF** ist der Regelfall und wird vollständig verarbeitet.
-- **Nicht lesbare oder gepackte Formate** werden in jeder Stufe nur mit Metadaten erfasst. Archive werden nicht entpackt. Beispiele: zip, Notizbuch-Formate, Tracking-Dateien.
-- **Office, OpenDocument, Pages, Keynote und Text** werden seit v0.0.6 gelesen, ohne fremdes Programm. Vorschauen gibt es dafür nicht, sie bräuchten LibreOffice oder die Vorschau des Betriebssystems.
+- **Office, OpenDocument, Pages, Keynote und Text**, ohne fremdes Programm. Vorschauen gibt es nur für txt und md, die übrigen bräuchten LibreOffice oder die Vorschau des Betriebssystems.
 
   | Format | Seiten im Register |
   |---|---|
-  | Word (docx, docm, dotx, dotm), OpenDocument (odt, ods, odp), Pages und Keynote ab 2013 | eine Seite mit dem ganzen Text |
-  | Excel (xlsx, xlsm, xltx, xltm) | eine Seite je Tabellenblatt |
+  | Word (docx, docm, dotx, dotm, doc, dot), OpenDocument (odt, ods, odp), Pages und Keynote ab 2013 | eine Seite mit dem ganzen Text |
+  | Excel (xlsx, xlsm, xltx, xltm, xls, xlt) | eine Seite je Tabellenblatt |
   | PowerPoint (pptx, pptm) | eine Seite je Folie |
-  | txt, md | eine Seite, UTF-8, sonst Latin-1 |
+  | PowerPoint alt (ppt, pps) | eine Seite mit dem ganzen Text |
+  | txt, md | eine Seite, UTF-8, sonst Latin-1. Die Vorschau zeigt den Anfang des Textes in fester Schrift |
 
-- **Einzelne Bilder im Archiv** (jpg, jpeg, png, tif, tiff, bmp, gif, webp) bekommen seit v0.0.6 eine Vorschau und OCR. Der erkannte Text kommt nur ins Register. Meist sind es versehentlich als Bild gespeicherte Belege. Bildordner bleiben ausgeschlossen, sie deckt Bilderwerk ab.
-- **Nicht gelesen** werden doc, xls, ppt, Numbers, Pages vor 2013 und HEIC. Sie bleiben bei Name und Datum.
+- **Einzelne Bilder** (jpg, jpeg, png, tif, tiff, bmp, gif, webp, seit v0.0.7 heic und heif) bekommen eine Vorschau und OCR. Der erkannte Text kommt nur ins Register. Meist sind es versehentlich als Bild gespeicherte Belege. Bildordner bleiben ausgeschlossen, sie deckt Bilderwerk ab. Von mehrseitigen TIFF wird die erste Seite gelesen, Fax-TIFF (CCITT Gruppe 3) seit v0.0.7.
+
+**Nur Name:** Archive und Abbilder (zip, rar, 7z, dmg …), Numbers, rtf, csv, html, E-Mail (eml, msg), Kontakte und Termine, eBooks (epub, mobi …), Grafik- und Rohformate, Audio, Video, Notizbuch- und Tracking-Dateien.
+
+**Nicht gelesen** werden weiter Numbers, Pages vor 2013, verschlüsselte Office-Dateien und Word vor Version 6.
 
 ## 7. Verarbeitung von PDFs
 
@@ -262,25 +294,27 @@ Die Vorschauen liegen also in der Datenbank, nicht als einzelne Bilddateien. Sie
 
 Alte Scheiben bleiben unverändert. Ein Delta-Lauf fasst nur die Index-Datenbank und die jüngste Scheibe an. Umgesetzt in v0.0.3:
 
-- Die Scheiben werden nach **Erfassungsreihenfolge** gefüllt. Neue Vorschauen kommen in die jüngste Scheibe, bis diese rund 1,5 GB erreicht (**Annahme**). Dann beginnt eine neue.
+- Die Scheiben werden nach **Erfassungsreihenfolge** gefüllt. Neue Vorschauen kommen in die jüngste Scheibe, bis diese rund 1,5 GB erreicht (**Annahme**). Dann beginnt eine neue. Im Betrieb mit dem Register im Cloud-Ordner (v0.0.7) hat sich das als zu groß gezeigt: Die wachsende Scheibe wird nach jedem Lauf neu abgeglichen. Vorgesehen sind rund 200 MB.
 - Die Dateien heißen `vorschau-0001.db`, `vorschau-0002.db` usw. und liegen neben der Index-Datenbank.
 - Die Index-Datenbank hält je Seite einen Verweis (Scheibe und Schlüssel), Maße und Farbe.
 - Ändert sich eine Datei oder verschwindet sie, wandern ihre alten Verweise in eine Liste. Beim nächsten Lauf werden die Bilder aus ihrer Scheibe gelöscht. Nur dabei ändert sich eine ältere Scheibe.
 - Geschrieben wird erst die Scheibe, dann der Verweis. Ein Abbruch dazwischen hinterlässt höchstens ein Bild ohne Verweis, das der nächste Neuaufbau beseitigt.
 
-**Pfade im Register** sind relativ zum Cloud-Ordner gespeichert, mit `/` als Trenner und einheitlicher Schreibweise der Umlaute (Unicode NFC). Wo der Cloud-Ordner auf einem Gerät liegt, steht nur in dessen Konfiguration. Dasselbe Register gilt damit auf jedem Gerät und Betriebssystem. Die einheitliche Schreibweise ist nötig, weil macOS Umlaute zerlegt liefert und dieselbe Datei sonst je nach Gerät ein anderer Eintrag wäre. Umgesetzt in v0.0.1.
+**Pfade im Register** beginnen mit dem Namen des Astes (Abschnitt 6, seit v0.0.7, vorher relativ zum Cloud-Ordner), mit `/` als Trenner und einheitlicher Schreibweise der Umlaute (Unicode NFC). Wo ein Ast auf einem Gerät liegt, steht nur in dessen Konfiguration. Dasselbe Register gilt damit auf jedem Gerät und Betriebssystem. Die einheitliche Schreibweise ist nötig, weil macOS Umlaute zerlegt liefert und dieselbe Datei sonst je nach Gerät ein anderer Eintrag wäre. Umgesetzt in v0.0.1.
 
 Die Replikation großer Dateien ist kein Engpass: Leitungen und Laufzeit reichen aus, notfalls läuft ein Rechner eine Nacht durch.
 
 ### Ablage und Veröffentlichen
 
-- Das Register liegt im Cloud-Ordner und wird auf die Endgeräte repliziert. Der Ort steht in `docs/intern/umgebung.md`. Der Register-Ordner ist von der Indizierung ausgeschlossen.
-- Der Indexer schreibt in eine Arbeitskopie außerhalb des Cloud-Ordners und legt erst den fertigen Stand hinein. Lesende Geräte sehen so keine halb geschriebenen Zustände. **Annahme**. Seit v0.0.1 liegt die Arbeitskopie ohne weitere Angabe im Datenordner der Anwendung im Benutzerprofil. Das Veröffentlichen in den Cloud-Ordner folgt in Stufe 3.
-- Eine Sperre mit Stand-Zähler hält fest, welches Gerät zuletzt geschrieben hat. Beim Start prüft das Programm, ob die lokale Kopie diesen Stand hat. Wenn nicht, öffnet es nur lesend und meldet das. **Annahme**
+- Der Ordner des Registers ist je Gerät wählbar (seit v0.0.7), über das Datenbank-Symbol der Anwendung. Ohne Angabe liegt es im Datenordner der Anwendung im Benutzerprofil. Der Ort steht in `docs/intern/umgebung.md`.
+- Im Ordner liegen die Index-Datenbank `register.db`, die Scheiben, die Regeln `regeln.toml` und das Protokoll der Textebene. Verschoben wird der ganze Inhalt bei beendetem Programm, danach wird der neue Ordner gewählt.
+- Kim legt das Register direkt in den Cloud-Ordner, damit alle Geräte dasselbe sehen. Voraussetzungen: Das Programm ist nur auf einem Gerät geöffnet, und die Cloud hat vor dem Wechsel fertig abgeglichen. Beim Schließen schreibt das Register seine Protokolldateien in die Datenbanken zurück, damit nur vollständige Dateien abgeglichen werden.
+- Die ursprünglich vorgesehene Arbeitskopie außerhalb des Cloud-Ordners mit Veröffentlichen des fertigen Standes ist damit zurückgestellt. Sie bleibt der Weg, falls der direkte Betrieb Konflikte erzeugt. **Annahme**
+- Eine Sperre mit Stand-Zähler soll festhalten, welches Gerät zuletzt geschrieben hat. Beim Start prüft das Programm, ob die lokale Kopie diesen Stand hat. Wenn nicht, öffnet es nur lesend und meldet das. **Annahme**, noch nicht gebaut. Das Register hält seit v0.0.7 je Durchlauf das Gerät fest.
 
 ### Verschlüsselung
 
-Das Register wird verschlüsselt, zusätzlich zur Verschlüsselung der Festplatte. Es enthält den Volltext und die Vorschauen aller Unterlagen.
+Das Register wird verschlüsselt, zusätzlich zur Verschlüsselung der Festplatte. Noch nicht umgesetzt: Seit v0.0.7 kann das Register im Cloud-Ordner liegen und ist dort unverschlüsselt. Es enthält den Volltext und die Vorschauen aller Unterlagen.
 
 - Bei der Einrichtung wird ein Kennwort vergeben. Es wird im eigenen Passwortsafe aufbewahrt. Kein Cloud-Schlüsselbund eines Herstellers.
 - Die Datenbanken sind mit einem Zufallsschlüssel verschlüsselt, den das Kennwort schützt. Das Kennwort lässt sich so ändern, ohne das Register neu zu verschlüsseln. **Annahme**
@@ -335,7 +369,10 @@ Aufbau und Bedienung wie Bilderwerk:
 | Suchindex | SQLite FTS5 mit Trigrammen im Register, Wortliste als Automat (`fst`) | entschieden, im Einsatz seit v0.0.6 |
 | Office, OpenDocument | `zip` und `quick-xml`, eigene Auslese | entschieden, im Einsatz seit v0.0.6 |
 | Pages, Keynote | eigener Leser für die Textspeicher der IWA-Archive, entpackt mit `snap` | entschieden, im Einsatz seit v0.0.6 |
-| Bilder | `image` (jpeg, png, tiff, bmp, gif, webp) | entschieden, im Einsatz seit v0.0.6 |
+| Bilder | `image` (jpeg, png, tiff, bmp, gif, webp), `zune-heic` für HEIC, `tiff` und `fax` für Fax-TIFF | entschieden, im Einsatz seit v0.0.6, HEIC und Fax seit v0.0.7 |
+| Altes Office | `cfb` mit eigenem Leser für doc und ppt, `calamine` für xls | entschieden, im Einsatz seit v0.0.7 |
+| Vorschau für Text | `ab_glyph` mit DejaVu Sans Mono, Schrift im Repo | entschieden, im Einsatz seit v0.0.7 |
+| Regeln und Konfiguration | TOML: `regeln.toml` beim Register, `config.local.toml` je Gerät | entschieden, im Einsatz seit v0.0.7 |
 | PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
 | OCR | Tesseract 5.5.2, Sprachen Deutsch und Englisch, Sprachdaten `tessdata`. Statisch aus dem Quelltext gebaut (mit Leptonica, über CMake), eigene schmale Anbindung an die C-Schnittstelle. Keine Installation auf dem Gerät | entschieden, im Einsatz seit v0.0.4 |
 | Vorschau | AVIF Q25, kurze Kante 1024 px. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3, Größenregel seit v0.0.6 |
@@ -418,7 +455,8 @@ Ein zweiter Trigramm-Index über den Text mit Leerraum hätte den Index verdoppe
 | Größe | Wert |
 |---|---|
 | Daten in der Cloud insgesamt | rund 0,9 TB |
-| davon nicht im Register | Musik 192 GB, Sicherungen 203 GB, Kamera-Uploads 35 GB, Bilder im Archiv knapp 400 GB, eBooks 11 GB (nur Name und Datum) |
+| davon nicht im Register | Sicherungen 203 GB, Kamera-Uploads 35 GB, Bilder im Archiv knapp 400 GB |
+| nur mit Name und Datum im Register | Musik 192 GB, eBooks 11 GB |
 | Archivmaterial | höchstens rund 100 GB (Größen der Dropbox, November 2026) |
 | Seiten | rund 400.000 bei 255 KB je Seite im Original |
 | Vorschauen | rund 13 GB (32 KB je Seite) |
@@ -432,7 +470,7 @@ Die Hochrechnung nimmt an, dass das übrige Archiv den beiden geprüften Verzeic
 
 ### Pilot
 
-Der Pilot umfasst nur die zwei Hauptverzeichnisse des aktuellen Archivs mit rund 3.600 Dateien. Er ist schnell neu aufgebaut und deckt alle Fälle ab: Farb-, Graustufen- und 1-Bit-Scans, digital erzeugte PDFs, schwache OCR, Platzhalter und andere Dateitypen.
+Der Pilot umfasste bis v0.0.6 nur die zwei Hauptverzeichnisse des aktuellen Archivs mit rund 3.600 Dateien. Er war schnell neu aufgebaut und deckte alle Fälle ab: Farb-, Graustufen- und 1-Bit-Scans, digital erzeugte PDFs, schwache OCR, Platzhalter und andere Dateitypen. Seit v0.0.7 bestimmen die Ordnerregeln den Umfang, einen festen Pilotumfang gibt es nicht mehr.
 
 ### Vorschlag für die Stufen
 
@@ -445,7 +483,7 @@ Der Pilot umfasst nur die zwei Hauptverzeichnisse des aktuellen Archivs mit rund
 | 5 | OCR für Seiten ohne Text, Zurückschreiben in Scans | Suchqualität auf dem Pilotbestand geprüft |
 | 6 | Erstindizierung des gesamten Archivs in Tranchen | vollständiges Register |
 
-Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird. Stufe 2 folgte in v0.0.6. Als Nächstes sind die Ordnerregeln dran, mit Auswahl und Ausschluss von Verzeichnissen in der Oberfläche (Kims Wunsch).
+Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird. Stufe 2 folgte in v0.0.6, die Ordnerregeln aus Stufe 3 in v0.0.7. Als Nächstes ist der Delta-Lauf dran (Stufe 4): ein klarer Ablauf über alle Schritte, mit Anzeige dessen, was ansteht, und automatischer Prüfung beim Öffnen (Kims Wunsch).
 
 ### Stand der Umsetzung
 
@@ -457,6 +495,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.4 | Tesseract statisch eingebaut, OCR der Seiten ohne Text ins Register, gültiger Text je Seite, Textvergleich in der Prüfansicht | erster Teil von Stufe 5 |
 | v0.0.5 | Textebene in Scans zurückgeschrieben, Lage der Wörter aus Tesseract, Grenze "ohne Text" bei 10 Zeichen, Lesen gedrehter Seiten korrigiert | Stufe 5 abgeschlossen |
 | v0.0.6 | Suchindex und Suche mit Filtern, Suchansicht wie Bilderwerk, Text aus Office, OpenDocument, Pages und Text, Vorschau und OCR für Bilder, Vorschauen nach der kurzen Kante | Stufe 2 abgeschlossen, Teile von Stufe 3 (Dateitypen) |
+| v0.0.7 | Ordnerregeln mit Stufen, Reiter "Ordner", feste Einteilung der Dateitypen, Äste und Geräte, Entfernen nur mit Grund und Rückfrage, altes Office, HEIC, Vorschau für Text, Fax-TIFF, Register-Ort wählbar | Stufe 3 ohne Verschlüsselung |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -469,9 +508,12 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Sprachdaten ins Programmpaket legen (Ressource `tessdata/standard` mit Lizenztexten) | mit dem ersten Paket |
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
-| Zurücksetzen auf "nur online" per Programm | Stufe 4 |
-| Ordnerregeln und Behandlungsstufen in der Oberfläche wählen | Stufe 3, als Nächstes |
-| Text aus doc, xls, ppt, Numbers, Pages vor 2013. HEIC-Bilder | später |
+| Zurücksetzen auf "nur online" per Programm, Herunterladen neuer Dateien durch das Programm | Stufe 4 |
+| Verschlüsselung des Registers. Dringender, seit es im Cloud-Ordner liegt | Stufe 3 |
+| Sperre mit Stand-Zähler für den Gerätewechsel | Stufe 4 |
+| Kleinere Scheiben (rund 200 MB), vorhandene Scheibe aufteilen | als Nächstes |
+| Verhalten der Platzhalter anderer Cloud-Speicher (Google Drive) | vor deren Erstindizierung |
+| Text aus Numbers und Pages vor 2013. Mehrseitige TIFF | später |
 | Antwortzeiten der Suche im ganzen Archiv | Stufe 6 |
 | Vergrößern über 100 %: Original bei Bedarf hoch aufgelöst rendern | später |
 | Verhalten eines europäischen Cloud-Anbieters bei der Replikation des Registers | vor einem Anbieterwechsel |
@@ -507,9 +549,9 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Betrieb | Erstlauf stationär, danach Delta auf dem Notebook | kein Dauerbetrieb, keine dauerhafte Vollkopie |
 | Systemsuche | nicht angebunden | gesucht wird in Registerwerk |
 | KI | nicht vorgesehen | kein Bedarf |
-| Pilot | zwei Hauptverzeichnisse, rund 3.600 Dateien | klein, vollständig in den Fällen, schnell neu aufgebaut |
+| Pilot | zwei Hauptverzeichnisse, rund 3.600 Dateien, bis v0.0.6 | klein, vollständig in den Fällen, schnell neu aufgebaut |
 | Oberfläche | React mit TypeScript und Vite | bewährt in Stellwerk, überzeugt in Gestaltung und Möglichkeiten |
-| Pfade im Register | relativ zum Cloud-Ordner, einheitliche Schreibweise | Register gilt auf jedem Gerät und Betriebssystem |
+| Pfade im Register | beginnen mit dem Ast-Namen, einheitliche Schreibweise | Register gilt auf jedem Gerät und Betriebssystem, für beliebige Ordner (v0.0.7) |
 | Wechsel auf "nur online" | keine Änderung, solange das Änderungsdatum gleich bleibt | sonst würde jedes Auslagern Text und Vorschauen neu erzeugen |
 | Anbindung von PDFium | `pdfium-render`, Bibliothek per Skript geladen, nicht im Repo | fertige Builds für alle Zielsysteme, freizügige Lizenzen, keine Binärdateien im Repo |
 | "Nur online" bis Stufe 4 | nicht öffnen, bleiben ausstehend | Öffnen löst den Download aus. Erstindizierung mit von Hand offline gestellten Ordnern |
@@ -520,7 +562,14 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Office, Pages | Text ja, Vorschau nein | Text ohne fremdes Programm. Vorschau bräuchte LibreOffice |
 | Bilder im Archiv | Vorschau und OCR, Text nur ins Register | meist versehentlich als Bild gespeicherte Belege |
 | Oberfläche der Suche | wie Bilderwerk | Wiedererkennung in der Reihe |
-| Entfernen aus dem Register | nur in vollständig gelesenen Verzeichnissen | ein fehlender Cloud-Ordner darf das Register nicht leeren |
+| Entfernen aus dem Register | nur mit Grund und nach Rückfrage mit Dateiliste. Ein fehlender Ordner löscht nie | ein fehlender Cloud-Ordner darf das Register nicht leeren (v0.0.1, v0.0.7) |
+| Ordnerregeln | ohne Regel wird nichts gelesen, Vererbung, genaueste Regel gewinnt, drei Stufen | Ordner werden bewusst eingeschlossen (v0.0.7) |
+| Dateitypen | feste Listen: gelesen, nur Name, ignoriert | Quelltext und Programmdateien sollen nie ins Register. Ersetzt die Stufe "Nur Dokumente" |
+| Ordner außerhalb des Cloud-Ordners | Äste mit Namen, Ort je Gerät | mehrere Cloud-Speicher, Dokumente, Downloads |
+| Mehrere Geräte | ein Register und gemeinsame Regeln, jedes Gerät darf einlesen, das Register merkt sich, wer einen Ordner gesehen hat | Ergänzen von jedem Gerät. Unterscheidet "nicht auf diesem Gerät" von "gelöscht" |
+| Ort des Registers | je Gerät wählbar, bei Kim direkt im Cloud-Ordner | ein Register für alle Geräte ohne eigenen Schritt zum Veröffentlichen |
+| HEIC | `zune-heic` | reines Rust, im Vergleich an 11 Fotos praktisch gleich mit libheif |
+| Altes Office | eigener Leser, kein fremdes Programm | wie bei den neuen Formaten |
 | AVIF-Encoder | libavif mit libaom, Stufe 8 | bei gleicher Qualität und Größe knapp 3-mal so schnell wie rav1e. Kostet einen C-Bau mit CMake |
 | Einteilung der Scheiben | nach Erfassungsreihenfolge, neue Scheibe ab rund 1,5 GB | Delta-Läufe ändern nur die jüngste Scheibe |
 | Graustufen | echte Graustufen (4:0:0) für Seiten ohne Farbe | kleiner, ohne sichtbaren Verlust |
@@ -551,6 +600,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Zweiter Trigramm-Index über den Text mit Leerraum | doppelte Größe, fand nichts zusätzlich (Messung v0.0.6) |
 | Ordnerwahl über die Suche nach Ordnernamen | der Name allein trägt die Bedeutung oft nicht |
 | Vorschauen im festen Maßstab bezogen auf A4 | falsche Seitengrößen in PDFs machten Belege unlesbar |
+| Stufe "Nur Dokumente" für Entwicklungsprojekte | die feste Einteilung der Dateitypen leistet dasselbe in jedem Ordner |
+| Eigene Regeln je Gerät | Kim will ein Register und eine Auswahl für alle Geräte |
+| libheif für HEIC | C-Bibliothek, ein reiner Rust-Decoder liefert dasselbe Bild |
+| Entfernen, sobald eine Datei im Dateibaum fehlt | ein nicht eingehängter oder verschobener Ordner hätte seinen Bestand gelöscht |
 
 ## 18. Werkzeuge
 

@@ -15,8 +15,9 @@
 //! Protobuf-Archive (IWA). Gelesen werden nur die Textspeicher (Typ 2001,
 //! `TSWP.StorageArchive`), ohne Bibliothek für das ganze Format.
 //!
-//! Die alten Binärformate (doc, xls, ppt), Numbers und Pages vor 2013 werden
-//! nicht gelesen, sie bleiben bei Name und Datum. Der Text einer Seite ist auf
+//! Die alten Binärformate (doc, xls, ppt) liest `altoffice.rs` (v0.0.7).
+//! Numbers und Pages vor 2013 werden nicht gelesen, sie bleiben bei Name und
+//! Datum. Der Text einer Seite ist auf
 //! [`MAX_ZEICHEN`] begrenzt, damit große Tabellen den Suchindex nicht sprengen.
 
 use std::collections::HashMap;
@@ -51,6 +52,15 @@ pub fn lesen(pfad: &Path) -> Result<Inhalt, String> {
         }
         "xlsx" | "xlsm" | "xltx" | "xltm" => excel(&mut oeffnen(pfad)?)?,
         "pages" | "key" => vec![iwork(&mut oeffnen(pfad)?)?],
+        // Manche Datei mit alter Endung ist in Wahrheit ein neues Format
+        "doc" | "dot" if ist_zip(pfad) => {
+            let mut zip = oeffnen(pfad)?;
+            vec![xml_text(&eintrag(&mut zip, "word/document.xml")?, &WORD)?]
+        }
+        "xls" | "xlt" if ist_zip(pfad) => excel(&mut oeffnen(pfad)?)?,
+        "doc" | "dot" => vec![crate::altoffice::word(pfad)?],
+        "xls" | "xlt" => crate::altoffice::excel(pfad)?,
+        "ppt" | "pps" => vec![crate::altoffice::powerpoint(pfad)?],
         "odt" | "ods" | "odp" => {
             let mut zip = oeffnen(pfad)?;
             vec![xml_text(&eintrag(&mut zip, "content.xml")?, &OPEN_DOCUMENT)?]
@@ -68,6 +78,12 @@ pub fn lesen(pfad: &Path) -> Result<Inhalt, String> {
 }
 
 type Zip = zip::ZipArchive<std::fs::File>;
+
+/// Beginnt die Datei wie ein ZIP-Archiv?
+fn ist_zip(pfad: &Path) -> bool {
+    let mut anfang = [0u8; 4];
+    std::fs::File::open(pfad).and_then(|mut d| d.read_exact(&mut anfang)).is_ok() && anfang == *b"PK\x03\x04"
+}
 
 fn oeffnen(pfad: &Path) -> Result<Zip, String> {
     let datei = std::fs::File::open(pfad).map_err(|e| e.to_string())?;

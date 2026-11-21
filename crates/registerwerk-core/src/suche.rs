@@ -731,7 +731,7 @@ mod tests {
             .map(|(pfad, _)| {
                 let name = pfad.rsplit('/').next().unwrap().to_string();
                 let endung = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-                DateiEintrag { pfad: pfad.to_string(), name, endung, groesse: 10, geaendert: 100 }
+                DateiEintrag { pfad: pfad.to_string(), name, endung, groesse: 10, geaendert: 100, stufe: crate::regeln::Stufe::Voll }
             })
             .collect();
         r.abgleichen(&Durchlauf { dateien: eintraege, gelesene_verzeichnisse: vec!["A".into()], ..Default::default() })
@@ -884,7 +884,7 @@ mod tests {
         assert!(!r.aehnliche_woerter("altr").unwrap().contains(&"alter".to_string()));
 
         // a.pdf verschwindet aus dem Dateibaum
-        let b = DateiEintrag { pfad: "A/b.pdf".into(), name: "b.pdf".into(), endung: "pdf".into(), groesse: 10, geaendert: 100 };
+        let b = DateiEintrag { pfad: "A/b.pdf".into(), name: "b.pdf".into(), endung: "pdf".into(), groesse: 10, geaendert: 100, stufe: crate::regeln::Stufe::Voll };
         r.abgleichen(&Durchlauf { dateien: vec![b], gelesene_verzeichnisse: vec!["A".into()], ..Default::default() })
             .unwrap();
         assert!(suche(&r, "neuer").treffer.is_empty());
@@ -914,6 +914,11 @@ mod tests {
                 "CREATE VIRTUAL TABLE suche_text USING fts5(text, content='', contentless_delete=1,
                      tokenize='trigram remove_diacritics 1');
                  UPDATE datei SET suche_stand = 1;
+                 ALTER TABLE datei DROP COLUMN stufe;
+                 ALTER TABLE lauf DROP COLUMN geraet;
+                 DROP TABLE ordner_gesehen;
+                 DROP TABLE geraet;
+                 DROP TABLE merkmal;
                  PRAGMA user_version = 6;",
             )
             .unwrap();
@@ -924,7 +929,7 @@ mod tests {
             .db
             .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'suche_text'", [], |z| z.get(0))
             .unwrap();
-        assert_eq!((version, tabellen), (7, 0));
+        assert_eq!((version, tabellen), (9, 0));
     }
 
     #[test]

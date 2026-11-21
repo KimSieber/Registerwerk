@@ -6,8 +6,13 @@ export interface AppInfo {
   version: string;
   konfig_pfad: string | null;
   konfig_fehler: string | null;
-  cloud_ordner: string | null;
-  verzeichnisse: string[];
+  /** Name dieses Geräts */
+  geraet: string;
+  /** Äste dieses Geräts: Ordner, aus denen Unterlagen ins Register kommen können */
+  aeste: { name: string; ort: string; fehlt: boolean }[];
+  /** Ordnerregeln aus regeln.toml im Register-Ordner */
+  regeln: RegelZeile[];
+  regeln_fehler: string | null;
   register_ordner: string | null;
   pdfium_ordner: string | null;
   tessdata_ordner: string | null;
@@ -26,6 +31,118 @@ export interface LaufErgebnis {
   nicht_lesbar: number;
   fehlende_verzeichnisse: string[];
   unvollstaendige_verzeichnisse: string[];
+  /** Von den entfernten: nicht mehr von den Ordnerregeln erfasst */
+  entfernt_regel: number;
+  entfernt_regel_seiten: number;
+  /** Ordner jetzt "nur Metadaten": Text und Vorschauen entfallen */
+  reduziert: number;
+  reduziert_seiten: number;
+  /** Beim Durchlauf wegen ihres Typs ignorierte Dateien */
+  ignoriert: number;
+  uebergangene_ordner: number;
+  /** Nur geprüft, das Register ist unverändert. Die Oberfläche fragt nach. */
+  probe: boolean;
+  /** Die Dateien hinter entfernt und reduziert, nach Pfad, höchstens 5000 */
+  betroffen: Betroffen[];
+  /** Ordner, die dieses Gerät früher gesehen hat und jetzt nicht findet. Ihr Bestand bleibt. */
+  vermisst: OrdnerBestand[];
+  /** Ordner, die es auf diesem Gerät nie gab: Sie gehören zu einem anderen Gerät. */
+  fremd: OrdnerBestand[];
+}
+
+/** Ein Ordner, der auf diesem Gerät fehlt, mit seinem Bestand im Register */
+export interface OrdnerBestand {
+  ordner: string;
+  dateien: number;
+  /** Geräte, die den Ordner gesehen haben */
+  geraete: string[];
+}
+
+/** Warum eine Datei nach den Ordnerregeln wegfällt oder nur mit Namen bleibt (register.rs) */
+export type Grund = "ohne_regel" | "ausgeschlossen" | "typ" | "bibliothek" | "nur_metadaten" | "fehlt";
+
+export interface Betroffen {
+  /** Pfad relativ zum Cloud-Ordner */
+  pfad: string;
+  grund: Grund;
+  /** Seiten mit Text oder Vorschau, die verloren gehen */
+  seiten: number;
+  /** Zuletzt gesehen: Sekunden seit 1970 und Gerät */
+  zuletzt: number | null;
+  geraet: string | null;
+}
+
+/** Behandlung eines Ordners (regeln.rs) */
+export type Stufe = "voll" | "metadaten" | "ausgeschlossen";
+
+export interface RegelZeile {
+  /** Pfad relativ zum Cloud-Ordner */
+  ordner: string;
+  stufe: Stufe;
+}
+
+/** Ein Ordner im Baum der Regeln */
+export interface BaumEintrag {
+  name: string;
+  pfad: string;
+  hat_unterordner: boolean;
+  /** Ordner fremder Bibliotheken, wird ohne eigene Regel übergangen */
+  bibliothek: boolean;
+  /** Dateien im Register in diesem Ordner samt Unterordnern */
+  im_register: number;
+  /** Davon ausstehend und nur online */
+  nur_online: number;
+  /** Nur bei Ästen: Ort auf diesem Gerät, wenn hier einer zugewiesen ist */
+  ort: string | null;
+  /** Nur bei Ästen: Den Ordner gibt es auf diesem Gerät nicht */
+  fehlt: boolean;
+  /** Geräte, die den Ordner gesehen haben */
+  geraete: string[];
+}
+
+/** Ein Ordner mit Dateien, die ausstehen und nur online liegen */
+export interface OnlineOrdner {
+  ordner: string;
+  dateien: number;
+}
+
+/** Behandlung eines Dateityps in der Stufe Voll (formate.rs) */
+export type Klasse = "gelesen" | "nur_name" | "ignoriert";
+
+export interface EndungZeile {
+  endung: string;
+  klasse: Klasse;
+  anzahl: number;
+  bytes: number;
+  nur_online: number;
+}
+
+export interface UnterordnerZeile {
+  /** leer: Dateien direkt im geprüften Ordner */
+  name: string;
+  gelesen: number;
+  nur_name: number;
+  ignoriert: number;
+  bytes: number;
+  nur_online: number;
+}
+
+export interface OrdnerPruefung {
+  ordner: string;
+  dauer_ms: number;
+  abgebrochen: boolean;
+  dateien: number;
+  gelesen: number;
+  nur_name: number;
+  ignoriert: number;
+  nur_online: number;
+  /** Summe der lokal vorhandenen Dateien */
+  bytes: number;
+  endungen: EndungZeile[];
+  unterordner: UnterordnerZeile[];
+  bibliotheken: string[];
+  bibliotheken_anzahl: number;
+  nicht_lesbar: number;
 }
 
 export interface TypZeile {
@@ -244,7 +361,54 @@ export interface RegisterStand {
 
 export const appInfo = () => invoke<AppInfo>("app_info");
 export const registerStand = () => invoke<RegisterStand | null>("register_stand");
-export const dateibaumEinlesen = () => invoke<LaufErgebnis>("dateibaum_einlesen");
+/** Ohne `bestaetigt` ändert der Lauf nichts, wenn er wegen der Regeln etwas entfernen würde (`probe`). */
+export const dateibaumEinlesen = (bestaetigt: boolean) =>
+  invoke<LaufErgebnis>("dateibaum_einlesen", { bestaetigt });
+export const regelnLesen = () => invoke<RegelZeile[]>("regeln_lesen");
+export const regelnSpeichern = (regeln: RegelZeile[]) => invoke<RegelZeile[]>("regeln_speichern", { regeln });
+export const ordnerListe = (ordner: string) => invoke<BaumEintrag[]>("ordner_liste", { ordner });
+export const ordnerPruefen = (ordner: string) => invoke<OrdnerPruefung>("ordner_pruefen", { ordner });
+/** Kennzahlen des Registers für das Datenbank-Symbol */
+export interface RegisterInfo {
+  ordner: string;
+  /** In diesem Ordner liegt ein Register */
+  vorhanden: boolean;
+  /** Der Ordner steht in der Konfiguration, sonst ist es der Datenordner der Anwendung */
+  gewaehlt: boolean;
+  index_bytes: number;
+  scheiben: number;
+  scheiben_bytes: number;
+  dateien: number;
+  seiten: number;
+  vorschauen: number;
+  /** Geräte mit dem Zeitpunkt ihres letzten Durchlaufs (Sekunden seit 1970) */
+  geraete: [string, number | null][];
+  geraet: string;
+  regeln: number;
+}
+
+export const registerInfo = () => invoke<RegisterInfo>("register_info");
+/** Ohne `bestaetigt` gilt ein Ordner ohne Register nicht. Liefert die Kennzahlen und ob der Ordner jetzt gilt. */
+export const registerWaehlen = (ordner: string, bestaetigt: boolean) =>
+  invoke<[RegisterInfo, boolean]>("register_waehlen", { ordner, bestaetigt });
+export const registerImFinder = () => invoke<void>("register_im_finder");
+
+/** Auswahldialog des Systems. `null`, wenn abgebrochen. */
+export const ordnerWaehlen = () => invoke<string | null>("ordner_waehlen");
+/** Nimmt einen Ordner als Ast auf. Mit `zuweisen` bekommt ein vorhandener Ast auf diesem Gerät diesen Ort. */
+export const astHinzufuegen = (ort: string, name: string | null, zuweisen: boolean) =>
+  invoke<string>("ast_hinzufuegen", { ort, name, zuweisen });
+export const astLoesen = (name: string) => invoke<void>("ast_loesen", { name });
+/** Entfernt einen Ordner, den es nicht mehr gibt, samt Regeln aus dem Register. */
+export const ordnerEntfernen = (ordner: string) => invoke<number>("ordner_entfernen", { ordner });
+/** Ordner mit „nur online“-Dateien, deren Inhalt aussteht, mit `vorschau` deren Vorschau aussteht. */
+export const nurOnlineOrdner = (vorschau: boolean) => invoke<OnlineOrdner[]>("nur_online_ordner", { vorschau });
+export const ordnerImFinder = (ordner: string) => invoke<void>("ordner_im_finder", { ordner });
+export const ordnerPruefenAbbrechen = () => invoke<void>("ordner_pruefen_abbrechen");
+
+/** Meldet allen Ansichten, dass sich Register oder Regeln geändert haben. */
+export const GEAENDERT = "registerwerk:geaendert";
+export const geaendertMelden = () => window.dispatchEvent(new Event(GEAENDERT));
 
 export function inhalteLesen(beiFortschritt: (f: Fortschritt) => void) {
   const kanal = new Channel<Fortschritt>();

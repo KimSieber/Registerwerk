@@ -14,3 +14,5 @@ tauri-build = { version = "2", features = [] }
 registerwerk-core = { path = "../crates/registerwerk-core" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
+# Auswahldialog des Systems für "Ordner hinzufügen" (v0.0.7)
+tauri-plugin-dialog = "2"

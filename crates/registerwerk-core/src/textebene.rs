@@ -702,7 +702,7 @@ fn datei_schreiben(
     probelauf: Option<&Path>,
     protokoll: Option<&Path>,
 ) -> Ergebnis<Ausgang> {
-    let pfad = konfig.cloud_ordner.join(&a.pfad);
+    let pfad = konfig.ort_oder_nichts(&a.pfad);
     let Ok(meta) = std::fs::metadata(&pfad) else { return Ok(Ausgang::Uebergangen { veraendert: true }) };
     if a.nur_online || meta.len() == 0 {
         return Ok(Ausgang::Uebergangen { veraendert: false });
@@ -1005,13 +1005,10 @@ mod tests {
             let t = UNIX_EPOCH + Duration::from_secs(VORHER);
             fs::File::options().write(true).open(&pfad).unwrap().set_modified(t).unwrap();
         }
-        let konfig = Konfiguration {
-            cloud_ordner: tmp.path().to_path_buf(),
-            verzeichnisse: vec!["A".into()],
-            register_ordner: None,
-        };
+        // Ast "A" liegt im Ordner A: Die Pfade im Register heißen "A/…"
+        let konfig = Konfiguration::mit_ast("A", &tmp.path().join("A"));
         let mut register = Register::im_speicher().unwrap();
-        crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         crate::inhalte::lesen(&konfig, &mut register, testleser, |_| {}, &AtomicBool::new(false)).unwrap();
         // OCR wie im Lauf: Seiten ohne Text erkannt und übernommen, mit Wortlagen
         for auftrag in register.ocr_ausstehend().unwrap() {
@@ -1126,7 +1123,7 @@ mod tests {
         assert_eq!((s.textebene.dateien_geschrieben, s.textebene.seiten_in_pdf, s.textebene.fehler), (2, 2, 1));
         assert_eq!(s.textebene.fehler_liste[0].pfad, "A/kaputt.pdf");
         // Nichts gilt als veraltet: Dateibaum unverändert, Inhalt und OCR aktuell
-        let abgleich = crate::dateibaum_einlesen(&konfig, &mut register).unwrap();
+        let abgleich = crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         assert_eq!(abgleich.geaendert, 1, "nur anders.pdf");
         assert!(register.ausstehend().unwrap().iter().all(|a| a.pfad == "A/anders.pdf"));
         assert!(register.ocr_ausstehend().unwrap().iter().all(|a| a.pfad != "A/scan.pdf"));

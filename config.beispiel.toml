@@ -1,19 +1,20 @@
-# Registerwerk: Vorlage für die Konfiguration
+# Registerwerk: Vorlage für die Konfiguration eines Geräts
 #
-# Diese Datei nach "config.local.toml" kopieren und die Pfade eintragen.
-# "config.local.toml" ist per .gitignore von der Versionierung ausgeschlossen.
+# Diese Datei nach "config.local.toml" kopieren. "config.local.toml" ist per
+# .gitignore von der Versionierung ausgeschlossen. Die Anwendung schreibt sie
+# selbst weiter, etwa wenn im Reiter "Ordner" ein Ordner hinzugefügt wird.
 
-# Wurzel des Cloud-Ordners auf diesem Gerät (absoluter Pfad).
-# Alle Pfade im Register sind relativ dazu.
-cloud_ordner = "/pfad/zum/cloud-ordner"
+# Name dieses Geräts. Das Register merkt sich damit, welches Gerät einen
+# Ordner gesehen hat. Ohne Angabe nimmt die Anwendung den Namen des Rechners.
+geraet = "Mein Rechner"
 
-# Zu indizierende Verzeichnisse, relativ zum Cloud-Ordner.
-verzeichnisse = [
-    "Hauptverzeichnis/Unterordner1",
-    "Hauptverzeichnis/Unterordner2",
-]
-
-# Ordner für die Arbeitskopie des Registers (absoluter Pfad, optional).
-# Ohne Angabe liegt sie im Datenordner der Anwendung im Benutzerprofil,
-# also außerhalb des Cloud-Ordners.
+# Ordner für das Register (absoluter Pfad, optional). Ohne Angabe liegt es
+# im Datenordner der Anwendung im Benutzerprofil.
 # register_ordner = "/pfad/zum/register"
+
+# Äste: Ordner dieses Geräts, aus denen Unterlagen ins Register kommen können.
+# Im Register beginnt jeder Pfad mit dem Namen des Astes. Welche Unterordner
+# gelesen werden, steht in "regeln.toml" beim Register (Reiter "Ordner").
+[aeste]
+Cloud = "/pfad/zum/cloud-ordner"
+Dokumente = "/pfad/zu/dokumenten"

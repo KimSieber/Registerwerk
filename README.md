@@ -9,13 +9,14 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** v0.0.6 (November 2026). Der Dateibaum der konfigurierten
-Verzeichnisse, der Text jeder PDF-Seite, der Text von Office-, Pages- und
-Textdateien und eine Vorschau jeder PDF-Seite und jedes Bildes werden ins
-Register eingelesen. Seiten ohne Text und Bilder werden per OCR erkannt, in
-Scans kommt der erkannte Text als unsichtbare Textebene in die PDF. Die Suche
-ist fehlertolerant, mit Filtern nach Ordner, Datum und Dateityp. Die Umsetzung
-läuft als Pilot auf einem kleinen Teil des Archivs.
+**Stand:** v0.0.7 (November 2026). Im Reiter „Ordner“ wird gewählt, welche
+Ordner des Geräts ins Register kommen und wie: voll, nur mit Namen oder gar
+nicht. Aus den gewählten Ordnern werden der Dateibaum, der Text jeder PDF-Seite,
+der Text von Office-, Pages- und Textdateien und eine Vorschau jeder PDF-Seite,
+jedes Bildes und jeder Textdatei eingelesen. Seiten ohne Text und Bilder werden
+per OCR erkannt, in Scans kommt der erkannte Text als unsichtbare Textebene in
+die PDF. Die Suche ist fehlertolerant, mit Filtern nach Ordner, Datum und
+Dateityp. Mehrere Geräte können nacheinander auf demselben Register arbeiten.
 
 ## Warum
 
@@ -58,20 +59,27 @@ Der Einsatz von KI ist nicht vorgesehen.
 
 ## Behandlung von Ordnern und Dateitypen
 
-Ordner bekommen per Regel eine Behandlungsstufe. Die genaueste Regel gewinnt.
+Ordner bekommen per Regel eine Behandlungsstufe. Ohne Regel wird nichts gelesen.
+Eine Regel gilt auch für die Unterordner, die genaueste Regel gewinnt.
 
 | Stufe | Was ins Register kommt | Beispiel |
 |---|---|---|
 | Voll | Pfad, Name, Text, Vorschau | das eigentliche Archiv |
-| Nur Dokumente | wie Voll, aber nur pdf, md, txt | Entwicklungsprojekte |
-| Nur Metadaten | Pfad, Name, Größe, Datum | eBooks, Musik |
-| Ausgeschlossen | nichts | Bildordner, die Bilderwerk abdeckt |
+| Nur Namen | Pfad, Name, Größe, Datum | eBooks, Musik |
+| Aus | nichts | Bildordner, die Bilderwerk abdeckt |
 
-Unabhängig vom Ordner gilt: Nicht lesbare oder gepackte Formate werden nur mit
-Metadaten erfasst. Archive werden nicht entpackt.
+In einem Ordner der Stufe Voll entscheidet die Endung: Dokumente und Bilder
+werden gelesen, nicht lesbare oder gepackte Formate nur mit Namen erfasst
+(Archive werden nicht entpackt), alles andere wird ignoriert, etwa Quelltext.
+Bibliotheksordner wie `node_modules` werden übergangen.
 
-Die Regeln stehen in einer lesbaren Textdatei neben dem Register, nicht nur in
-der Datenbank.
+Die Ordner können überall auf dem Gerät liegen. Jeder aufgenommene Ordner ist
+ein „Ast“ mit einem Namen. Wo er liegt, steht nur in der Konfiguration des
+Geräts. Das Register merkt sich, welches Gerät einen Ordner gesehen hat, und
+entfernt nichts, nur weil ein Ordner auf einem anderen Gerät fehlt.
+
+Die Regeln stehen in der lesbaren Textdatei `regeln.toml` neben dem Register,
+nicht in der Datenbank.
 
 ## Technik
 
@@ -80,8 +88,9 @@ der Datenbank.
 - **Register:** SQLite, Suchindex mit FTS5 und Trigrammen, verschlüsselt (ab Stufe 3)
 - **PDF:** PDFium für Text und Rendering
 - **OCR:** Tesseract, nur für Seiten ohne Text
-- **Weitere Formate:** Text aus Word, Excel, PowerPoint, OpenDocument, Pages,
-  Keynote, txt und md ohne fremdes Programm. Bilder bekommen Vorschau und OCR
+- **Weitere Formate:** Text aus Word, Excel, PowerPoint (auch doc, xls, ppt),
+  OpenDocument, Pages, Keynote, txt und md ohne fremdes Programm. Bilder
+  (auch HEIC) bekommen Vorschau und OCR, Textdateien eine Vorschau
 - **Vorschau:** jede Seite mit 1024 px an der kurzen Kante, AVIF mit Qualität 25,
   kodiert mit libavif und libaom, abgelegt in Vorschau-Scheiben (eigene
   SQLite-Dateien neben dem Register)
@@ -94,16 +103,18 @@ in der Entwicklungsdokumentation unter `docs/`:
 [v0.0.3](docs/v0.0.3%20Entwicklungsdokumentation.md),
 [v0.0.4](docs/v0.0.4%20Entwicklungsdokumentation.md),
 [v0.0.5](docs/v0.0.5%20Entwicklungsdokumentation.md),
-[v0.0.6](docs/v0.0.6%20Entwicklungsdokumentation.md).
+[v0.0.6](docs/v0.0.6%20Entwicklungsdokumentation.md),
+[v0.0.7](docs/v0.0.7%20Entwicklungsdokumentation.md).
 
 ## Aufbau des Repos
 
 ```
-crates/registerwerk-core/   Kern in Rust: Konfiguration, Dateibaum, PDFs, Office-Formate,
-                            Bilder, Vorschauen, OCR, Register, Suche
+crates/registerwerk-core/   Kern in Rust: Konfiguration, Ordnerregeln, Dateibaum, PDFs,
+                            Office-Formate, Bilder, Vorschauen, OCR, Register, Suche
 src-tauri/                  Tauri-Hülle: Fenster und Befehle für die Oberfläche
 src/                        Oberfläche (React, TypeScript, Vite): Rahmen, Register-Seite
 src/suche/                  Suchansicht (Aufbau wie Bilderwerk)
+src/ordner/                 Reiter „Ordner“: Baum, Stufen, Ordner-Regeln, Prüfung
 config.beispiel.toml        Vorlage für die Konfiguration
 docs/                       Dokumentation, darin konzept.md
 docs/icons/                 App-Icon in allen Größen (PNG, SVG, ICNS, ICO)
@@ -132,7 +143,7 @@ Auf Intel-Rechnern und unter Windows wird zusätzlich NASM gebraucht.
 bash tools/dropbox_ausschluss.sh     # einmal je Gerät, siehe unten
 bash tools/pdfium_holen.sh           # einmal je Gerät: PDFium laden
 bash tools/tesseract_holen.sh        # einmal je Gerät: Quelltext und Sprachdaten von Tesseract
-cp config.beispiel.toml config.local.toml   # danach Pfade eintragen
+cp config.beispiel.toml config.local.toml   # wahlweise, die Anwendung legt sie sonst selbst an
 npm install
 npm run tauri dev                    # Anwendung im Entwicklungsmodus
 npm run tauri dev -- --release       # dasselbe mit Release-Bau, volles Tempo
@@ -158,9 +169,10 @@ Kern und Abhängigkeiten werden auch im Entwicklungsmodus optimiert übersetzt
 (`Cargo.toml`, `[profile.dev.package]`). Sonst wäre das Erzeugen der Vorschauen
 um ein Vielfaches langsamer. Für Messungen trotzdem den Release-Bau nehmen.
 
-Die Arbeitskopie des Registers liegt ohne weitere Angabe im Datenordner der
-Anwendung im Benutzerprofil, also außerhalb des Cloud-Ordners. Dort liegen die
-Index-Datenbank `register.db` und die Vorschau-Scheiben `vorschau-0001.db` usw.
+Das Register liegt ohne weitere Angabe im Datenordner der Anwendung im
+Benutzerprofil. Über das Datenbank-Symbol rechts oben lässt sich ein anderer
+Ordner wählen. Dort liegen die Index-Datenbank `register.db`, die
+Vorschau-Scheiben `vorschau-0001.db` usw. und die Ordnerregeln `regeln.toml`.
 
 Zugangsdaten, lokale Pfade und andere Interna gehören nicht in versionierte
 Dateien, sondern nach `docs/intern/` oder in eine `config.local`-Datei. Beides
