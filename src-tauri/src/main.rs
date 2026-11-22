@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use registerwerk_core::{
-    Anfrage, DateiDetails, DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis,
+    AblaufErgebnis, AufteilErgebnis, Anfrage, Delta, DeltaDatei, DeltaUebersicht, Meldung, DateiDetails, DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis,
     OnlineOrdner, OrdnerPruefung, Regeln, Register, RegisterStand, SeitenText, Stufe, SuchErgebnis, SucheAngaben, SucheAufbau,
     TextebeneErgebnis, VorschauErgebnis,
 };
@@ -25,6 +25,48 @@ use tauri::{AppHandle, Manager, State, UriSchemeResponder};
 struct Lesen {
     laeuft: AtomicBool,
     abbrechen: AtomicBool,
+    /// Delta-Lauf: nicht weiter auf Dateien aus der Cloud warten (v0.0.8).
+    weiter: AtomicBool,
+    /// Die Belegung gehört der Prüfung (Deltaanalyse). Andere Vorgänge
+    /// warten dann, statt abgewiesen zu werden.
+    prueft: AtomicBool,
+}
+
+impl Lesen {
+    /// Belegt das Register für einen schreibenden Vorgang. Läuft gerade nur
+    /// die Prüfung beim Öffnen (Deltaanalyse), wird auf sie gewartet: Sie
+    /// ändert nichts und ist meist nach wenigen Sekunden fertig.
+    async fn belegen(&self) -> Result<(), String> {
+        let start = Instant::now();
+        loop {
+            if !self.laeuft.swap(true, Ordering::SeqCst) {
+                return Ok(());
+            }
+            // Die Prüfung setzt ihre Kennung kurz nach dem Belegen
+            if !self.prueft.load(Ordering::SeqCst) && start.elapsed() > Duration::from_millis(300) {
+                return Err("Es läuft bereits ein Vorgang.".into());
+            }
+            if start.elapsed() > Duration::from_secs(120) {
+                return Err("Die Prüfung des Dateibaums dauert ungewöhnlich lange. Bitte später erneut versuchen.".into());
+            }
+            let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(Duration::from_millis(100))).await;
+        }
+    }
+}
+
+/// Ergebnis der letzten Deltaprüfung (v0.0.8). Die Dateien bleiben hier,
+/// die Oberfläche holt sie je Ordner beim Aufklappen.
+#[derive(Default)]
+struct DeltaStand(Mutex<Option<Delta>>);
+
+/// Antwort der Deltaprüfung für die Oberfläche.
+#[derive(Serialize)]
+struct DeltaAntwort {
+    lauf: LaufErgebnis,
+    uebersicht: DeltaUebersicht,
+    nur_namen: u64,
+    /// Zeitpunkt der Prüfung, Sekunden seit 1970.
+    geprueft: u64,
 }
 
 /// Abbruch einer laufenden Ordnerprüfung.
@@ -312,9 +354,7 @@ async fn dateibaum_einlesen(
 ) -> Result<LaufErgebnis, String> {
     let (_, konfig) = konfig_laden(&app)?;
     let ordner = register_ordner(&app, &konfig)?;
-    if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es läuft bereits ein Vorgang.".into());
-    }
+    zustand.belegen().await?;
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
         let regeln = regeln_laden(&konfig, &ordner)?;
         let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
@@ -331,6 +371,130 @@ async fn dateibaum_einlesen(
     zustand.laeuft.store(false, Ordering::SeqCst);
     leser_zuruecksetzen(&app);
     ergebnis?
+}
+
+/// Prüft, was ansteht (v0.0.8): Dateibaum als Probe, dazu je Datei die
+/// anstehenden Schritte. Ändert nichts. Läuft gerade ein Vorgang, gibt es
+/// einen Fehler, die Oberfläche zeigt dann den letzten Stand.
+#[tauri::command]
+async fn delta_pruefen(app: AppHandle, zustand: State<'_, Lesen>) -> Result<DeltaAntwort, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    if zustand.laeuft.swap(true, Ordering::SeqCst) {
+        return Err("Es läuft gerade ein Vorgang.".into());
+    }
+    zustand.prueft.store(true, Ordering::SeqCst);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let regeln = regeln_laden(&konfig, &ordner)?;
+        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let delta = registerwerk_core::delta_pruefen(&konfig, &regeln, &mut register).map_err(|e| e.to_string())?;
+        let antwort = DeltaAntwort {
+            lauf: delta.lauf.clone(),
+            uebersicht: delta.uebersicht(),
+            nur_namen: delta.nur_namen,
+            geprueft: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        if let Ok(mut stand) = app2.state::<DeltaStand>().0.lock() {
+            *stand = Some(delta);
+        }
+        Ok(antwort)
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.prueft.store(false, Ordering::SeqCst);
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    ergebnis?
+}
+
+/// Die Dateien der letzten Deltaprüfung direkt in `ordner`.
+#[tauri::command]
+fn delta_dateien(zustand: State<'_, DeltaStand>, ordner: String) -> Vec<DeltaDatei> {
+    zustand.0.lock().ok().and_then(|d| d.as_ref().map(|d| d.dateien_in(&ordner))).unwrap_or_default()
+}
+
+/// Dateien der letzten Deltaprüfung nach Art, wahlweise nur in `ordner`
+/// samt Unterordnern. Höchstens 2.000, dazu die Gesamtzahl.
+#[tauri::command]
+fn delta_liste(
+    zustand: State<'_, DeltaStand>,
+    filter: registerwerk_core::ablauf::Filter,
+    ordner: Option<String>,
+) -> (Vec<DeltaDatei>, u64) {
+    zustand
+        .0
+        .lock()
+        .ok()
+        .and_then(|d| d.as_ref().map(|d| d.liste(filter, ordner.as_deref())))
+        .unwrap_or_default()
+}
+
+/// Delta-Lauf (v0.0.8): nimmt auf, lädt "nur online"-Dateien der Auswahl und
+/// führt sie durch alle Schritte. Entfernt nichts. Meldet den Fortschritt
+/// über `kanal`. Anhalten über `inhalte_abbrechen`.
+#[tauri::command]
+async fn verarbeiten(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    ausgeschlossen: Vec<String>,
+    ohne_online: bool,
+    kanal: Channel<Meldung>,
+) -> Result<AblaufErgebnis, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    let pdfium = pdfium_ordner(&app)
+        .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
+    let tessdata = tessdata_ordner(&app)
+        .ok_or_else(|| "Sprachdaten nicht gefunden. Bitte im Projektordner ausführen: bash tools/tesseract_holen.sh".to_string())?;
+    zustand.belegen().await?;
+    zustand.abbrechen.store(false, Ordering::SeqCst);
+    zustand.weiter.store(false, Ordering::SeqCst);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
+        let regeln = regeln_laden(&konfig, &ordner)?;
+        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let mut zuletzt = Instant::now() - Duration::from_secs(1);
+        let mut schritt = None;
+        let e = registerwerk_core::verarbeiten(
+            &konfig,
+            &regeln,
+            &mut register,
+            &pdfium,
+            &tessdata,
+            &ausgeschlossen,
+            ohne_online,
+            |m| {
+                // Jeder Schrittwechsel und jedes Ende wird gemeldet, sonst höchstens zehnmal je Sekunde
+                if schritt != Some(m.schritt) || m.erledigt == m.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {
+                    schritt = Some(m.schritt);
+                    zuletzt = Instant::now();
+                    let _ = kanal.send(m.clone());
+                }
+            },
+            &zustand.weiter,
+            &zustand.abbrechen,
+        )
+        .map_err(|e| e.to_string())?;
+        let _ = kanal.send(Meldung { schritt: registerwerk_core::Schritt::Suche, erledigt: 0, gesamt: 1, datei: String::new() });
+        register.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).map_err(|e| e.to_string())?;
+        Ok(e)
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
+    ergebnis?
+}
+
+/// Delta-Lauf: nicht weiter auf Dateien aus der Cloud warten, mit den
+/// vorhandenen weitermachen. Die übrigen bleiben offen.
+#[tauri::command]
+fn laden_ueberspringen(zustand: State<'_, Lesen>) {
+    zustand.weiter.store(true, Ordering::SeqCst);
 }
 
 /// Die Ordnerregeln aus `regeln.toml`.
@@ -492,9 +656,7 @@ async fn ast_loesen(app: AppHandle, name: String) -> Result<(), String> {
 async fn ordner_entfernen(app: AppHandle, zustand: State<'_, Lesen>, ordner: String) -> Result<u64, String> {
     let (_, konfig) = konfig_laden(&app)?;
     let register = register_ordner(&app, &konfig)?;
-    if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es läuft bereits ein Vorgang.".into());
-    }
+    zustand.belegen().await?;
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
         let ordner = registerwerk_core::dateibaum::relativ_normalisieren(&ordner);
         if ordner.is_empty() {
@@ -552,9 +714,7 @@ async fn inhalte_lesen(
     let ordner = register_ordner(&app, &konfig)?;
     let pdfium = pdfium_ordner(&app)
         .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
-    if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es läuft bereits ein Vorgang.".into());
-    }
+    zustand.belegen().await?;
     zustand.abbrechen.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
@@ -603,9 +763,7 @@ async fn vorschauen_erzeugen(
     let ordner = register_ordner(&app, &konfig)?;
     let pdfium = pdfium_ordner(&app)
         .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
-    if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es läuft bereits ein Vorgang.".into());
-    }
+    zustand.belegen().await?;
     zustand.abbrechen.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
@@ -651,9 +809,7 @@ async fn ocr_ausfuehren(
     let tessdata = tessdata_ordner(&app).ok_or_else(|| {
         "Sprachdaten für die OCR nicht gefunden. Bitte im Projektordner ausführen: bash tools/tesseract_holen.sh".to_string()
     })?;
-    if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es läuft bereits ein Vorgang.".into());
-    }
+    zustand.belegen().await?;
     zustand.abbrechen.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
@@ -718,9 +874,7 @@ async fn textebene_schreiben(
     let pdfium = pdfium_ordner(&app)
         .ok_or_else(|| "PDFium nicht gefunden. Bitte im Projektordner ausführen: bash tools/pdfium_holen.sh".to_string())?;
     let ziel = if probelauf { Some(probelauf_ordner(&app)?) } else { None };
-    if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es läuft bereits ein Vorgang.".into());
-    }
+    zustand.belegen().await?;
     zustand.abbrechen.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
@@ -778,9 +932,7 @@ async fn suche_aufbauen(
 ) -> Result<SucheAufbau, String> {
     let (_, konfig) = konfig_laden(&app)?;
     let ordner = register_ordner(&app, &konfig)?;
-    if zustand.laeuft.swap(true, Ordering::SeqCst) {
-        return Err("Es läuft bereits ein Vorgang.".into());
-    }
+    zustand.belegen().await?;
     zustand.abbrechen.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
@@ -951,6 +1103,11 @@ struct RegisterInfo {
     geraete: Vec<(String, Option<i64>)>,
     geraet: String,
     regeln: usize,
+    /// Größe, ab der eine Scheibe voll ist.
+    scheibe_grenze: u64,
+    /// Mindestens eine Scheibe liegt über der Grenze oder ein Aufteilen
+    /// wurde angehalten.
+    aufteilen_noetig: bool,
 }
 
 fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result<RegisterInfo, String> {
@@ -967,6 +1124,8 @@ fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result
         geraete: Vec::new(),
         geraet: konfig.geraet.clone(),
         regeln: 0,
+        scheibe_grenze: registerwerk_core::register::SCHEIBE_GRENZE,
+        aufteilen_noetig: false,
     };
     if let Ok(eintraege) = std::fs::read_dir(ordner) {
         for e in eintraege.flatten() {
@@ -987,6 +1146,7 @@ fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result
         info.seiten = stand.inhalt.seiten;
         info.vorschauen = stand.vorschau.seiten;
         info.geraete = r.geraete().map_err(|e| e.to_string())?;
+        info.aufteilen_noetig = r.aufteilen_noetig().map_err(|e| e.to_string())?;
     }
     if let Ok(Some(regeln)) = Regeln::laden(ordner) {
         info.regeln = regeln.eintraege().count();
@@ -1001,6 +1161,45 @@ async fn register_info(app: AppHandle) -> Result<RegisterInfo, String> {
     tauri::async_runtime::spawn_blocking(move || register_info_von(&konfig, &ordner))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Teilt Scheiben, die über der Grenze liegen, in kleinere (v0.0.8). Meldet
+/// den Fortschritt über `kanal`. Anhalten über `inhalte_abbrechen`, der
+/// nächste Aufruf macht weiter.
+#[tauri::command]
+async fn scheiben_aufteilen(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    kanal: Channel<Fortschritt>,
+) -> Result<AufteilErgebnis, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    zustand.belegen().await?;
+    zustand.abbrechen.store(false, Ordering::SeqCst);
+    // Die Suche hält die Scheiben zum Lesen offen
+    leser_zuruecksetzen(&app);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
+        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let mut zuletzt = Instant::now() - Duration::from_secs(1);
+        register
+            .scheiben_aufteilen(
+                |f| {
+                    if f.erledigt == f.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {
+                        zuletzt = Instant::now();
+                        let _ = kanal.send(f.clone());
+                    }
+                },
+                &zustand.abbrechen,
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
+    ergebnis?
 }
 
 /// Wählt einen anderen Ordner für das Register, etwa nachdem es verschoben
@@ -1112,6 +1311,7 @@ fn main() {
         .manage(Lesen::default())
         .manage(Leser::default())
         .manage(Pruefen::default())
+        .manage(DeltaStand::default())
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("vorschau", |ctx, anfrage, antwort| {
             vorschau_protokoll(ctx.app_handle().clone(), anfrage, antwort)
@@ -1120,6 +1320,11 @@ fn main() {
             app_info,
             register_stand,
             dateibaum_einlesen,
+            delta_pruefen,
+            delta_dateien,
+            delta_liste,
+            verarbeiten,
+            laden_ueberspringen,
             regeln_lesen,
             regeln_speichern,
             ordner_liste,
@@ -1129,6 +1334,7 @@ fn main() {
             ordner_im_finder,
             register_info,
             register_waehlen,
+            scheiben_aufteilen,
             register_im_finder,
             ordner_waehlen,
             ast_hinzufuegen,

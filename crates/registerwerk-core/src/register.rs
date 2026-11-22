@@ -45,8 +45,10 @@ pub const DATEINAME: &str = "register.db";
 const SCHEMA_VERSION: i64 = 9;
 
 /// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
-/// Konzept: 1 bis 2 GB. **Annahme**
-pub const SCHEIBE_GRENZE: u64 = 1_500_000_000;
+/// Bis v0.0.7 waren es 1,5 GB. Liegt das Register in einem Cloud-Ordner, wird
+/// die wachsende Scheibe nach jedem Lauf neu abgeglichen, deshalb seit v0.0.8
+/// rund 200 MB. Größere Scheiben teilt `Register::scheiben_aufteilen`.
+pub const SCHEIBE_GRENZE: u64 = 200_000_000;
 
 /// Version des Verfahrens, mit dem Vorschauen erzeugt werden. Erhöhen, wenn
 /// sich Auflösung, Format, Qualität oder Farberkennung ändern. Dann werden
@@ -73,6 +75,21 @@ pub struct Register {
     pub(crate) scheibe_grenze: u64,
     /// Wortliste der unscharfen Suche, beim ersten Gebrauch aufgebaut.
     pub(crate) wortliste: RefCell<Option<std::sync::Arc<fst::Map<Vec<u8>>>>>,
+    /// Begrenzt die Schritte (Inhalte, Vorschauen, OCR, Textebene) auf diese
+    /// Dateien (v0.0.8, Delta-Lauf). `None`: alle ausstehenden.
+    pub(crate) auswahl: Option<std::collections::HashSet<i64>>,
+}
+
+/// Art des Abgleichs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Modus {
+    /// Aufnehmen, ändern und entfernen.
+    Voll,
+    /// Wie `Voll`, aber zurückgerollt: zeigt, was geschähe.
+    Probe,
+    /// Nur aufnehmen und ändern, nichts entfernen, keine Inhalte zurücknehmen
+    /// (v0.0.8). Entfernen bleibt ein eigener, bestätigter Schritt.
+    NurAufnehmen,
 }
 
 /// Ergebnis eines Abgleichs zwischen Dateibaum und Register.
@@ -424,8 +441,27 @@ impl Register {
                  INSERT INTO merkmal (name, wert) VALUES ('fax_tiff', '1');",
             )?;
         }
+        // v0.0.8 liest TIFF mit Farbpalette: diese Dateien einmal neu versuchen
+        let versucht: bool =
+            tx.query_row("SELECT count(*) FROM merkmal WHERE name = 'tiff_palette'", [], |z| z.get(0))?;
+        if !versucht {
+            tx.execute_batch(
+                "UPDATE datei SET vorschau_verfahren = NULL, vorschau_fehler = NULL
+                 WHERE vorschau_fehler LIKE '%RGBPalette%' AND endung IN ('tif','tiff');
+                 UPDATE datei SET ocr_verfahren = NULL, ocr_fehler = NULL
+                 WHERE ocr_fehler LIKE '%RGBPalette%' AND endung IN ('tif','tiff');
+                 INSERT INTO merkmal (name, wert) VALUES ('tiff_palette', '1');",
+            )?;
+        }
         tx.commit()?;
-        Ok(Self { db, pfad, scheiben: RefCell::default(), scheibe_grenze: SCHEIBE_GRENZE, wortliste: RefCell::default() })
+        Ok(Self {
+            db,
+            pfad,
+            scheiben: RefCell::default(),
+            scheibe_grenze: SCHEIBE_GRENZE,
+            wortliste: RefCell::default(),
+            auswahl: None,
+        })
     }
 
     /// Schema 2: Text je Seite, Verarbeitungsstand, Dokumentdatum für jede Datei.
@@ -589,16 +625,41 @@ impl Register {
     /// "nur online", ist das keine Änderung des Inhalts. Die letzte bekannte
     /// Größe bleibt dann erhalten.
     pub fn abgleichen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
-        self.abgleich(durchlauf, false)
+        Ok(self.abgleich(durchlauf, Modus::Voll, false)?.0)
     }
 
     /// Wie [`Register::abgleichen`], lässt das Register aber unverändert.
     /// Zeigt vorab, was ein Abgleich entfernen würde.
     pub fn abgleich_pruefen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
-        self.abgleich(durchlauf, true)
+        Ok(self.abgleich(durchlauf, Modus::Probe, false)?.0)
     }
 
-    fn abgleich(&mut self, durchlauf: &Durchlauf, probe: bool) -> Ergebnis<LaufErgebnis> {
+    /// Nimmt neue und geänderte Dateien auf, entfernt aber nichts (v0.0.8).
+    /// Was zu entfernen wäre, steht wie bei der Probe im Ergebnis.
+    pub fn aufnehmen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
+        Ok(self.abgleich(durchlauf, Modus::NurAufnehmen, false)?.0)
+    }
+
+    /// Probe mit Deltaanalyse (v0.0.8): wie [`Register::abgleich_pruefen`],
+    /// dazu alle Dateien, bei denen danach ein Schritt ansteht, als neu,
+    /// geändert oder schon offen. Das Register bleibt unverändert.
+    pub fn delta_pruefen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<crate::ablauf::Delta> {
+        let (lauf, delta) = self.abgleich(durchlauf, Modus::Probe, true)?;
+        let (dateien, nur_namen_dateien) = delta.unwrap_or_default();
+        Ok(crate::ablauf::Delta { lauf, dateien, nur_namen: nur_namen_dateien.len() as u64, nur_namen_dateien })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn abgleich(
+        &mut self,
+        durchlauf: &Durchlauf,
+        modus: Modus,
+        mit_delta: bool,
+    ) -> Ergebnis<(LaufErgebnis, Option<(Vec<crate::ablauf::DeltaDatei>, Vec<crate::ablauf::DeltaDatei>)>)> {
+        let probe = modus == Modus::Probe;
+        let nur_aufnehmen = modus == Modus::NurAufnehmen;
+        let mut neu_ids: Vec<i64> = Vec::new();
+        let mut geaendert_ids: Vec<i64> = Vec::new();
         let start = Instant::now();
         let tx = self.db.transaction()?;
         tx.execute("INSERT OR IGNORE INTO geraet (name) VALUES (?1)", [&durchlauf.geraet])?;
@@ -662,6 +723,7 @@ impl Register {
                             d.pfad, d.name, d.endung, groesse_neu, d.geaendert, leer, datum, quelle, lauf, stufe_neu
                         ])?;
                         e.neu += 1;
+                        neu_ids.push(tx.last_insert_rowid());
                     }
                     Some((id, groesse_alt, geaendert_alt, stufe_alt, seiten)) => {
                         let gleiches_datum = geaendert_alt == d.geaendert;
@@ -673,7 +735,12 @@ impl Register {
                             e.unveraendert += 1;
                         } else {
                             e.geaendert += 1;
+                            geaendert_ids.push(id);
                         }
+                        // Ohne Entfernen bleibt die alte Stufe, bis der Inhalt
+                        // bestätigt zurückgenommen wird
+                        let zuruecknehmen = stufe_alt != stufe_neu && d.stufe == Stufe::Metadaten;
+                        let stufe_neu = if nur_aufnehmen && zuruecknehmen { stufe_alt } else { stufe_neu };
                         let groesse = if gleiches_datum { groesse_neu.or(groesse_alt) } else { groesse_neu };
                         aktualisieren.execute(params![
                             id,
@@ -685,7 +752,7 @@ impl Register {
                             datum::aus_zeitstempel(d.geaendert),
                             stufe_neu
                         ])?;
-                        if stufe_alt != stufe_neu && d.stufe == Stufe::Metadaten && Self::inhalt_entfernen(&tx, id)? {
+                        if zuruecknehmen && !nur_aufnehmen && Self::inhalt_entfernen(&tx, id)? {
                             e.reduziert += 1;
                             e.reduziert_seiten += seiten.unwrap_or(0) as u64;
                             betroffen(&d.pfad, Grund::NurMetadaten, seiten, &mut e.betroffen);
@@ -758,7 +825,11 @@ impl Register {
                         geraet: zuletzt_geraet,
                     });
                 }
-                e.entfernt += entfernen.execute([id])? as u64;
+                if nur_aufnehmen {
+                    e.entfernt += 1;
+                } else {
+                    e.entfernt += entfernen.execute([id])? as u64;
+                }
             }
             // Fehlende Ordner mit Regel stehen auch ohne Bestand in der Liste
             for ordner in &durchlauf.fehlende_verzeichnisse {
@@ -808,13 +879,44 @@ impl Register {
                 e.unveraendert as i64, e.entfernt as i64, e.nicht_lesbar as i64
             ],
         )?;
+        let delta = if mit_delta {
+            Some(crate::ablauf::delta_lesen(&tx, &neu_ids, &geaendert_ids)?)
+        } else {
+            None
+        };
         if probe {
             tx.rollback()?;
         } else {
             tx.commit()?;
         }
         e.dauer_ms = start.elapsed().as_millis() as u64;
-        Ok(e)
+        Ok((e, delta))
+    }
+
+    /// Begrenzt die Schritte auf diese Dateien, `None` hebt das auf.
+    pub fn auswahl_setzen(&mut self, auswahl: Option<std::collections::HashSet<i64>>) {
+        self.auswahl = auswahl;
+    }
+
+    pub(crate) fn in_auswahl(&self, id: i64) -> bool {
+        self.auswahl.as_ref().is_none_or(|a| a.contains(&id))
+    }
+
+    /// Nach dem Zurückstellen auf "nur online" (v0.0.8). Größe und Datum
+    /// bleiben: Die Datei ist inhaltlich unverändert.
+    pub fn ausgelagert_eintragen(&mut self, id: i64) -> Ergebnis<()> {
+        self.db.execute("UPDATE datei SET nur_online = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Nach dem Laden aus der Cloud (v0.0.8): Größe und Änderungsdatum der
+    /// jetzt lokalen Datei, nicht mehr "nur online".
+    pub fn geladen_eintragen(&mut self, id: i64, groesse: u64, geaendert: i64) -> Ergebnis<()> {
+        self.db.execute(
+            "UPDATE datei SET groesse = ?2, geaendert = ?3, nur_online = 0 WHERE id = ?1",
+            params![id, groesse as i64, geaendert],
+        )?;
+        Ok(())
     }
 
     /// Entfernt Text, erkannten Text und Vorschauen einer Datei, deren Ordner
@@ -930,7 +1032,7 @@ impl Register {
     }
 
     /// Bedingung für lesbare Dateien (`formate.rs`), deren Inhalt (neu) gelesen werden muss.
-    const AUSSTEHEND: &'static str = concat!("stufe = 1 AND endung IN ", crate::lesbar_sql!(), " AND (
+    pub(crate) const AUSSTEHEND: &'static str = concat!("stufe = 1 AND endung IN ", crate::lesbar_sql!(), " AND (
             inhalt_verfahren IS NULL OR inhalt_verfahren < ?1
             OR inhalt_geaendert IS NOT geaendert
             OR (groesse IS NOT NULL AND inhalt_groesse IS NOT groesse))");
@@ -944,6 +1046,7 @@ impl Register {
             .query_map([INHALT_VERFAHREN], |z| {
                 Ok(Ausstehend { id: z.get(0)?, pfad: z.get(1)?, nur_online: z.get(2)? })
             })?
+            .filter(|a| a.as_ref().map_or(true, |a| self.in_auswahl(a.id)))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(liste)
     }

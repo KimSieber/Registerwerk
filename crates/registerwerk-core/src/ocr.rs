@@ -252,7 +252,7 @@ fn bedingung_seite(s: &str) -> String {
 
 /// Bedingung für PDFs und Bilder, deren OCR (neu) laufen muss. Der Inhalt muss aktuell
 /// gelesen sein. `?1` ist [`INHALT_VERFAHREN`], `?2` [`OCR_VERFAHREN`].
-fn bedingung_datei() -> String {
+pub(crate) fn bedingung_datei() -> String {
     format!(
         "d.endung IN {} AND d.inhalt_fehler IS NULL
          AND d.inhalt_verfahren >= ?1 AND d.inhalt_geaendert IS d.geaendert
@@ -263,7 +263,7 @@ fn bedingung_datei() -> String {
     )
 }
 
-const OCR_OFFEN: &str = "(d.ocr_verfahren IS NULL OR d.ocr_verfahren < ?2 OR d.ocr_geaendert IS NOT d.inhalt_geaendert)";
+pub(crate) const OCR_OFFEN: &str = "(d.ocr_verfahren IS NULL OR d.ocr_verfahren < ?2 OR d.ocr_geaendert IS NOT d.inhalt_geaendert)";
 
 impl Register {
     /// PDFs mit Seiten, die erkannt werden müssen, samt dieser Seiten.
@@ -286,6 +286,7 @@ impl Register {
                     seiten: Vec::new(),
                 })
             })?
+            .filter(|a| a.as_ref().map_or(true, |a| self.in_auswahl(a.id)))
             .collect::<Result<Vec<_>, _>>()?;
         let mut seiten = self.db.prepare(&format!(
             "SELECT s.nr, s.zeichen, s.tokens, s.wortartig, s.bildanteil FROM seite s
@@ -623,7 +624,7 @@ where
                 }
                 let pfad = orte.ort_oder_nichts(&auftrag.pfad);
                 let meta = std::fs::metadata(&pfad).ok();
-                let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let groesse = meta.as_ref().map(crate::dateibaum::lokale_groesse).unwrap_or(0);
                 if auftrag.nur_online || groesse == 0 {
                     let _ = tx.send(Meldung::Uebergangen { nr, veraendert: false });
                     continue;

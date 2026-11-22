@@ -2775,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_pruefen"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "registerwerk-core",
  "registerwerk-ocr",
@@ -3210,7 +3210,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "registerwerk"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "registerwerk-core",
  "serde",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-core"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "ab_glyph",
  "calamine",
@@ -3234,6 +3234,7 @@ dependencies = [
  "lopdf",
  "pdfium-render",
  "quick-xml 0.37.5",
+ "registerwerk-macos",
  "registerwerk-ocr",
  "rusqlite",
  "serde",
@@ -3243,13 +3244,23 @@ dependencies = [
  "tiff",
  "toml 0.8.23",
  "unicode-normalization",
+ "weezl 0.1.12",
  "zip 2.6.1",
  "zune-heic",
 ]
 
 [[package]]
+name = "registerwerk-macos"
+version = "0.0.8"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "registerwerk-ocr"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "cmake",
 ]

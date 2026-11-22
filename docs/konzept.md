@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 21.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.7). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 22.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.8). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -44,6 +44,19 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 - Öffnen des Originals aus dem Cloud-Ordner
 - OCR für Seiten ohne Text und für einzelne Bilder im Archiv
 - Anwendung mit eigener Oberfläche für Indizierung, Suche und Anzeige
+- Delta-Lauf: Prüfung beim Öffnen, Auswahl im Ordnerbaum, Verarbeitung durch alle Schritte, Laden von "nur online"-Dateien und Zurückstellen auf "nur online" (seit v0.0.8)
+
+### Unterstützte Cloud-Speicher
+
+Festgelegt in v0.0.8: **Vollständig unterstützt ist nur die klassische Dropbox-App mit ihrem Ordner unter `~/Dropbox` auf macOS.** Nur dort lädt Registerwerk "nur online"-Dateien selbst und stellt sie danach wieder auf "nur online".
+
+| Cloud-Speicher | Einlesen | Laden durch Registerwerk | Zurück auf "nur online" |
+|---|---|---|---|
+| Dropbox, klassische App unter `~/Dropbox` (macOS) | ja | ja, über die Dateikoordination von macOS, gemessen | ja, mit dem Werkzeug `onlineonly` |
+| Anbieter über den File Provider von macOS: Google Drive, OneDrive, iCloud, Dropbox unter `~/Library/CloudStorage` | ja, Platzhalter werden erkannt | **Annahme**: Lesen löst den Download aus, nicht gemessen | nein, macOS gibt Platz bei Bedarf selbst frei |
+| Ordner ohne Cloud | ja | nicht nötig | nicht nötig |
+
+Das muss in README und auf der späteren Webseite deutlich stehen. Sonst erwarten Anwender mit anderen Anbietern etwas, das Registerwerk nicht leistet.
 
 ### Nicht enthalten
 
@@ -67,7 +80,7 @@ Indexer und Anwendung sind Teile desselben Programms. Der lesende Teil soll so g
 ### Betrieb
 
 - **Erstindizierung:** auf dem stationären Rechner, in Tranchen, weil das gesamte Archiv dort nicht gleichzeitig lokal liegen kann. Ab Februar 2027 ist dort mehr Platz frei.
-- **Laufender Betrieb:** Prüfung und Delta-Befüllung überwiegend auf dem Notebook. Der stationäre Rechner läuft nicht dauerhaft und hält keine dauerhafte Vollkopie.
+- **Laufender Betrieb:** Prüfung und Delta-Befüllung überwiegend auf dem Notebook. Der stationäre Rechner läuft nicht dauerhaft und hält keine dauerhafte Vollkopie. Seit v0.0.8 prüft Registerwerk beim Öffnen von selbst, was ansteht, und verarbeitet es nach Kims Bestätigung (Abschnitt 5, Delta-Lauf).
 - **Zuwachs:** rund 1.000 bis 2.000 Dokumente pro Jahr, etwa 3 Promille des Bestands.
 - **Ein Schreiber zur selben Zeit:** Organisatorisch ist sichergestellt, dass das Programm nur auf einem Gerät geöffnet ist. Welches Gerät das ist, wechselt: Wer länger an einem Gerät arbeitet, liest dort ein. Eine Sperre mit Stand-Zähler soll den Gerätewechsel technisch absichern (Abschnitt 10), sie ist noch nicht gebaut.
 
@@ -85,7 +98,7 @@ Der bestehende Scan-Prozess bleibt unverändert: Scan per Smartphone-App mit Bil
 - Entfernt wird nur mit Grund (seit v0.0.7): Für den Ordner gilt keine Regel mehr oder die Stufe „Aus“, der Dateityp wird nicht geführt, die Datei liegt in einem Bibliotheksordner, oder ihr Ordner ist auf diesem Gerät vorhanden und vollständig gelesen und die Datei fehlt darin. **Fehlen allein löscht nie.**
 - Fehlt ein ganzer Ordner oder gab es darin Lesefehler, bleibt sein Bestand im Register unangetastet. Ein nicht eingehängter Cloud-Ordner leert so nicht das Register. Hat das Gerät den Ordner früher gesehen, meldet der Lauf ihn als „vermisst“, sonst als Ordner eines anderen Geräts (Abschnitt 6, Äste und Geräte).
 - Vor dem Entfernen fragt die Oberfläche nach und zeigt die Liste der betroffenen Dateien mit dem Grund. Dazu läuft der Abgleich erst als Probe, die nichts ändert.
-- Verschobene und umbenannte Dateien sollen über einen Inhalts-Hash erkannt werden, damit Text und Vorschauen nicht neu erzeugt werden müssen. **Annahme**, wird mit dem Delta-Lauf umgesetzt.
+- Verschobene und umbenannte Dateien sollen über einen Inhalts-Hash erkannt werden, damit Text und Vorschauen nicht neu erzeugt werden müssen. **Annahme**, noch nicht umgesetzt (Stufe 4).
 
 ### Platzhalter ("nur online")
 
@@ -93,21 +106,44 @@ Gemessen am 15.11.2026 auf dem Notebook:
 
 - Platzhalter melden 0 Byte, 0 belegte Blöcke und keine besondere Markierung. Sie sind für ein Programm von einer leeren Datei nicht zu unterscheiden.
 - Name, Pfad und Änderungsdatum sind lesbar, die Größe nicht.
-- Das Auflisten lädt nichts herunter. Das Öffnen einer Datei löst den Download aus.
+- Das Auflisten lädt nichts herunter.
+- **Korrektur 22.11.2026 (v0.0.8):** Das bloße Öffnen und Lesen durch ein Programm lädt nichts. Ein Lesen mit `head` kam nach 4 ms mit 0 Byte zurück. Geladen wird, wenn die Datei über das System geöffnet wird (`open`, Doppelklick) oder ein Programm sie über die Dateikoordination von macOS (`NSFileCoordinator`) anfordert. Die Dateikoordination lud eine Datei ohne sichtbares Fenster. Vorher stand hier, dass Öffnen den Download auslöst.
 
 Folgen:
 
 - Eine Datei mit 0 Byte gilt als "nur online oder leer".
-- Zum Indizieren öffnet der Indexer die Datei. Der Cloud-Client lädt sie dabei automatisch.
-- Bis zum Delta-Lauf (Stufe 4) öffnet der Indexer nur lokal vorhandene Dateien. "Nur online"-Dateien bleiben ausstehend. Für die Erstindizierung werden die Ordner von Hand offline verfügbar gemacht. Umgesetzt in v0.0.2. Seit v0.0.7 nennt die Oberfläche die Ordner mit solchen Dateien und öffnet sie im Dateimanager.
-- Gemessen ist das nur für die Dropbox. Andere Anbieter können die echte Größe melden, dann würde der Indexer die Datei öffnen und damit laden. **Annahme**, vor der Aufnahme weiterer Cloud-Speicher zu prüfen.
+- Inhalte, Vorschauen und OCR öffnen nur lokal vorhandene Dateien. "Nur online"-Dateien bleiben ausstehend. Umgesetzt in v0.0.2.
+- Seit v0.0.8 lädt der Delta-Lauf die ausgewählten "nur online"-Dateien selbst über die Dateikoordination (Abschnitt Delta-Lauf).
+- **File Provider:** Platzhalter von Google Drive, OneDrive, iCloud und der Dropbox unter `~/Library/CloudStorage` melden die echte Größe. Erkennbar sind sie am Kennzeichen `SF_DATALESS` in den Dateiflags. Seit v0.0.8 gelten sie wie Dateien mit 0 Byte als "nur online", sonst würden sie beim Lesen still geladen. Ob dort ein einfaches Lesen den Download auslöst, ist nicht gemessen. **Annahme**, vor der Aufnahme solcher Äste zu prüfen.
 - Das Gesamtvolumen von "nur online"-Dateien lässt sich über das Dateisystem nicht ermitteln.
 - Wechselt eine Datei bei gleichem Änderungsdatum zwischen lokal und "nur online", gilt sie als unverändert. Das Register behält die letzte bekannte Größe und merkt sich nur den Zustand. Erst ein anderes Änderungsdatum bedeutet einen neuen Inhalt. Umgesetzt in v0.0.1. **Annahme**: Der Cloud-Client lässt das Änderungsdatum beim Auslagern und Laden unverändert. Das wird im Pilot beobachtet.
 - Eine Datei, die bisher nur als Platzhalter gesehen wurde, hat im Register keine Größe.
 
+### Delta-Lauf
+
+Umgesetzt in v0.0.8 (Stufe 4, ohne Sperre und Inhalts-Hash).
+
+1. **Prüfen:** Beim Öffnen der Anwendung läuft der Abgleich des Dateibaums als Probe. In derselben, danach verworfenen Transaktion wird gelesen, bei welchen Dateien ein Schritt ansteht. Das Register bleibt unverändert. Die Zahl steht am Reiter „Register“.
+2. **Anzeigen:** Zahlen für neu, geändert, noch offen, nur online, neu nur mit Namen und zu entfernen. Jede Zahl öffnet die Liste der Dateien. Darunter ein Ordnerbaum mit Anzahl je Ordner, aufklappbar bis zu den Dateien.
+3. **Auswählen:** Alles ist angehakt, auch "nur online". Ordner und Dateien lassen sich herausnehmen, alle "nur online"-Dateien mit einem Schalter.
+4. **Verarbeiten:** neue und geänderte Dateien aufnehmen, ohne etwas zu entfernen → aus der Cloud laden → Inhalte lesen → Vorschauen erzeugen → Text erkennen → in PDFs schreiben → wieder "nur online" → Suchindex nachführen. Jeder Schritt nur für die Auswahl.
+5. **Entfernen** bleibt ein eigener Schritt mit Rückfrage und Dateiliste.
+
+Das Schreiben in die PDFs braucht im Delta-Lauf keinen zweiten Klick. Der Klick auf „Verarbeiten“ gilt als Freigabe (Kim, 22.11.2026). Die Textebene wird nur angehängt, das Risiko ist gering.
+
+**Laden:** Die ausgewählten "nur online"-Dateien werden in vier Fäden über die Dateikoordination angefordert. Gewartet wird gemeinsam, angekommene Dateien kommen sofort ins Register. Das Warten endet, wenn alle da sind, nach 2 Minuten ohne neue Datei oder mit „Nicht warten, weiter“. Was nicht ankam, bleibt offen für den nächsten Lauf. Die Anzeige zeigt laufend, wie viele Dateien da sind und auf welche gewartet wird. Grund: Die Warteschlange der Cloud kann voll sein, oder das Gerät ist offline.
+
 ### Zurück auf "nur online"
 
-Ob sich eine Datei nach dem Indizieren per Programm wieder auf "nur online" setzen lässt, ist zu testen. Es ist eine Komfortfunktion. Als Rückfallweg wird das Archiv-Verzeichnis etwa einmal im Jahr von Hand zurückgesetzt, was bei dem geringen Zuwachs genügt.
+Seit v0.0.8 stellt der Delta-Lauf die Dateien, die er selbst geladen hat, danach wieder auf "nur online". Dateien, die Kim bewusst lokal hält, bleiben lokal. Dafür nutzt Registerwerk das Werkzeug `onlineonly` (MIT, inoffiziell). Es spricht mit der Dropbox-App über dieselbe Schnittstelle wie ihr Finder-Menü und wartet, bis die Dropbox den neuen Zustand meldet. Pfade, die die Dropbox noch abgleicht, hält es zurück und fordert sie erneut an. Getestet am 22.11.2026: aus `local` wurde `online-only` mit 0 Byte.
+
+- Es arbeitet nur mit der klassischen Dropbox unter `~/Dropbox`.
+- Die Schnittstelle ist undokumentiert. Ein Update der Dropbox kann sie brechen. Dann bleiben die Dateien lokal, und die Anzeige meldet das.
+- Fehlt das Werkzeug, wird der Schritt übersprungen, und die Oberfläche nennt den Befehl zur Installation (`brew install zamua/tap/onlineonly`).
+- Beim ersten Programmpaket soll es mit Lizenztext als Beigabe ins Paket. **Annahme**
+- Rückfallweg bleibt das Zurücksetzen von Hand.
+
+Das ist die einzige Stelle, an der Registerwerk mit einem Cloud-Anbieter spricht, und sie ist freiwillig. Grundsatz 4 gilt für Einlesen, Suchen und Anzeigen weiter.
 
 ### Original öffnen
 
@@ -284,7 +320,7 @@ Das Register besteht aus mehreren SQLite-Dateien, die das Programm gemeinsam öf
 | Datei | Inhalt | Größe |
 |---|---|---|
 | Index-Datenbank | Pfade, Metadaten, Volltext mit Suchindex, Verweis auf die Vorschau | einige GB |
-| Vorschau-Datenbanken ("Scheiben") | die AVIF-Bilder als Datensätze, wie bei Bilderwerk | je etwa 1 bis 2 GB |
+| Vorschau-Datenbanken ("Scheiben") | die AVIF-Bilder als Datensätze, wie bei Bilderwerk | je rund 200 MB (seit v0.0.8, vorher bis 1,5 GB) |
 
 Die Vorschauen liegen also in der Datenbank, nicht als einzelne Bilddateien. Sie sind nur auf mehrere Dateien verteilt. Gründe gegen eine einzige große Datei:
 
@@ -294,11 +330,14 @@ Die Vorschauen liegen also in der Datenbank, nicht als einzelne Bilddateien. Sie
 
 Alte Scheiben bleiben unverändert. Ein Delta-Lauf fasst nur die Index-Datenbank und die jüngste Scheibe an. Umgesetzt in v0.0.3:
 
-- Die Scheiben werden nach **Erfassungsreihenfolge** gefüllt. Neue Vorschauen kommen in die jüngste Scheibe, bis diese rund 1,5 GB erreicht (**Annahme**). Dann beginnt eine neue. Im Betrieb mit dem Register im Cloud-Ordner (v0.0.7) hat sich das als zu groß gezeigt: Die wachsende Scheibe wird nach jedem Lauf neu abgeglichen. Vorgesehen sind rund 200 MB.
+- Die Scheiben werden nach **Erfassungsreihenfolge** gefüllt. Neue Vorschauen kommen in die jüngste Scheibe, bis diese rund 200 MB erreicht. Dann beginnt eine neue. Bis v0.0.7 lag die Grenze bei 1,5 GB. Mit dem Register im Cloud-Ordner hat sich das als zu groß gezeigt, weil die wachsende Scheibe nach jedem Lauf neu abgeglichen wird.
+- Größere Scheiben aus der Zeit davor teilt der Knopf „Scheiben aufteilen“ im Datenbank-Symbol (v0.0.8). Er erscheint nur, wenn eine Scheibe über der Grenze liegt. Die ältesten Vorschauen bleiben, die übrigen wandern in neue Scheiben, die Vorschauen einer Datei bleiben zusammen. Danach wird die alte Datei verkleinert. Keine Kopie, kein Löschen einer Datei, abbruchsicher. Bei Kim am 22.11.2026 ausgeführt: aus einer Scheibe von 1,3 GB wurden mehrere zu rund 200 MB.
 - Die Dateien heißen `vorschau-0001.db`, `vorschau-0002.db` usw. und liegen neben der Index-Datenbank.
 - Die Index-Datenbank hält je Seite einen Verweis (Scheibe und Schlüssel), Maße und Farbe.
 - Ändert sich eine Datei oder verschwindet sie, wandern ihre alten Verweise in eine Liste. Beim nächsten Lauf werden die Bilder aus ihrer Scheibe gelöscht. Nur dabei ändert sich eine ältere Scheibe.
 - Geschrieben wird erst die Scheibe, dann der Verweis. Ein Abbruch dazwischen hinterlässt höchstens ein Bild ohne Verweis, das der nächste Neuaufbau beseitigt.
+
+**Index-Datenbank im Cloud-Ordner:** `register.db` ist bei Kim 1,2 GB groß (22.11.2026, während der Erstindizierung). Ein Aufteilen hilft wenig, weil jeder neue Beleg Text und Suchindex ändert. Soweit bekannt, überträgt der Dropbox-Client nur geänderte Blöcke von 4 MB, sodass ein Beleg einige MB statt der ganzen Datei hochlädt. **Annahme**, im Alltag nach der Erstindizierung zu beobachten.
 
 **Pfade im Register** beginnen mit dem Namen des Astes (Abschnitt 6, seit v0.0.7, vorher relativ zum Cloud-Ordner), mit `/` als Trenner und einheitlicher Schreibweise der Umlaute (Unicode NFC). Wo ein Ast auf einem Gerät liegt, steht nur in dessen Konfiguration. Dasselbe Register gilt damit auf jedem Gerät und Betriebssystem. Die einheitliche Schreibweise ist nötig, weil macOS Umlaute zerlegt liefert und dieselbe Datei sonst je nach Gerät ein anderer Eintrag wäre. Umgesetzt in v0.0.1.
 
@@ -369,13 +408,17 @@ Aufbau und Bedienung wie Bilderwerk:
 | Suchindex | SQLite FTS5 mit Trigrammen im Register, Wortliste als Automat (`fst`) | entschieden, im Einsatz seit v0.0.6 |
 | Office, OpenDocument | `zip` und `quick-xml`, eigene Auslese | entschieden, im Einsatz seit v0.0.6 |
 | Pages, Keynote | eigener Leser für die Textspeicher der IWA-Archive, entpackt mit `snap` | entschieden, im Einsatz seit v0.0.6 |
-| Bilder | `image` (jpeg, png, tiff, bmp, gif, webp), `zune-heic` für HEIC, `tiff` und `fax` für Fax-TIFF | entschieden, im Einsatz seit v0.0.6, HEIC und Fax seit v0.0.7 |
+| Bilder | `image` (jpeg, png, tiff, bmp, gif, webp), `zune-heic` für HEIC, `tiff` und `fax` für Fax-TIFF, eigener Leser für TIFF mit Farbpalette (`weezl` für LZW) | entschieden, im Einsatz seit v0.0.6, HEIC und Fax seit v0.0.7, Palette seit v0.0.8 |
 | Altes Office | `cfb` mit eigenem Leser für doc und ppt, `calamine` für xls | entschieden, im Einsatz seit v0.0.7 |
 | Vorschau für Text | `ab_glyph` mit DejaVu Sans Mono, Schrift im Repo | entschieden, im Einsatz seit v0.0.7 |
 | Regeln und Konfiguration | TOML: `regeln.toml` beim Register, `config.local.toml` je Gerät | entschieden, im Einsatz seit v0.0.7 |
 | PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
 | OCR | Tesseract 5.5.2, Sprachen Deutsch und Englisch, Sprachdaten `tessdata`. Statisch aus dem Quelltext gebaut (mit Leptonica, über CMake), eigene schmale Anbindung an die C-Schnittstelle. Keine Installation auf dem Gerät | entschieden, im Einsatz seit v0.0.4 |
 | Vorschau | AVIF Q25, kurze Kante 1024 px. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3, Größenregel seit v0.0.6 |
+| Laden aus der Cloud | Dateikoordination von macOS (`NSFileCoordinator`) über `objc2-foundation`, eigenes Paket `registerwerk-macos` | entschieden, im Einsatz seit v0.0.8 |
+| Zurück auf "nur online" | Werkzeug `onlineonly` (MIT), wird aufgerufen, wenn installiert | entschieden, im Einsatz seit v0.0.8. Beigabe im Programmpaket offen |
+| Platzhalter des File Providers | Kennzeichen `SF_DATALESS` in den Dateiflags | entschieden, seit v0.0.8 |
+| Build-Ordner | `target/cargo` über `.cargo/config.toml`, damit `cargo clean` den von der Dropbox ausgenommenen Ordner `target` stehen lässt | entschieden, seit v0.0.8 |
 | Zugangsdaten | lokaler Schlüsselbund des Betriebssystems, wie in Stellwerk | Annahme |
 
 Die Oberfläche muss AVIF auf allen Zielsystemen anzeigen. Die Bilder kommen über ein eigenes Protokoll (`vorschau://`) aus dem Register. Unter macOS geprüft in v0.0.3. Windows und Linux sind offen. Wo die eingebettete Browser-Komponente AVIF nicht kann, dekodiert der Rust-Teil das Bild und reicht es weiter.
@@ -483,7 +526,7 @@ Der Pilot umfasste bis v0.0.6 nur die zwei Hauptverzeichnisse des aktuellen Arch
 | 5 | OCR für Seiten ohne Text, Zurückschreiben in Scans | Suchqualität auf dem Pilotbestand geprüft |
 | 6 | Erstindizierung des gesamten Archivs in Tranchen | vollständiges Register |
 
-Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird. Stufe 2 folgte in v0.0.6, die Ordnerregeln aus Stufe 3 in v0.0.7. Als Nächstes ist der Delta-Lauf dran (Stufe 4): ein klarer Ablauf über alle Schritte, mit Anzeige dessen, was ansteht, und automatischer Prüfung beim Öffnen (Kims Wunsch).
+Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird. Stufe 2 folgte in v0.0.6, die Ordnerregeln aus Stufe 3 in v0.0.7, der Delta-Lauf aus Stufe 4 in v0.0.8. Von Stufe 4 fehlen noch die Sperre mit Stand-Zähler und das Erkennen verschobener Dateien, von Stufe 3 die Verschlüsselung.
 
 ### Stand der Umsetzung
 
@@ -496,6 +539,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.5 | Textebene in Scans zurückgeschrieben, Lage der Wörter aus Tesseract, Grenze "ohne Text" bei 10 Zeichen, Lesen gedrehter Seiten korrigiert | Stufe 5 abgeschlossen |
 | v0.0.6 | Suchindex und Suche mit Filtern, Suchansicht wie Bilderwerk, Text aus Office, OpenDocument, Pages und Text, Vorschau und OCR für Bilder, Vorschauen nach der kurzen Kante | Stufe 2 abgeschlossen, Teile von Stufe 3 (Dateitypen) |
 | v0.0.7 | Ordnerregeln mit Stufen, Reiter "Ordner", feste Einteilung der Dateitypen, Äste und Geräte, Entfernen nur mit Grund und Rückfrage, altes Office, HEIC, Vorschau für Text, Fax-TIFF, Register-Ort wählbar | Stufe 3 ohne Verschlüsselung |
+| v0.0.8 | Reiter "Register" als Delta-Lauf: Prüfung beim Öffnen, Ordnerbaum mit Auswahl, Dateilisten je Zahl, Verarbeiten durch alle Schritte, Laden aus der Dropbox über die Dateikoordination, zurück auf "nur online" mit `onlineonly`. Scheiben 200 MB mit Aufteilen, TIFF mit Farbpalette, Platzhalter des File Providers, Build-Ordner `target/cargo` | Stufe 4 ohne Sperre und Inhalts-Hash |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -508,11 +552,12 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Sprachdaten ins Programmpaket legen (Ressource `tessdata/standard` mit Lizenztexten) | mit dem ersten Paket |
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
-| Zurücksetzen auf "nur online" per Programm, Herunterladen neuer Dateien durch das Programm | Stufe 4 |
+| `onlineonly` als Beigabe ins Programmpaket legen, mit Lizenztext | mit dem ersten Paket |
+| Reiter "Ordner": statt eigenem „Dateibaum einlesen“ zum Abgleich im Reiter "Register" führen | v0.0.9 |
+| Laden bei Anbietern über den File Provider (Google Drive, OneDrive): löst Lesen den Download aus? | vor der Aufnahme solcher Äste |
+| Hinweis „nur klassische Dropbox vollständig unterstützt“ auf der Webseite | mit der Webseite |
 | Verschlüsselung des Registers. Dringender, seit es im Cloud-Ordner liegt | Stufe 3 |
 | Sperre mit Stand-Zähler für den Gerätewechsel | Stufe 4 |
-| Kleinere Scheiben (rund 200 MB), vorhandene Scheibe aufteilen | als Nächstes |
-| Verhalten der Platzhalter anderer Cloud-Speicher (Google Drive) | vor deren Erstindizierung |
 | Text aus Numbers und Pages vor 2013. Mehrseitige TIFF | später |
 | Antwortzeiten der Suche im ganzen Archiv | Stufe 6 |
 | Vergrößern über 100 %: Original bei Bedarf hoch aufgelöst rendern | später |
@@ -542,7 +587,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Auflösung für OCR | 300 dpi | deutlich besser als 200 dpi |
 | Sprachdaten | `tessdata` (Standard), deu+eng | gleiches Ergebnis wie `tessdata_best`, gut 30 % schneller |
 | Reihenfolge der Stufen | OCR (Stufe 5) vor der Suche (Stufe 2) | die Suche wird am endgültigen Text eingestellt |
-| Ablage der Vorschauen | in der Datenbank, verteilt auf Scheiben von 1 bis 2 GB | nur Geändertes wird repliziert, Anbieterwechsel bleibt offen |
+| Ablage der Vorschauen | in der Datenbank, verteilt auf Scheiben von rund 200 MB (bis v0.0.7: 1 bis 2 GB) | nur Geändertes wird repliziert, Anbieterwechsel bleibt offen |
 | Sicherungskopien | keine | sollen kein Volumen erzeugen, das von Hand bereinigt werden muss |
 | Datum | Dateiname, dann PDF, dann Datei | Dateinamen tragen fast immer ein Datum |
 | Verschlüsselung | Register verschlüsselt, Kennwort im eigenen Passwortsafe | hochsensible Inhalte, keine Bindung an einen Hersteller |
@@ -554,7 +599,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Pfade im Register | beginnen mit dem Ast-Namen, einheitliche Schreibweise | Register gilt auf jedem Gerät und Betriebssystem, für beliebige Ordner (v0.0.7) |
 | Wechsel auf "nur online" | keine Änderung, solange das Änderungsdatum gleich bleibt | sonst würde jedes Auslagern Text und Vorschauen neu erzeugen |
 | Anbindung von PDFium | `pdfium-render`, Bibliothek per Skript geladen, nicht im Repo | fertige Builds für alle Zielsysteme, freizügige Lizenzen, keine Binärdateien im Repo |
-| "Nur online" bis Stufe 4 | nicht öffnen, bleiben ausstehend | Öffnen löst den Download aus. Erstindizierung mit von Hand offline gestellten Ordnern |
+| "Nur online" in den Schritten | nicht öffnen, bleiben ausstehend. Geladen wird nur im Delta-Lauf, nach Auswahl | Kim behält die Kontrolle, was geladen wird |
 | Verarbeitungsstand | Änderungsdatum und Größe beim Lesen, dazu eine Verfahrensversion | geänderte Dateien und Verfahren werden gezielt neu gelesen, ein Abbruch kostet nichts |
 | Suchindex | SQLite FTS5 mit Trigrammen im Register, Text ohne Leerraum, Wortliste für ähnliche Wörter | bleibt im Register (Verschlüsselung, Neuaufbau). Findet Teilwörter und auseinandergerissene Wörter (v0.0.6) |
 | Treffer | je Dokument, Name vor Ordner vor Text, ohne Textausschnitt | gesucht werden Dokumente, nicht Stellen |
@@ -571,12 +616,24 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | HEIC | `zune-heic` | reines Rust, im Vergleich an 11 Fotos praktisch gleich mit libheif |
 | Altes Office | eigener Leser, kein fremdes Programm | wie bei den neuen Formaten |
 | AVIF-Encoder | libavif mit libaom, Stufe 8 | bei gleicher Qualität und Größe knapp 3-mal so schnell wie rav1e. Kostet einen C-Bau mit CMake |
-| Einteilung der Scheiben | nach Erfassungsreihenfolge, neue Scheibe ab rund 1,5 GB | Delta-Läufe ändern nur die jüngste Scheibe |
+| Einteilung der Scheiben | nach Erfassungsreihenfolge, neue Scheibe ab rund 200 MB (v0.0.8) | Delta-Läufe ändern nur die jüngste Scheibe, die Cloud gleicht wenig neu ab |
+| Aufteilen alter Scheiben | Knopf im Datenbank-Symbol, nicht still beim Start | der Lauf lädt einmal alles neu hoch, Kim wählt den Zeitpunkt |
 | Graustufen | echte Graustufen (4:0:0) für Seiten ohne Farbe | kleiner, ohne sichtbaren Verlust |
 | Entwicklungsmodus | Kern und Abhängigkeiten auch im Entwicklungsmodus optimiert | ohne Optimierung ist der Encoder um ein Vielfaches langsamer, auch weil seine generischen Teile erst im Kern übersetzt werden |
 | Zurückschreiben in die PDF | inkrementell mit `lopdf`, Schrift `glyphless.ttf` aus Tesseract im Repo | Original bleibt Byte für Byte erhalten. Gleich breite Zeichen lassen jedes Wort genau strecken |
 | Änderungsdatum nach dem Zurückschreiben | alter Wert | Sortierung kann darauf aufbauen. Das Register führt Größe und Datum selbst nach |
 | Ablage des Projekts | im Cloud-Ordner, Build-Ordner bleiben im Projekt und sind von der Synchronisation ausgenommen | sichert auch die nicht versionierten Inhalte. Eine zentrale Ablage je Projekt, keine Fragmente an anderen Orten |
+| Build-Ordner von cargo | `target/cargo` | `cargo clean` löscht den ganzen Build-Ordner samt Ausnahme von der Dropbox. So bleibt `target` stehen (v0.0.8) |
+| Ablauf im Reiter "Register" | Prüfung beim Öffnen, Ordnerbaum mit Haken, ein Knopf „Verarbeiten“ für alle Schritte. Bisherige Ansicht unter „Einzelheiten“ | aufgeräumt statt verstreuter Hinweise (Kim, v0.0.8) |
+| Vorauswahl im Delta-Lauf | alles angehakt, auch "nur online" | neue Belege kommen täglich und liegen meist nur online |
+| Dateien ansehen | Klick auf jede Zahl öffnet die Liste der Dateien | Kim will sehen, was gefunden wurde, bevor geladen wird |
+| Verarbeiten entfernt | nichts. Entfernen bleibt ein eigener Schritt mit Rückfrage | Schutz vor versehentlichem Löschen |
+| Laden aus der Dropbox | Dateikoordination von macOS, vier Dateien gleichzeitig, gemeinsames Warten, „Nicht warten, weiter“ | einfaches Lesen lädt nicht, `open` öffnet Fenster. Warteschlange oder offline dürfen den Lauf nicht aufhalten |
+| Zurück auf "nur online" | `onlineonly`, nur für die in diesem Lauf geladenen Dateien | keine Handarbeit danach. Bewusst lokale Dateien bleiben lokal |
+| Unterstützte Cloud-Speicher | vollständig nur die klassische Dropbox unter `~/Dropbox` | Laden und Auslagern sind nur dort gemessen und möglich. Muss auf der Webseite deutlich stehen |
+| Schreiben in die PDFs im Delta-Lauf | ohne zweiten Klick | die Textebene wird nur angehängt, im Pilot ohne Probleme (Kim) |
+| Platzhalter des File Providers | gelten wie 0 Byte als "nur online" | sonst würden sie beim Lesen still geladen |
+| TIFF mit Farbpalette | eigener Leser | `tiff` liest sie nicht. Kommt im Altarchiv vor (Scans von 2003) |
 
 ## 17. Verworfene Alternativen
 
@@ -604,6 +661,12 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Eigene Regeln je Gerät | Kim will ein Register und eine Auswahl für alle Geräte |
 | libheif für HEIC | C-Bibliothek, ein reiner Rust-Decoder liefert dasselbe Bild |
 | Entfernen, sobald eine Datei im Dateibaum fehlt | ein nicht eingehängter oder verschobener Ordner hätte seinen Bestand gelöscht |
+| Laden durch Öffnen und Lesen eines Bytes | die klassische Dropbox lädt dabei nichts (Messung 22.11.2026) |
+| Laden über `open` (Launch Services) | lädt, öffnet aber die Datei sichtbar in Vorschau |
+| Laden über Quick Look (`qlmanage`) | blieb im Test hängen |
+| Datei für Datei 2 Minuten warten | eine volle Warteschlange hielt den ganzen Lauf auf |
+| Scheiben still beim ersten Start aufteilen | einmaliger großer Upload zu einem Zeitpunkt, den Kim nicht wählt |
+| Suchindex der Index-Datenbank in eine eigene Datei | jeder Beleg ändert Text und Index, es würden beide Dateien abgeglichen |
 
 ## 18. Werkzeuge
 
@@ -612,6 +675,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
 - `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
-- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
+- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien, mit `--aufteilen <Ordner>` eine Probe des Aufteilens der Scheiben an einer Kopie des Registers unter `target/aufteilen_probe/` samt Vergleich jeder Vorschau (v0.0.8). Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
+- `onlineonly` (fremd, MIT, über Homebrew): stellt Dateien der klassischen Dropbox auf "nur online". Registerwerk ruft es im Delta-Lauf auf, wenn es installiert ist
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

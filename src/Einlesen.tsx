@@ -122,7 +122,7 @@ function Rueckfrage({
  * Ordner, die dieses Gerät früher gelesen hat und jetzt nicht findet: verschoben, gelöscht oder nicht
  * eingehängt. Ihr Bestand bleibt im Register, bis hier entschieden wird.
  */
-function VermisstListe({ ordner }: { ordner: OrdnerBestand[] }) {
+export function VermisstListe({ ordner }: { ordner: OrdnerBestand[] }) {
   const [erledigt, setErledigt] = useState<Map<string, string>>(new Map());
   const [frage, setFrage] = useState<string | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
@@ -211,7 +211,7 @@ const endungVon = (pfad: string) => {
  * Die Dateien, die nach den Ordnerregeln wegfallen, nach Grund und mit vollem Pfad. Damit lässt sich
  * vor der Bestätigung beurteilen, ob das Entfernen richtig ist.
  */
-function BetroffenListe({ dateien, gesamt }: { dateien: Betroffen[]; gesamt: number }) {
+export function BetroffenListe({ dateien, gesamt }: { dateien: Betroffen[]; gesamt: number }) {
   const [kopiert, setKopiert] = useState(false);
   const gruppen = useMemo(
     () =>

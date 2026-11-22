@@ -1,0 +1,15 @@
+[package]
+name = "registerwerk-macos"
+description = "Helfer für macOS: Dateien aus der Cloud anfordern (Dateikoordination). Unter anderen Systemen leer."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Dateikoordination von macOS (NSFileCoordinator), v0.0.8. Reines Rust, nur
+# die Anbindung an das Foundation-Framework des Systems.
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSFileCoordinator", "NSURL", "NSError", "NSString", "block2"] }

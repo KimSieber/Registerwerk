@@ -1,0 +1,6 @@
+# Build-Ordner eine Ebene tiefer (v0.0.8): `cargo clean` löscht den ganzen
+# Build-Ordner samt seiner Markierung „von der Dropbox ausgenommen“. So löscht
+# es nur `target/cargo`, und `target/` bleibt mit Markierung stehen
+# (tools/dropbox_ausschluss.sh).
+[build]
+target-dir = "target/cargo"

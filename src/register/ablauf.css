@@ -1,0 +1,101 @@
+/* Reiter „Register“ als Ablauf (v0.0.8) */
+.ablauf { max-width: 980px; }
+.seite--eingebettet { padding: 12px 0 0; max-width: none; }
+
+.ablauf__zahlen { display: flex; gap: 10px; flex-wrap: wrap; }
+.ablauf__zahl {
+  display: flex; flex-direction: column; min-width: 96px;
+  padding: 8px 14px; border-radius: 10px; background: var(--grund); border: 1px solid var(--rand);
+}
+.ablauf__zahl b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.ablauf__zahl span { font-size: 12px; color: var(--text-leise); }
+.ablauf__zahl.null { opacity: 0.55; }
+.ablauf__zahl.warnung b { color: var(--akzent); }
+.ablauf__ruhe { margin: 0; font-weight: 600; }
+
+.ablauf__fuss { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ablauf__fuss .leise, .ablauf .leise { color: var(--text-leise); }
+
+.baum {
+  border: 1px solid var(--rand); border-radius: 10px; max-height: 420px; overflow: auto;
+  padding: 4px 0; font-size: 13px;
+}
+.baum__zeile { display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 4px; min-height: 28px; }
+.baum__zeile:hover { background: var(--grund); }
+.baum__pfeil {
+  width: 20px; height: 20px; padding: 0; background: none; color: var(--text-leise); font-size: 12px;
+}
+.baum__haken { margin: 0; accent-color: var(--blau); }
+@media (prefers-color-scheme: dark) { .baum__haken { accent-color: var(--orange); } }
+.baum__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.baum__datei .baum__name { color: var(--text); }
+.baum__zahlen { display: flex; gap: 6px; align-items: center; flex: none; }
+.baum__anzahl { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-leise); }
+.baum__marke {
+  font-size: 11px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--rand); color: var(--text-leise);
+  white-space: nowrap;
+}
+.baum__marke--neu { color: var(--akzent); border-color: currentColor; }
+.baum__marke--online { color: var(--graublau); }
+.baum__marke--leise { opacity: 0.7; }
+
+.schritte { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.schritte__zeile {
+  display: grid; grid-template-columns: 22px 200px 1fr; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 8px; color: var(--text-leise);
+}
+.schritte__zeile.aktiv { background: var(--grund); color: var(--text); font-weight: 600; }
+.schritte__zeile.fertig { color: var(--text); }
+.schritte__zeichen { text-align: center; }
+.schritte__zeile.fertig .schritte__zeichen { color: var(--akzent); }
+.schritte__lauf { display: flex; align-items: center; gap: 10px; font-weight: 400; }
+.schritte__lauf .fortschritt-balken { flex: 1; max-width: 360px; }
+
+.ablauf__ergebnis p { margin: 0; }
+.ablauf__einzelheiten summary {
+  cursor: pointer; color: var(--text-leise); font-weight: 600; padding: 6px 2px;
+}
+
+.reiter__zahl {
+  margin-left: 6px; padding: 0 6px; border-radius: 9px; font-size: 11px;
+  background: var(--orange); color: var(--blau);
+}
+.umschalter--text button:has(.reiter__zahl) { display: flex; align-items: center; white-space: nowrap; }
+.reiter__zahl { display: inline-block; line-height: 16px; vertical-align: 1px; }
+
+/* Zahlen und Marken zum Anklicken (Fenster mit Dateinamen) */
+button.ablauf__zahl {
+  font: inherit; text-align: left; color: var(--text); cursor: pointer; font-weight: 400;
+}
+button.ablauf__zahl:hover { border-color: var(--akzent); filter: none; }
+.ablauf__zahl.leise b { color: var(--text-leise); }
+button.baum__marke {
+  font: inherit; font-size: 11px; font-weight: 400; background: none; cursor: pointer; padding: 0 7px;
+}
+button.baum__marke:hover { border-color: var(--akzent); filter: none; }
+button.baum__anzahl {
+  font: inherit; font-weight: 400; background: none; padding: 0 2px; cursor: pointer; color: var(--text-leise);
+}
+button.baum__anzahl:hover { color: var(--akzent); filter: none; text-decoration: underline; }
+.dateifenster { width: min(760px, 92vw); max-height: 82vh; display: flex; flex-direction: column; }
+.dateifenster h2 { margin: 0; }
+.dateifenster .pfad { margin: 0; }
+.dateifenster__liste { overflow: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.dateifenster__gruppe { display: flex; flex-direction: column; gap: 2px; }
+.dateifenster__gruppe > .pfad { padding: 2px 0; border-bottom: 1px solid var(--rand); }
+.dateifenster__datei { display: flex; justify-content: space-between; gap: 12px; padding: 3px 4px; font-size: 13px; }
+.dateifenster__datei:hover { background: var(--grund); border-radius: 6px; }
+.schritte__datei { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.schritte__lauf { min-width: 0; }
+
+.ablauf__online { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.ablauf__online .umschalter--text button { height: 26px; }
+.schritte__zeile { grid-template-columns: 22px 200px minmax(0, 1fr); }
+.schritte__knopf { height: 26px; padding: 0 10px; font-size: 12px; flex: none; }
+.ablauf__online .umschalter { background: var(--grund); border: 1px solid var(--rand); }
+.ablauf__online .umschalter button {
+  background: transparent; color: var(--text-leise); opacity: 1; font-weight: 600;
+}
+.ablauf__online .umschalter button.aktiv {
+  background: var(--flaeche); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}

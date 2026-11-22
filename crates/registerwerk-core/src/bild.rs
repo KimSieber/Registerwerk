@@ -48,8 +48,8 @@ fn oeffnen(pfad: &Path) -> Result<DynamicImage, String> {
         return heic(pfad).or_else(|fehler| allgemein(pfad).map_err(|_| fehler));
     }
     if endung == "tif" || endung == "tiff" {
-        // Faxe sind mit CCITT Gruppe 3 gepackt, das liest `image` nicht
-        return allgemein(pfad).or_else(|fehler| fax(pfad).ok_or(fehler));
+        // Faxe (CCITT Gruppe 3) und Bilder mit Farbpalette liest `image` nicht
+        return allgemein(pfad).or_else(|fehler| fax(pfad).or_else(|| palette(pfad)).ok_or(fehler));
     }
     allgemein(pfad)
 }
@@ -112,6 +112,104 @@ fn fax(pfad: &Path) -> Option<DynamicImage> {
         return None;
     }
     image::GrayImage::from_raw(breite, zeilen * je_zeile, pixel).map(DynamicImage::ImageLuma8)
+}
+
+/// TIFF mit Farbpalette (v0.0.8), wie sie ältere Scanner und Programme
+/// schreiben: je Pixel eine Nummer in einer Tabelle von Farben. `tiff` liest
+/// diese Bilder nicht. Gelesen wird die erste Seite, mit 1, 2, 4 oder 8 Bit
+/// je Pixel, ungepackt, PackBits, LZW oder Deflate.
+/// `None`, wenn die Datei kein solches Bild ist.
+fn palette(pfad: &Path) -> Option<DynamicImage> {
+    use tiff::decoder::Decoder;
+    use tiff::tags::Tag;
+    let daten = std::fs::read(pfad).ok()?;
+    let mut d = Decoder::new(std::io::Cursor::new(&daten)).ok()?;
+    let zahl = |d: &mut Decoder<_>, tag: Tag| d.find_tag_unsigned::<u32>(tag).ok().flatten();
+    if zahl(&mut d, Tag::PhotometricInterpretation)? != 3 || zahl(&mut d, Tag::SamplesPerPixel).unwrap_or(1) != 1 {
+        return None;
+    }
+    let bits = zahl(&mut d, Tag::BitsPerSample).unwrap_or(1);
+    if ![1, 2, 4, 8].contains(&bits) {
+        return None;
+    }
+    let breite = zahl(&mut d, Tag::ImageWidth)?;
+    let hoehe = zahl(&mut d, Tag::ImageLength)?;
+    if breite == 0 || hoehe == 0 || breite > 30_000 || hoehe > 100_000 {
+        return None;
+    }
+    let packung = zahl(&mut d, Tag::Compression).unwrap_or(1);
+    let vorhersage = zahl(&mut d, Tag::Predictor).unwrap_or(1);
+    // Rot, dann Grün, dann Blau, je 2^bits Werte von 0 bis 65535
+    let tabelle = d.get_tag_u16_vec(Tag::ColorMap).ok()?;
+    let farben = 1usize << bits;
+    if tabelle.len() < 3 * farben {
+        return None;
+    }
+    let orte = d.get_tag_u64_vec(Tag::StripOffsets).ok()?;
+    let laengen = d.get_tag_u64_vec(Tag::StripByteCounts).ok()?;
+
+    let je_zeile = (breite as usize * bits as usize).div_ceil(8);
+    let mut roh: Vec<u8> = Vec::with_capacity(je_zeile * hoehe as usize);
+    for (ort, laenge) in orte.iter().zip(&laengen) {
+        let streifen = daten.get(*ort as usize..(*ort as usize).checked_add(*laenge as usize)?)?;
+        let mut teil = match packung {
+            1 => streifen.to_vec(),
+            32773 => packbits(streifen),
+            5 => weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(streifen).ok()?,
+            8 | 32946 => {
+                let mut aus = Vec::new();
+                std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(streifen), &mut aus).ok()?;
+                aus
+            }
+            _ => return None,
+        };
+        // Vorhersage waagerecht: jedes Byte ist der Abstand zum linken Nachbarn
+        if vorhersage == 2 && bits == 8 {
+            for zeile in teil.chunks_mut(je_zeile) {
+                for i in 1..zeile.len() {
+                    zeile[i] = zeile[i].wrapping_add(zeile[i - 1]);
+                }
+            }
+        }
+        roh.append(&mut teil);
+    }
+    let zeilen = (roh.len() / je_zeile).min(hoehe as usize);
+    if zeilen == 0 {
+        return None;
+    }
+    let farbe = |i: usize| [(tabelle[i] >> 8) as u8, (tabelle[farben + i] >> 8) as u8, (tabelle[2 * farben + i] >> 8) as u8];
+    let maske = (farben - 1) as u8;
+    let mut rgb = Vec::with_capacity(breite as usize * zeilen * 3);
+    for zeile in roh.chunks_exact(je_zeile).take(zeilen) {
+        for x in 0..breite as usize {
+            let bit = x * bits as usize;
+            let nr = (zeile[bit / 8] >> (8 - bits as usize - bit % 8)) & maske;
+            rgb.extend_from_slice(&farbe(nr as usize));
+        }
+    }
+    image::RgbImage::from_raw(breite, zeilen as u32, rgb).map(DynamicImage::ImageRgb8)
+}
+
+/// Entpackt PackBits: ein Zählbyte, dann so viele Bytes wörtlich oder ein
+/// Byte so oft wiederholt.
+fn packbits(daten: &[u8]) -> Vec<u8> {
+    let mut aus = Vec::with_capacity(daten.len() * 2);
+    let mut i = 0;
+    while i < daten.len() {
+        let n = daten[i] as i8;
+        i += 1;
+        if n >= 0 {
+            let ende = (i + n as usize + 1).min(daten.len());
+            aus.extend_from_slice(&daten[i..ende]);
+            i = ende;
+        } else if n != -128 {
+            if let Some(&b) = daten.get(i) {
+                aus.extend(std::iter::repeat_n(b, (1 - n as isize) as usize));
+            }
+            i += 1;
+        }
+    }
+    aus
 }
 
 /// HEIC und HEIF (v0.0.7) mit `zune-heic`, einem Decoder in reinem Rust.
@@ -208,6 +306,19 @@ mod tests {
         let bei = |x: usize, y: usize| b.rgb[(y * 400 + x) * 3];
         assert_eq!((bei(60, 2 * 30), bei(5, 2 * 5), bei(130, 2 * 30)), (0, 255, 255));
         assert!(fuer_ocr(&fax).is_ok());
+
+        // TIFF mit Farbpalette (v0.0.8): weißer Grund, rotes Rechteck oben
+        // links, blauer Balken unten rechts, 120 x 80 Pixel
+        for name in ["palette_ohne.tif", "palette_packbits.tif", "palette_lzw.tif", "palette_deflate.tif"] {
+            let datei = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/daten").join(name);
+            let b = laden(&datei).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!((b.breite, b.hoehe), (120, 80), "{name}");
+            let bei = |x: usize, y: usize| &b.rgb[(y * 120 + x) * 3..(y * 120 + x) * 3 + 3];
+            assert_eq!(bei(2, 2), [255, 255, 255], "{name}");
+            assert_eq!(bei(20, 20), [200, 0, 0], "{name}");
+            assert_eq!(bei(80, 60), [0, 0, 180], "{name}");
+            assert!(fuer_ocr(&datei).is_ok());
+        }
 
         // HEIC: kaputte Datei meldet den Fehler des HEIC-Decoders,
         // ein JPEG mit falscher Endung wird trotzdem gelesen

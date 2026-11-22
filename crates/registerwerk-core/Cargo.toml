@@ -17,6 +17,8 @@ pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfi
 libavif-sys = { version = "0.18", default-features = false, features = ["codec-aom"] }
 # Tesseract, statisch aus dem Quelltext gebaut (tools/tesseract_holen.sh)
 registerwerk-ocr = { path = "../registerwerk-ocr" }
+# "nur online"-Dateien über die Dateikoordination von macOS anfordern (v0.0.8)
+registerwerk-macos = { path = "../registerwerk-macos" }
 # Textebene als inkrementelle Änderung an die PDF anhängen (v0.0.5). Die
 # vorhandenen Bytes der Datei bleiben dabei unverändert.
 lopdf = { version = "0.47", default-features = false }
@@ -43,6 +45,9 @@ ab_glyph = "0.2"
 # `tiff` für die Angaben der Datei, `fax` für die Zeilen
 tiff = "0.11"
 fax = "0.3"
+# TIFF mit Farbpalette (v0.0.8), die `tiff` nicht liest: LZW selbst entpacken.
+# Dieselbe Bibliothek nutzt `tiff` intern.
+weezl = "0.1"
 # Wortliste der unscharfen Suche als Automat (v0.0.6)
 fst = { version = "0.4", features = ["levenshtein"] }
 serde = { version = "1", features = ["derive"] }

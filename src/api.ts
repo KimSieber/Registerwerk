@@ -385,6 +385,28 @@ export interface RegisterInfo {
   geraete: [string, number | null][];
   geraet: string;
   regeln: number;
+  /** Größe in Byte, ab der eine Scheibe voll ist */
+  scheibe_grenze: number;
+  /** Eine Scheibe liegt über der Grenze oder ein Aufteilen wurde angehalten */
+  aufteilen_noetig: boolean;
+}
+
+/** Ergebnis des Aufteilens zu großer Scheiben */
+export interface AufteilErgebnis {
+  dauer_ms: number;
+  dateien: number;
+  bilder: number;
+  bytes: number;
+  neue_scheiben: number;
+  verdichtet: number;
+  abgebrochen: boolean;
+}
+
+/** Teilt Scheiben über der Grenze. Anhalten mit `inhalteAbbrechen`, der nächste Aufruf macht weiter. */
+export function scheibenAufteilen(beiFortschritt: (f: Fortschritt) => void) {
+  const kanal = new Channel<Fortschritt>();
+  kanal.onmessage = beiFortschritt;
+  return invoke<AufteilErgebnis>("scheiben_aufteilen", { kanal });
 }
 
 export const registerInfo = () => invoke<RegisterInfo>("register_info");
@@ -527,3 +549,119 @@ export function sucheAufbauen(beiFortschritt: (f: Fortschritt) => void) {
   kanal.onmessage = beiFortschritt;
   return invoke<SucheAufbau>("suche_aufbauen", { kanal });
 }
+
+/* ---------- Delta-Lauf (v0.0.8) ---------- */
+
+export type DeltaArt = "neu" | "geaendert" | "offen";
+
+/** Bits der anstehenden Schritte */
+export const SCHRITT_INHALT = 1;
+export const SCHRITT_VORSCHAU = 2;
+export const SCHRITT_OCR = 4;
+export const SCHRITT_TEXTEBENE = 8;
+
+export interface DeltaDatei {
+  pfad: string;
+  art: DeltaArt;
+  nur_online: boolean;
+  schritte: number;
+}
+
+export interface OrdnerZahl {
+  pfad: string;
+  dateien: number;
+  neu: number;
+  geaendert: number;
+  nur_online: number;
+}
+
+export interface DeltaUebersicht {
+  dateien: number;
+  neu: number;
+  geaendert: number;
+  offen: number;
+  nur_online: number;
+  /** Dateien je Schritt: Inhalt, Vorschau, OCR, Textebene */
+  schritte: [number, number, number, number];
+  ordner: OrdnerZahl[];
+}
+
+export interface DeltaAntwort {
+  lauf: LaufErgebnis;
+  uebersicht: DeltaUebersicht;
+  /** Neue Dateien nur mit Namen, ohne anstehenden Schritt */
+  nur_namen: number;
+  /** Sekunden seit 1970 */
+  geprueft: number;
+}
+
+export type Schritt =
+  | "aufnehmen"
+  | "laden"
+  | "inhalte"
+  | "vorschauen"
+  | "erkennen"
+  | "textebene"
+  | "auslagern"
+  | "suche";
+
+/** Zurückstellen auf „nur online“ mit onlineonly (nur klassische Dropbox) */
+export interface AuslagernErgebnis {
+  ausgelagert: number;
+  nicht: string[];
+  nicht_anzahl: number;
+  werkzeug_fehlt: boolean;
+  meldung: string | null;
+}
+
+export interface Meldung {
+  schritt: Schritt;
+  erledigt: number;
+  gesamt: number;
+  datei: string;
+}
+
+export interface LadenErgebnis {
+  geladen: number;
+  nicht_geladen: string[];
+  nicht_geladen_anzahl: number;
+  /** Auf Wunsch nicht weiter gewartet */
+  uebersprungen: boolean;
+  abgebrochen: boolean;
+}
+
+export interface AblaufErgebnis {
+  dauer_ms: number;
+  aufgenommen: LaufErgebnis;
+  ausgewaehlt: number;
+  laden: LadenErgebnis;
+  inhalte: InhaltErgebnis;
+  vorschauen: VorschauErgebnis;
+  ocr: OcrErgebnis;
+  textebene: TextebeneErgebnis;
+  auslagern: AuslagernErgebnis;
+  abgebrochen: boolean;
+}
+
+/** Prüft, was ansteht. Ändert nichts. */
+export const deltaPruefen = () => invoke<DeltaAntwort>("delta_pruefen");
+/** Dateien der letzten Prüfung direkt in einem Ordner */
+export const deltaDateien = (ordner: string) => invoke<DeltaDatei[]>("delta_dateien", { ordner });
+
+/**
+ * Nimmt auf, lädt und verarbeitet alles außer `ausgeschlossen` (Pfade von Ordnern oder Dateien), mit
+ * `ohneOnline` auch ohne die „nur online“-Dateien. Entfernt nichts.
+ */
+export function verarbeiten(ausgeschlossen: string[], ohneOnline: boolean, beiMeldung: (m: Meldung) => void) {
+  const kanal = new Channel<Meldung>();
+  kanal.onmessage = beiMeldung;
+  return invoke<AblaufErgebnis>("verarbeiten", { ausgeschlossen, ohneOnline, kanal });
+}
+
+/** Nicht weiter auf Dateien aus der Cloud warten, mit den vorhandenen weitermachen. */
+export const ladenUeberspringen = () => invoke<void>("laden_ueberspringen");
+
+export type DeltaFilter = "alle" | "neu" | "geaendert" | "offen" | "online" | "namen";
+/** Dateien der letzten Prüfung nach Art, wahlweise in einem Ordner. Höchstens 2.000, dazu die Gesamtzahl. */
+export const deltaListe = (filter: DeltaFilter, ordner: string | null) =>
+  invoke<[DeltaDatei[], number]>("delta_liste", { filter, ordner });

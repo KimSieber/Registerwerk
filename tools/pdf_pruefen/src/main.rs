@@ -31,6 +31,10 @@
 //!              Datenordner der Anwendung. Braucht kein PDFium. Die
 //!              Anwendung vorher schließen. Mit --neu wird neu kopiert,
 //!              sonst nur beim ersten Aufruf
+//! --aufteilen <Ordner>  Probe des Aufteilens zu großer Scheiben (v0.0.8):
+//!              kopiert das Register nach target/aufteilen_probe/, teilt dort
+//!              und prüft jede Vorschau. Braucht Platz für eine Kopie des
+//!              Registers. Anwendung vorher schließen.
 //! --anfrage "…"  eine Suche in der Kopie aus --suche, mehrfach möglich
 //!
 //! PDFium wird in `REGISTERWERK_PDFIUM` oder in `bibliotheken/pdfium/lib`
@@ -42,6 +46,7 @@ use std::time::Instant;
 
 use registerwerk_core::{guete, pdf};
 
+mod aufteiltest;
 mod ocrtest;
 mod suchetest;
 mod tempotest;
@@ -73,11 +78,13 @@ fn main() {
     let mut textebene_n: Option<usize> = None;
     let mut ziele: Vec<PathBuf> = Vec::new();
     let (mut suche, mut neu) = (false, false);
+    let mut aufteilen = false;
     let mut anfragen: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--suche" => suche = true,
+            "--aufteilen" => aufteilen = true,
             "--neu" => neu = true,
             "--anfrage" => anfragen.extend(args.next()),
             "--still" => still = true,
@@ -90,6 +97,10 @@ fn main() {
             "--max" => max = args.next().and_then(|n| n.parse().ok()).unwrap_or(usize::MAX),
             _ => ziele.push(PathBuf::from(a)),
         }
+    }
+    if aufteilen {
+        aufteiltest::lauf(ziele.into_iter().next());
+        return;
     }
     if suche || !anfragen.is_empty() {
         suchetest::lauf(ziele.into_iter().next(), neu, &anfragen);

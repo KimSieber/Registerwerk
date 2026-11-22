@@ -456,7 +456,7 @@ fn bedingung_seite() -> String {
 }
 
 /// PDFs, deren Register-Stand zur Datei passt und deren OCR aktuell ist.
-fn bedingung_datei() -> String {
+pub(crate) fn bedingung_datei() -> String {
     format!(
         "d.endung = 'pdf' AND d.textebene_fehler IS NULL
          AND d.ocr_verfahren = {OCR_VERFAHREN} AND d.ocr_fehler IS NULL
@@ -487,6 +487,7 @@ impl Register {
                     seiten: Vec::new(),
                 })
             })?
+            .filter(|a| a.as_ref().map_or(true, |a| self.in_auswahl(a.id)))
             .collect::<Result<Vec<_>, _>>()?;
         let mut seiten = self.db.prepare(&format!(
             "SELECT o.nr FROM ocr o JOIN seite s ON s.datei = o.datei AND s.nr = o.nr

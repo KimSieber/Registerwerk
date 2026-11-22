@@ -156,7 +156,7 @@ where
                 }
                 let pfad = orte.ort_oder_nichts(&eintrag.pfad);
                 let meta = std::fs::metadata(&pfad).ok();
-                let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let groesse = meta.as_ref().map(crate::dateibaum::lokale_groesse).unwrap_or(0);
                 if eintrag.nur_online || groesse == 0 {
                     let _ = tx.send(Meldung::Uebergangen { nr });
                     continue;

@@ -61,7 +61,7 @@ pub fn lesen(
         // Vor dem Öffnen noch einmal prüfen: 0 Byte heißt "nur online oder leer".
         // Öffnen würde den Download auslösen.
         let meta = std::fs::metadata(&pfad).ok();
-        let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let groesse = meta.as_ref().map(crate::dateibaum::lokale_groesse).unwrap_or(0);
         if eintrag.nur_online || groesse == 0 {
             e.nur_online += 1;
         } else {

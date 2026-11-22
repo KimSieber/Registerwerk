@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GEAENDERT, RegisterInfo, ordnerWaehlen, registerImFinder, registerInfo, registerWaehlen } from "./api";
-import { alsGroesse, alsZahl, alsZeitpunkt } from "./format";
+import {
+  AufteilErgebnis,
+  Fortschritt,
+  GEAENDERT,
+  RegisterInfo,
+  geaendertMelden,
+  inhalteAbbrechen,
+  ordnerWaehlen,
+  registerImFinder,
+  registerInfo,
+  registerWaehlen,
+  scheibenAufteilen,
+} from "./api";
+import { alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
 
 /**
  * Datenbank-Symbol rechts oben (v0.0.7), wie in Bilderwerk: zeigt, wo das Register liegt und wie groß
@@ -12,6 +24,11 @@ export default function Registerinfo() {
   const [fehler, setFehler] = useState<string | null>(null);
   /** Gewählter Ordner ohne Register: erst nachfragen */
   const [leer, setLeer] = useState<RegisterInfo | null>(null);
+  // Aufteilen zu großer Scheiben (v0.0.8)
+  const [teilt, setTeilt] = useState(false);
+  const [haelt, setHaelt] = useState(false);
+  const [fortschritt, setFortschritt] = useState<Fortschritt | null>(null);
+  const [geteilt, setGeteilt] = useState<AufteilErgebnis | null>(null);
   const feld = useRef<HTMLDivElement>(null);
 
   const laden = useCallback(() => {
@@ -34,7 +51,8 @@ export default function Registerinfo() {
     if (!offen) return;
     laden();
     const klick = (e: MouseEvent) => {
-      if (feld.current && !feld.current.contains(e.target as Node)) setOffen(false);
+      // Während des Aufteilens bleibt das Feld offen
+      if (!teilt && feld.current && !feld.current.contains(e.target as Node)) setOffen(false);
     };
     const taste = (e: KeyboardEvent) => e.key === "Escape" && setOffen(false);
     window.addEventListener("mousedown", klick);
@@ -43,7 +61,23 @@ export default function Registerinfo() {
       window.removeEventListener("mousedown", klick);
       window.removeEventListener("keydown", taste);
     };
-  }, [offen, laden]);
+  }, [offen, laden, teilt]);
+
+  const aufteilen = async () => {
+    setTeilt(true);
+    setHaelt(false);
+    setFehler(null);
+    setFortschritt(null);
+    setGeteilt(null);
+    try {
+      setGeteilt(await scheibenAufteilen(setFortschritt));
+    } catch (e) {
+      setFehler(String(e));
+    } finally {
+      setTeilt(false);
+      geaendertMelden();
+    }
+  };
 
   const uebernehmen = async (ordner: string, bestaetigt: boolean) => {
     setFehler(null);
@@ -125,6 +159,66 @@ export default function Registerinfo() {
                 </dd>
               </dl>
             </>
+          )}
+          {info && (info.aufteilen_noetig || teilt || geteilt) && (
+            <div className="registerinfo__frage">
+              {teilt ? (
+                <>
+                  <p>
+                    <b>Scheiben werden aufgeteilt.</b>{" "}
+                    {fortschritt
+                      ? `${alsZahl(fortschritt.erledigt)} von ${alsZahl(fortschritt.gesamt)} Dokumenten`
+                      : "Startet …"}
+                    {fortschritt && <span className="leise"> · {fortschritt.datei}</span>}
+                  </p>
+                  <div className="fortschritt-balken">
+                    <span
+                      style={{
+                        width: `${fortschritt && fortschritt.gesamt > 0 ? (fortschritt.erledigt / fortschritt.gesamt) * 100 : 0}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="registerinfo__knoepfe">
+                    <button
+                      className="knopf knopf--leise"
+                      disabled={haelt}
+                      onClick={() => {
+                        setHaelt(true);
+                        void inhalteAbbrechen();
+                      }}
+                    >
+                      {haelt ? "Hält an …" : "Anhalten"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {geteilt && (
+                    <p>
+                      {geteilt.abgebrochen ? "Angehalten" : "Fertig"} nach {alsDauer(geteilt.dauer_ms)}:{" "}
+                      <b>{alsZahl(geteilt.bilder)} Vorschauen</b> ({alsGroesse(geteilt.bytes)}) in{" "}
+                      {alsZahl(geteilt.neue_scheiben)} neue {geteilt.neue_scheiben === 1 ? "Scheibe" : "Scheiben"}{" "}
+                      verschoben.
+                    </p>
+                  )}
+                  {info.aufteilen_noetig && (
+                    <>
+                      <p>
+                        {geteilt?.abgebrochen ? "Der Rest steht noch an. " : ""}
+                        Eine Scheibe ist größer als {alsZahl(Math.round(info.scheibe_grenze / 1e6))} MB. Aufteilen lädt
+                        die Vorschauen einmal neu in die Cloud. Vorher: Cloud fertig abgeglichen, Registerwerk auf keinem
+                        anderen Gerät offen.
+                      </p>
+                      <div className="registerinfo__knoepfe">
+                        <button className="knopf" onClick={() => void aufteilen()}>
+                          {geteilt?.abgebrochen ? "Aufteilen fortsetzen" : "Scheiben aufteilen"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           )}
           {leer ? (
             <div className="registerinfo__frage">

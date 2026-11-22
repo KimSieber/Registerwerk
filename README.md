@@ -9,7 +9,11 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** v0.0.7 (November 2026). Im Reiter „Ordner“ wird gewählt, welche
+**Stand:** v0.0.8 (November 2026). Beim Öffnen prüft Registerwerk, was neu,
+geändert oder noch offen ist, und zeigt es als Ordnerbaum mit Dateilisten. Ein
+Klick auf „Verarbeiten“ lädt die gewählten Dateien bei Bedarf aus der Dropbox,
+führt sie durch alle Schritte und stellt sie danach wieder auf „nur online“.
+Im Reiter „Ordner“ wird gewählt, welche
 Ordner des Geräts ins Register kommen und wie: voll, nur mit Namen oder gar
 nicht. Aus den gewählten Ordnern werden der Dateibaum, der Text jeder PDF-Seite,
 der Text von Office-, Pages- und Textdateien und eine Vorschau jeder PDF-Seite,
@@ -81,6 +85,25 @@ entfernt nichts, nur weil ein Ordner auf einem anderen Gerät fehlt.
 Die Regeln stehen in der lesbaren Textdatei `regeln.toml` neben dem Register,
 nicht in der Datenbank.
 
+## Unterstützte Cloud-Speicher
+
+**Vollständig unterstützt ist nur die klassische Dropbox-App unter macOS mit
+ihrem Ordner unter `~/Dropbox`.** Nur dort lädt Registerwerk „nur online“-Dateien
+selbst und stellt sie danach wieder auf „nur online“.
+
+| Cloud-Speicher | Einlesen | Laden durch Registerwerk | Zurück auf „nur online“ |
+|---|---|---|---|
+| Dropbox, klassische App unter `~/Dropbox` (macOS) | ja | ja | ja, mit [onlineonly](https://github.com/Zamua/onlineonly) |
+| Google Drive, OneDrive, iCloud, Dropbox unter `~/Library/CloudStorage` | ja | nicht geprüft | nein |
+| Ordner ohne Cloud | ja | nicht nötig | nicht nötig |
+
+Bei den anderen Anbietern erkennt Registerwerk „nur online“-Dateien und lädt sie
+nicht ungefragt. Sie lassen sich im Finder offline stellen und dann einlesen.
+
+Für das Zurückstellen auf „nur online“ wird das Werkzeug `onlineonly` (MIT,
+inoffiziell) gebraucht: `brew install zamua/tap/onlineonly`. Fehlt es, bleiben
+die geladenen Dateien lokal.
+
 ## Technik
 
 - **Anwendung:** Tauri (Rust) mit Web-Oberfläche, lauffähig auf macOS, Windows
@@ -104,7 +127,8 @@ in der Entwicklungsdokumentation unter `docs/`:
 [v0.0.4](docs/v0.0.4%20Entwicklungsdokumentation.md),
 [v0.0.5](docs/v0.0.5%20Entwicklungsdokumentation.md),
 [v0.0.6](docs/v0.0.6%20Entwicklungsdokumentation.md),
-[v0.0.7](docs/v0.0.7%20Entwicklungsdokumentation.md).
+[v0.0.7](docs/v0.0.7%20Entwicklungsdokumentation.md),
+[v0.0.8](docs/v0.0.8%20Entwicklungsdokumentation.md).
 
 ## Aufbau des Repos
 
@@ -112,7 +136,8 @@ in der Entwicklungsdokumentation unter `docs/`:
 crates/registerwerk-core/   Kern in Rust: Konfiguration, Ordnerregeln, Dateibaum, PDFs,
                             Office-Formate, Bilder, Vorschauen, OCR, Register, Suche
 src-tauri/                  Tauri-Hülle: Fenster und Befehle für die Oberfläche
-src/                        Oberfläche (React, TypeScript, Vite): Rahmen, Register-Seite
+src/                        Oberfläche (React, TypeScript, Vite): Rahmen, Datenbank-Symbol
+src/register/               Reiter „Register“: Abgleich, Ordnerbaum, Verarbeiten
 src/suche/                  Suchansicht (Aufbau wie Bilderwerk)
 src/ordner/                 Reiter „Ordner“: Baum, Stufen, Ordner-Regeln, Prüfung
 config.beispiel.toml        Vorlage für die Konfiguration
@@ -126,6 +151,7 @@ tools/pdf_pruefen/          Prüfwerkzeug: PDFs mit dem Kern lesen, ohne Registe
                             Tempotest der Vorschauen, Messung der OCR, Probe der
                             Textebene, Messung der Suche an einer Registerkopie
 crates/registerwerk-ocr/    Tesseract, statisch aus dem Quelltext gebaut
+crates/registerwerk-macos/  macOS: Dateien über die Dateikoordination aus der Cloud anfordern
 bibliotheken/               per Skript geladene Bibliotheken, nicht versioniert
 ```
 
@@ -155,6 +181,7 @@ cargo run --release -p pdf_pruefen -- --ocr 100 <Ordner>     # Messung der OCR
 cargo run --release -p pdf_pruefen -- --textebene 20 <Ordner> # Probe der Textebene, Kopien in target/
 cargo run --release -p pdf_pruefen -- --suche                # Messung der Suche an einer Registerkopie in target/
 cargo run --release -p pdf_pruefen -- --anfrage "Edeka Quittung"  # Suche in dieser Kopie
+cargo run --release -p pdf_pruefen -- --aufteilen <Register-Ordner>  # Probe: Scheiben aufteilen an einer Kopie in target/
 ```
 
 PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.
@@ -164,6 +191,8 @@ Version samt Lizenztexten nach `bibliotheken/pdfium/`.
 Liegt das Repo in einem Cloud-Ordner, nimmt `tools/dropbox_ausschluss.sh` die
 Build-Ordner (`target`, `node_modules`, `dist`, `src-tauri/gen`) von der
 Synchronisation aus. Das Skript sollte vor dem ersten `npm install` laufen.
+Cargo baut in `target/cargo` (`.cargo/config.toml`). So löscht `cargo clean`
+nur diesen Unterordner, und `target` bleibt mit seiner Ausnahme stehen.
 
 Kern und Abhängigkeiten werden auch im Entwicklungsmodus optimiert übersetzt
 (`Cargo.toml`, `[profile.dev.package]`). Sonst wäre das Erzeugen der Vorschauen
@@ -172,7 +201,9 @@ um ein Vielfaches langsamer. Für Messungen trotzdem den Release-Bau nehmen.
 Das Register liegt ohne weitere Angabe im Datenordner der Anwendung im
 Benutzerprofil. Über das Datenbank-Symbol rechts oben lässt sich ein anderer
 Ordner wählen. Dort liegen die Index-Datenbank `register.db`, die
-Vorschau-Scheiben `vorschau-0001.db` usw. und die Ordnerregeln `regeln.toml`.
+Vorschau-Scheiben `vorschau-0001.db` usw. (je rund 200 MB) und die
+Ordnerregeln `regeln.toml`. Größere Scheiben älterer Versionen teilt der Knopf
+„Scheiben aufteilen“ im Datenbank-Symbol.
 
 Zugangsdaten, lokale Pfade und andere Interna gehören nicht in versionierte
 Dateien, sondern nach `docs/intern/` oder in eine `config.local`-Datei. Beides

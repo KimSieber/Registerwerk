@@ -26,7 +26,8 @@ import { NAMEN } from "./ordner/stufen";
 import VorschauPruefen from "./VorschauPruefen";
 import { alsAnteil, alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
 
-export default function Verwaltung() {
+/** `eingebettet`: unter „Einzelheiten“ im Reiter „Register“ (v0.0.8), ohne eigenen Kopf. */
+export default function Verwaltung({ eingebettet = false }: { eingebettet?: boolean }) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [stand, setStand] = useState<RegisterStand | null>(null);
   const { laeuft, lauf, fehler: einlesenFehler, einlesen, rueckfrage } = useEinlesen();
@@ -160,15 +161,15 @@ export default function Verwaltung() {
   const schreibt = vorgang === "probelauf" || vorgang === "textebene";
 
   return (
-    <div className="seite">
-      <header className="kopf">
+    <div className={eingebettet ? "seite seite--eingebettet" : "seite"}>
+      {!eingebettet && <header className="kopf">
         <img src={logo} alt="" width={44} height={44} />
         <div>
           <h1>Registerwerk</h1>
           <p className="unterzeile">Register über das Dokumentenarchiv</p>
         </div>
         {info && <span className="version">v{info.version}</span>}
-      </header>
+      </header>}
 
       {info?.konfig_fehler && (
         <section className="hinweis warnung">

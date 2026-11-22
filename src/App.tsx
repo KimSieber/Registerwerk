@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import logo from "../docs/icons/png-randlos/registerwerk_128.png";
 import Ordneransicht from "./ordner/Ordneransicht";
 import Registerinfo from "./Registerinfo";
 import Suche from "./suche/Suche";
-import Verwaltung from "./Verwaltung";
+import Ablauf from "./register/Ablauf";
 import { lese, schreibe } from "./suche/breiten";
 
 type Bereich = "suche" | "ordner" | "register";
@@ -16,6 +16,9 @@ type Bereich = "suche" | "ordner" | "register";
 export default function App() {
   const [bereich, setBereich] = useState<Bereich>(() => lese("app.bereich", "suche"));
   useEffect(() => schreibe("app.bereich", bereich), [bereich]);
+  // Anstehende Dateien aus der Prüfung beim Start, als Zahl am Reiter „Register“
+  const [anstehend, setAnstehend] = useState(0);
+  const anstehendMelden = useCallback((n: number) => setAnstehend(n), []);
 
   return (
     <div className="rahmen">
@@ -31,6 +34,7 @@ export default function App() {
           </button>
           <button className={bereich === "register" ? "aktiv" : ""} onClick={() => setBereich("register")}>
             Register
+            {anstehend > 0 && <span className="reiter__zahl">{anstehend.toLocaleString("de-DE")}</span>}
           </button>
         </span>
         <Registerinfo />
@@ -39,7 +43,7 @@ export default function App() {
         <Suche sichtbar={bereich === "suche"} />
         <Ordneransicht sichtbar={bereich === "ordner"} />
         <div className="rahmen__seite" hidden={bereich !== "register"}>
-          <Verwaltung />
+          <Ablauf sichtbar={bereich === "register"} onAnstehend={anstehendMelden} />
         </div>
       </div>
     </div>

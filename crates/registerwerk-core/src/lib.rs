@@ -5,6 +5,7 @@
 //! darüber. Der lesende Teil soll sich später für eine Web-Oberfläche
 //! wiederverwenden lassen (Konzept, Abschnitt 4).
 
+pub mod ablauf;
 pub mod altoffice;
 pub mod bild;
 pub mod dateibaum;
@@ -29,13 +30,14 @@ pub mod woerter;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
+pub use ablauf::{AblaufErgebnis, Delta, DeltaDatei, DeltaUebersicht, Meldung, Schritt};
 pub use inhalte::{Fortschritt, InhaltErgebnis};
 pub use konfiguration::Konfiguration;
 pub use ocr::{OcrErgebnis, OcrStand, SeitenText};
 pub use dateibaum::{OrdnerEintrag, OrdnerPruefung};
 pub use regeln::{Regeln, Stufe};
 pub use register::{LaufErgebnis, OnlineOrdner, OrdnerBestand, Register, RegisterStand};
-pub use scheiben::{DateiVorschau, VorschauStand};
+pub use scheiben::{AufteilErgebnis, DateiVorschau, VorschauStand};
 pub use suche::{Anfrage, DateiDetails, SuchErgebnis, SucheAngaben, SucheAufbau, Treffer, Zaehler};
 pub use textebene::{TextebeneErgebnis, TextebeneStand};
 pub use vorschauen::{Messung, VorschauErgebnis};
@@ -122,6 +124,92 @@ pub fn dateibaum_einlesen(
         }
     }
     register.abgleichen(&durchlauf)
+}
+
+/// Prüft, was ansteht (v0.0.8): Dateibaum als Probe, dazu je Datei die
+/// anstehenden Schritte. Das Register bleibt unverändert.
+pub fn delta_pruefen(konfig: &Konfiguration, regeln: &Regeln, register: &mut Register) -> Ergebnis<Delta> {
+    let durchlauf = dateibaum::durchlaufen(konfig, regeln);
+    register.delta_pruefen(&durchlauf)
+}
+
+/// So lange wartet das Laden höchstens, ohne dass eine neue Datei aus der
+/// Cloud ankommt. Danach geht es mit den vorhandenen weiter.
+pub const LADEN_WARTEN: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Delta-Lauf (v0.0.8): nimmt neue und geänderte Dateien auf, ohne etwas zu
+/// entfernen, lädt die "nur online"-Dateien der Auswahl und führt die
+/// Auswahl durch Inhalte, Vorschauen, Texterkennung und Textebene. Die
+/// Auswahl sind alle Dateien mit anstehendem Schritt außer `ausgeschlossen`
+/// (Dateien und Ordner als Pfad im Register), mit `ohne_online` auch ohne
+/// die "nur online"-Dateien. Mit `weiter` wird nicht länger auf die Cloud
+/// gewartet. Angehalten wird nach dem laufenden Schritt der aktuellen Datei.
+#[allow(clippy::too_many_arguments)]
+pub fn verarbeiten(
+    konfig: &Konfiguration,
+    regeln: &Regeln,
+    register: &mut Register,
+    pdfium_ordner: &Path,
+    tessdata: &Path,
+    ausgeschlossen: &[String],
+    ohne_online: bool,
+    mut melden: impl FnMut(&Meldung),
+    weiter: &AtomicBool,
+    abbrechen: &AtomicBool,
+) -> Ergebnis<AblaufErgebnis> {
+    use ablauf::Schritt as S;
+    let start = std::time::Instant::now();
+    let mut e = AblaufErgebnis::default();
+    let als_meldung = |schritt: S| {
+        move |f: &Fortschritt| Meldung { schritt, erledigt: f.erledigt, gesamt: f.gesamt, datei: f.datei.clone() }
+    };
+
+    melden(&Meldung { schritt: S::Aufnehmen, erledigt: 0, gesamt: 1, datei: String::new() });
+    let durchlauf = dateibaum::durchlaufen(konfig, regeln);
+    e.aufgenommen = register.aufnehmen(&durchlauf)?;
+    melden(&Meldung { schritt: S::Aufnehmen, erledigt: 1, gesamt: 1, datei: String::new() });
+
+    let (auswahl, online) = register.auswahl_bilden(ausgeschlossen, ohne_online)?;
+    e.ausgewaehlt = auswahl.len() as u64;
+    register.auswahl_setzen(Some(auswahl));
+    let lauf = (|| -> Ergebnis<()> {
+        let m = als_meldung(S::Laden);
+        e.laden = ablauf::laden(konfig, register, &online, LADEN_WARTEN, |f| melden(&m(f)), weiter, abbrechen)?;
+        if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        let m = als_meldung(S::Inhalte);
+        e.inhalte = inhalte_lesen(konfig, register, pdfium_ordner, |f| melden(&m(f)), abbrechen)?;
+        if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        let m = als_meldung(S::Vorschauen);
+        e.vorschauen = vorschauen_erzeugen(konfig, register, pdfium_ordner, |f| melden(&m(f)), abbrechen)?;
+        if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        let m = als_meldung(S::Erkennen);
+        e.ocr = ocr_ausfuehren(konfig, register, pdfium_ordner, tessdata, |f| melden(&m(f)), abbrechen)?;
+        if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        let m = als_meldung(S::Textebene);
+        e.textebene = textebene_schreiben(konfig, register, pdfium_ordner, None, None, |f| melden(&m(f)), abbrechen)?;
+        if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        // Was dieser Lauf aus der Cloud geholt hat, wieder auf "nur online"
+        let m = als_meldung(S::Auslagern);
+        let geladene = std::mem::take(&mut e.laden.geladene);
+        e.auslagern = ablauf::auslagern(konfig, register, &geladene, |f| melden(&m(f)), abbrechen)?;
+        Ok(())
+    })();
+    // Die Auswahl gilt nur für diesen Lauf, auch nach einem Fehler
+    register.auswahl_setzen(None);
+    lauf?;
+    e.abgebrochen = abbrechen.load(std::sync::atomic::Ordering::SeqCst);
+    e.dauer_ms = start.elapsed().as_millis() as u64;
+    Ok(e)
 }
 
 /// Liest die Inhalte aller ausstehenden PDFs mit PDFium aus `pdfium_ordner`

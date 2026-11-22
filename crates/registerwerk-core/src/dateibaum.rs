@@ -73,9 +73,41 @@ pub struct DateiEintrag {
     pub stufe: Stufe,
 }
 
+/// Kennzeichen für Dateien ohne lokalen Inhalt (`SF_DATALESS` aus
+/// `<sys/stat.h>`): Platzhalter des File Providers von macOS (Google Drive,
+/// OneDrive, iCloud, Dropbox auf File Provider). Sie melden die echte Größe,
+/// nicht 0 Byte wie die klassische Dropbox.
+#[cfg(target_os = "macos")]
+const SF_DATALESS: u32 = 0x4000_0000;
+
+/// Hat die Datei keinen lokalen Inhalt, also nur online (v0.0.8)?
+#[cfg(target_os = "macos")]
+pub fn ohne_inhalt(meta: &std::fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    meta.st_flags() & SF_DATALESS != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn ohne_inhalt(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Größe der lokal vorhandenen Datei: 0 für Platzhalter, auch für solche des
+/// File Providers, die sonst ihre echte Größe melden. Ein Platzhalter mit
+/// Größe würde beim Lesen still heruntergeladen (v0.0.8).
+pub fn lokale_groesse(meta: &std::fs::Metadata) -> u64 {
+    if ohne_inhalt(meta) {
+        0
+    } else {
+        meta.len()
+    }
+}
+
 impl DateiEintrag {
     /// Platzhalter melden 0 Byte und sind von einer leeren Datei nicht zu
-    /// unterscheiden. Beides gilt als "nur online oder leer".
+    /// unterscheiden. Beides gilt als "nur online oder leer". Platzhalter des
+    /// File Providers liefert der Durchlauf ebenfalls mit 0 Byte
+    /// ([`lokale_groesse`]).
     pub fn nur_online_oder_leer(&self) -> bool {
         self.groesse == 0
     }
@@ -277,7 +309,7 @@ pub fn durchlaufen(konfig: &Konfiguration, regeln: &Regeln) -> Durchlauf {
                         pfad,
                         name,
                         endung,
-                        groesse: meta.len(),
+                        groesse: lokale_groesse(&meta),
                         geaendert: geaendert_von(&meta),
                         stufe,
                     });
@@ -385,7 +417,7 @@ pub fn ordner_pruefen(konfig: &Konfiguration, ordner: &str, abbrechen: &AtomicBo
                 let endung = endung_von(name);
                 let klasse = formate::klasse(&endung);
                 let bytes = meta.len();
-                let online = (bytes == 0) as u64;
+                let online = (lokale_groesse(&meta) == 0) as u64;
                 p.dateien += 1;
                 p.bytes += bytes;
                 p.nur_online += online;
