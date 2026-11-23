@@ -540,3 +540,17 @@ code {
   max-height: 320px;
   overflow: auto;
 }
+
+/* Kreisel für laufende Vorgänge ohne Fortschrittsanzeige (v0.0.9) */
+.kreisel {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: kreisel-drehen 0.8s linear infinite;
+}
+@keyframes kreisel-drehen { to { transform: rotate(360deg); } }
+.arbeitet { display: inline-flex; align-items: center; gap: 8px; }

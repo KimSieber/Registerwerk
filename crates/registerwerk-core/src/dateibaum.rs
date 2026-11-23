@@ -71,6 +71,9 @@ pub struct DateiEintrag {
     pub geaendert: i64,
     /// Stufe des Ordners: Voll oder Metadaten.
     pub stufe: Stufe,
+    /// Platzhalter ohne lokalen Inhalt ([`platzhalter`]). Eine lokale leere
+    /// Datei hat 0 Byte, ist aber nicht "nur online" (v0.0.9).
+    pub nur_online: bool,
 }
 
 /// Kennzeichen für Dateien ohne lokalen Inhalt (`SF_DATALESS` aus
@@ -92,24 +95,44 @@ pub fn ohne_inhalt(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Größe der lokal vorhandenen Datei: 0 für Platzhalter, auch für solche des
-/// File Providers, die sonst ihre echte Größe melden. Ein Platzhalter mit
-/// Größe würde beim Lesen still heruntergeladen (v0.0.8).
-pub fn lokale_groesse(meta: &std::fs::Metadata) -> u64 {
+/// Ist die Datei ein Platzhalter ohne lokalen Inhalt ("nur online")?
+///
+/// - Platzhalter des File Providers tragen `SF_DATALESS` (v0.0.8).
+/// - Die klassische Dropbox meldet 0 Byte und hängt das Attribut
+///   `com.dropbox.placeholder` an (gemessen 22.11.2026). Eine lokale leere
+///   Datei hat es nicht (v0.0.9).
+/// - Unter anderen Systemen gilt weiter: 0 Byte heißt "nur online oder leer".
+pub fn platzhalter(pfad: &Path, meta: &std::fs::Metadata) -> bool {
     if ohne_inhalt(meta) {
-        0
+        return true;
+    }
+    if meta.len() != 0 {
+        return false;
+    }
+    if cfg!(target_os = "macos") {
+        registerwerk_macos::dropbox_platzhalter(pfad)
     } else {
-        meta.len()
+        true
     }
 }
 
-impl DateiEintrag {
-    /// Platzhalter melden 0 Byte und sind von einer leeren Datei nicht zu
-    /// unterscheiden. Beides gilt als "nur online oder leer". Platzhalter des
-    /// File Providers liefert der Durchlauf ebenfalls mit 0 Byte
-    /// ([`lokale_groesse`]).
-    pub fn nur_online_oder_leer(&self) -> bool {
-        self.groesse == 0
+/// Für Tests: legt einen Platzhalter an wie die Dropbox, 0 Byte mit
+/// Kennzeichen (unter macOS). Eine Datei mit 0 Byte ohne Kennzeichen gilt
+/// unter macOS seit v0.0.9 als lokal und leer.
+#[cfg(test)]
+pub(crate) fn platzhalter_anlegen(pfad: &Path) {
+    std::fs::write(pfad, b"").unwrap();
+    registerwerk_macos::dropbox_platzhalter_setzen(pfad).unwrap();
+}
+
+/// Größe der lokal vorhandenen Datei: 0 für Platzhalter, auch für solche des
+/// File Providers, die sonst ihre echte Größe melden. Ein Platzhalter mit
+/// Größe würde beim Lesen still heruntergeladen (v0.0.8).
+pub fn lokale_groesse(pfad: &Path, meta: &std::fs::Metadata) -> u64 {
+    if platzhalter(pfad, meta) {
+        0
+    } else {
+        meta.len()
     }
 }
 
@@ -298,6 +321,7 @@ pub fn durchlaufen(konfig: &Konfiguration, regeln: &Regeln) -> Durchlauf {
                     }
                 }
                 Fund::Datei { pfad, meta } => {
+                    let fund_pfad = pfad;
                     let Some(pfad) = im_register(&wurzel, verzeichnis, pfad) else { return };
                     let name = pfad.rsplit('/').next().unwrap_or_default().to_string();
                     let endung = endung_von(&name);
@@ -305,13 +329,15 @@ pub fn durchlaufen(konfig: &Konfiguration, regeln: &Regeln) -> Durchlauf {
                         ergebnis.ignoriert += 1;
                         return;
                     }
+                    let nur_online = platzhalter(fund_pfad, &meta);
                     ergebnis.dateien.push(DateiEintrag {
                         pfad,
                         name,
                         endung,
-                        groesse: lokale_groesse(&meta),
+                        groesse: if nur_online { 0 } else { meta.len() },
                         geaendert: geaendert_von(&meta),
                         stufe,
+                        nur_online,
                     });
                 }
             },
@@ -417,7 +443,7 @@ pub fn ordner_pruefen(konfig: &Konfiguration, ordner: &str, abbrechen: &AtomicBo
                 let endung = endung_von(name);
                 let klasse = formate::klasse(&endung);
                 let bytes = meta.len();
-                let online = (lokale_groesse(&meta) == 0) as u64;
+                let online = platzhalter(pfad, &meta) as u64;
                 p.dateien += 1;
                 p.bytes += bytes;
                 p.nur_online += online;
@@ -541,7 +567,12 @@ mod tests {
         for (pfad, inhalt) in dateien {
             let ziel = wurzel.join(pfad);
             fs::create_dir_all(ziel.parent().unwrap()).unwrap();
-            fs::write(ziel, inhalt).unwrap();
+            // Ohne Inhalt: ein Platzhalter ("nur online")
+            if inhalt.is_empty() {
+                platzhalter_anlegen(&ziel);
+            } else {
+                fs::write(ziel, inhalt).unwrap();
+            }
         }
     }
 
@@ -555,6 +586,19 @@ mod tests {
         let mut pfade: Vec<_> = d.dateien.iter().map(|e| e.pfad.as_str()).collect();
         pfade.sort();
         pfade
+    }
+
+    /// Nur unter macOS unterscheidbar: lokale leere Datei und Platzhalter (v0.0.9)
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn leere_datei_ist_kein_platzhalter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let leer = tmp.path().join("leer.txt");
+        fs::write(&leer, b"").unwrap();
+        let online = tmp.path().join("online.pdf");
+        platzhalter_anlegen(&online);
+        assert!(!platzhalter(&leer, &fs::metadata(&leer).unwrap()));
+        assert!(platzhalter(&online, &fs::metadata(&online).unwrap()));
     }
 
     #[test]
@@ -582,7 +626,7 @@ mod tests {
         let brief = d.dateien.iter().find(|e| e.name.ends_with("Brief.PDF")).unwrap();
         assert_eq!((brief.endung.as_str(), brief.groesse, brief.stufe), ("pdf", 3, Stufe::Voll));
         assert!(brief.geaendert > 1_600_000_000);
-        assert!(d.dateien.iter().find(|e| e.name == "Platzhalter.pdf").unwrap().nur_online_oder_leer());
+        assert!(d.dateien.iter().find(|e| e.name == "Platzhalter.pdf").unwrap().nur_online);
         assert_eq!(d.gelesene_verzeichnisse, vec!["C/Archiv/Alles"]);
         // ein fehlender Ordner und ein Ast, den es auf diesem Gerät nicht gibt
         assert_eq!(d.fehlende_verzeichnisse, vec!["C/Archiv/Fehlt", "Fremd/X"]);

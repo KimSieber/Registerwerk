@@ -705,7 +705,7 @@ fn datei_schreiben(
 ) -> Ergebnis<Ausgang> {
     let pfad = konfig.ort_oder_nichts(&a.pfad);
     let Ok(meta) = std::fs::metadata(&pfad) else { return Ok(Ausgang::Uebergangen { veraendert: true }) };
-    if a.nur_online || meta.len() == 0 {
+    if a.nur_online || meta.len() == 0 || crate::dateibaum::platzhalter(&pfad, &meta) {
         return Ok(Ausgang::Uebergangen { veraendert: false });
     }
     let Ok(mtime) = meta.modified() else { return Ok(Ausgang::Fehler("Änderungsdatum nicht lesbar".into())) };
@@ -973,7 +973,7 @@ mod tests {
             "nummer.pdf" => vec![seite(1, "- 1 -", 1.0), seite(2, GUT, 1.0)],
             _ => vec![seite(1, GUT, 1.0)],
         };
-        Ok(Inhalt { seiten, erstellt: None })
+        Ok(Inhalt { seiten, erstellt: None, grob: false })
     }
 
     /// Ersatz für die Prüfung mit PDFium: liest den Text aus `testleser` und
@@ -1148,7 +1148,7 @@ mod tests {
     fn nur_online_wird_uebergangen() {
         let (tmp, konfig, mut register) = aufbauen();
         let scan = tmp.path().join("A/scan.pdf");
-        fs::write(&scan, b"").unwrap();
+        crate::dateibaum::platzhalter_anlegen(&scan);
         fs::File::options().write(true).open(&scan).unwrap().set_modified(UNIX_EPOCH + Duration::from_secs(VORHER)).unwrap();
         let e = lauf(&konfig, &mut register, None, None);
         assert_eq!(e.nur_online, 1);

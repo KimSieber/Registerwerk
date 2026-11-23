@@ -126,6 +126,8 @@ export function VermisstListe({ ordner }: { ordner: OrdnerBestand[] }) {
   const [erledigt, setErledigt] = useState<Map<string, string>>(new Map());
   const [frage, setFrage] = useState<string | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
+  /** Ordner, der gerade entfernt wird. Solange sind alle Knöpfe gesperrt (v0.0.9). */
+  const [arbeitet, setArbeitet] = useState<string | null>(null);
   if (ordner.length === 0) return null;
 
   const fertig = (o: string, text: string) => {
@@ -133,11 +135,20 @@ export function VermisstListe({ ordner }: { ordner: OrdnerBestand[] }) {
     setFrage(null);
     geaendertMelden();
   };
-  const entfernen = (o: OrdnerBestand) =>
-    ordnerEntfernen(o.ordner)
-      .then((n) => fertig(o.ordner, `${alsZahl(n)} Einträge entfernt, Regel gelöscht.`))
-      .catch((e) => setFehler(String(e)));
+  const entfernen = async (o: OrdnerBestand) => {
+    setArbeitet(o.ordner);
+    setFehler(null);
+    try {
+      const n = await ordnerEntfernen(o.ordner);
+      fertig(o.ordner, `${alsZahl(n)} Einträge entfernt, Regel gelöscht.`);
+    } catch (e) {
+      setFehler(String(e));
+    } finally {
+      setArbeitet(null);
+    }
+  };
   const zuweisen = async (o: OrdnerBestand) => {
+    setFehler(null);
     try {
       const ort = await ordnerWaehlen();
       if (ort === null) return;
@@ -162,23 +173,27 @@ export function VermisstListe({ ordner }: { ordner: OrdnerBestand[] }) {
             <span className="leise">{alsZahl(o.dateien)} Dateien im Register</span>
             {erledigt.has(o.ordner) ? (
               <span className="leise">{erledigt.get(o.ordner)}</span>
+            ) : arbeitet === o.ordner ? (
+              <span className="leise arbeitet">
+                <span className="kreisel" aria-hidden="true" /> Entfernt {alsZahl(o.dateien)} Einträge …
+              </span>
             ) : frage === o.ordner ? (
               <>
-                <button className="knopf knopf--gefahr" onClick={() => void entfernen(o)}>
+                <button className="knopf knopf--gefahr" onClick={() => void entfernen(o)} disabled={arbeitet !== null}>
                   {alsZahl(o.dateien)} Einträge und die Regel entfernen
                 </button>
-                <button className="knopf knopf--leise" onClick={() => setFrage(null)}>
+                <button className="knopf knopf--leise" onClick={() => setFrage(null)} disabled={arbeitet !== null}>
                   Abbrechen
                 </button>
               </>
             ) : (
               <>
                 {!o.ordner.includes("/") && (
-                  <button className="knopf knopf--leise" onClick={() => void zuweisen(o)}>
+                  <button className="knopf knopf--leise" onClick={() => void zuweisen(o)} disabled={arbeitet !== null}>
                     Ort neu zuweisen …
                   </button>
                 )}
-                <button className="knopf knopf--leise" onClick={() => setFrage(o.ordner)}>
+                <button className="knopf knopf--leise" onClick={() => setFrage(o.ordner)} disabled={arbeitet !== null}>
                   Aus dem Register entfernen
                 </button>
               </>
@@ -274,7 +289,7 @@ export function BetroffenListe({ dateien, gesamt }: { dateien: Betroffen[]; gesa
         <span className="leise">
           {gesamt > dateien.length
             ? `Die ersten ${alsZahl(dateien.length)} von ${alsZahl(gesamt)} Dateien.`
-            : `${alsZahl(dateien.length)} Dateien. Rechts: zuletzt gesehen, Gerät, Seiten.`}
+            : `${alsZahl(dateien.length)} Dateien. Rechts: Seiten.`}
         </span>
         <button className="knopf knopf--leise" onClick={() => void kopieren()}>
           {kopiert ? "Kopiert" : "Liste kopieren"}

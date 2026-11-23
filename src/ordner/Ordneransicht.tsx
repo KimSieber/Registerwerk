@@ -40,6 +40,8 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
   const [pruefungen, setPruefungen] = useState<Map<string, OrdnerPruefung>>(new Map());
   const [prueft, setPrueft] = useState<string | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
+  /** Fehler beim Laden des Baums. Verschwindet, sobald eine Ebene wieder geladen ist (v0.0.9). */
+  const [baumFehler, setBaumFehler] = useState<string | null>(null);
   const [speichert, setSpeichert] = useState(false);
   /** Nach dem Speichern: Die Regeln wirken erst beim Einlesen */
   const [offenesEinlesen, setOffenesEinlesen] = useState(false);
@@ -53,8 +55,14 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
 
   const liste = useCallback(async (ordner: string, neu = false) => {
     if (!neu && kinderRef.current.has(ordner)) return;
-    const eintraege = await ordnerListe(ordner);
-    setKinder((k) => new Map(k).set(ordner, eintraege));
+    try {
+      const eintraege = await ordnerListe(ordner);
+      setKinder((k) => new Map(k).set(ordner, eintraege));
+      setBaumFehler(null);
+    } catch (e) {
+      setBaumFehler(String(e));
+      throw e;
+    }
   }, []);
 
   /** Klappt den Weg zu einem Ordner auf und lädt die nötigen Ebenen. */
@@ -108,7 +116,7 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
       });
     } else {
       setAuf((a) => new Set(a).add(pfad));
-      liste(pfad).catch((e) => setFehler(String(e)));
+      liste(pfad).catch(() => undefined);
     }
   };
 
@@ -341,10 +349,17 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
         </div>
       </header>
 
-      {(fehler || einlesenFehler) && (
-        <section className="hinweis fehler regel__meldung">
-          <strong>Fehler</strong>
-          <p>{fehler ?? einlesenFehler}</p>
+      {(fehler || einlesenFehler || baumFehler) && (
+        <section className="hinweis fehler regel__meldung regel__fehler">
+          <div>
+            <strong>Fehler</strong>
+            <p>{fehler ?? einlesenFehler ?? baumFehler}</p>
+          </div>
+          {fehler && (
+            <button className="regel__fehler-zu" onClick={() => setFehler(null)} aria-label="Meldung schließen" title="Schließen">
+              ×
+            </button>
+          )}
         </section>
       )}
       {nameFrage && (
@@ -382,7 +397,7 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
 
       <div className="regel__koerper">
         <div className="baum" role="tree">
-          {oben === undefined && !fehler && <p className="leise baum__leer">Lädt …</p>}
+          {oben === undefined && !fehler && !baumFehler && <p className="leise baum__leer">Lädt …</p>}
           {oben?.length === 0 && (
             <p className="leise baum__leer">
               Noch kein Ordner aufgenommen. „Ordner hinzufügen …“ öffnet die Auswahl: jeder Ordner dieses Geräts ist

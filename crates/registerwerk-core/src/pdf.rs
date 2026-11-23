@@ -48,6 +48,9 @@ pub struct Inhalt {
     pub seiten: Vec<Seite>,
     /// Erstellungsdatum aus den Metadaten, als Rohwert (`D:JJJJMMTT...`).
     pub erstellt: Option<String>,
+    /// Der Text ist nur grob gelesen: lesbare Zeichenfolgen der Datei, weil
+    /// kein Leser das Format verstand (v0.0.9).
+    pub grob: bool,
 }
 
 /// Name der Bibliothek auf dieser Plattform in einem Ordner,
@@ -91,7 +94,7 @@ pub fn lesen(pdfium: &Pdfium, pfad: &Path) -> Result<Inhalt, String> {
         let text = seitentext(&seite);
         seiten.push(Seite { nr: i as u32 + 1, text, bildanteil: bildanteil(&seite) });
     }
-    Ok(Inhalt { seiten, erstellt })
+    Ok(Inhalt { seiten, erstellt, grob: false })
 }
 
 /// Prüft eine neue Fassung mit Textebene gegen das Original und liest ihren

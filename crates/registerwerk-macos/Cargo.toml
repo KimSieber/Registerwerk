@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Erweiterte Attribute lesen (getxattr), v0.0.9
+libc = "0.2"
 # Dateikoordination von macOS (NSFileCoordinator), v0.0.8. Reines Rust, nur
 # die Anbindung an das Foundation-Framework des Systems.
 objc2 = "0.6"

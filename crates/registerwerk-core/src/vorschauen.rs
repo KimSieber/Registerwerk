@@ -156,8 +156,9 @@ where
                 }
                 let pfad = orte.ort_oder_nichts(&eintrag.pfad);
                 let meta = std::fs::metadata(&pfad).ok();
-                let groesse = meta.as_ref().map(crate::dateibaum::lokale_groesse).unwrap_or(0);
-                if eintrag.nur_online || groesse == 0 {
+                let platzhalter = meta.as_ref().is_none_or(|m| crate::dateibaum::platzhalter(&pfad, m));
+                let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                if eintrag.nur_online || platzhalter {
                     let _ = tx.send(Meldung::Uebergangen { nr });
                     continue;
                 }
@@ -307,7 +308,7 @@ mod tests {
         fs::write(a.join("a.pdf"), "3").unwrap();
         fs::write(a.join("b.pdf"), "12").unwrap();
         fs::write(a.join("kaputt.pdf"), "kaputt").unwrap();
-        fs::write(a.join("online.pdf"), "").unwrap();
+        crate::dateibaum::platzhalter_anlegen(&a.join("online.pdf"));
         // Ast "A" liegt im Ordner A: Die Pfade im Register heißen "A/…"
         let konfig = Konfiguration::mit_ast("A", &tmp.path().join("A"));
         let mut register = Register::oeffnen(&tmp.path().join("register")).unwrap();

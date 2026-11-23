@@ -249,7 +249,7 @@ export default function Verwaltung({ eingebettet = false }: { eingebettet?: bool
             <div>
               <h2>Inhalte der Dateien</h2>
               <p className="unterzeile">
-                Öffnet lokal vorhandene PDFs, Word-, Excel-, PowerPoint-, OpenDocument- und Textdateien nur lesend und übernimmt ihren Text, bei PDFs je Seite, bei Excel je Blatt. „Nur online“-Dateien werden
+                Öffnet lokal vorhandene PDFs, Word-, Excel-, PowerPoint-, OpenDocument-, RTF-, HTML-, CSV- und Textdateien sowie Visitenkarten nur lesend und übernimmt ihren Text, bei PDFs je Seite, bei Excel je Blatt. „Nur online“-Dateien werden
                 übergangen, damit nichts aus der Cloud geladen wird.
               </p>
             </div>
@@ -290,6 +290,13 @@ export default function Verwaltung({ eingebettet = false }: { eingebettet?: bool
           {inhaltLauf && <InhaltMeldung e={inhaltLauf} />}
           {stand.inhalt.fehler_liste.length > 0 && (
             <FehlerListe anzahl={stand.inhalt.fehler} liste={stand.inhalt.fehler_liste} />
+          )}
+          {stand.inhalt.grob_liste.length > 0 && (
+            <FehlerListe
+              anzahl={stand.inhalt.grob}
+              liste={stand.inhalt.grob_liste}
+              titel={(n) => `${alsZahl(n)} ${n === 1 ? "Datei" : "Dateien"} nur grob gelesen`}
+            />
           )}
         </section>
       )}
@@ -542,8 +549,9 @@ function NurOnlineHinweis({ lokal, online, vorschau = false }: { lokal: number; 
     <div className="nur-online">
       <p className="achtung">
         {lokal === 0 && <>Der Knopf ist inaktiv, weil alle ausstehenden Dateien nur online liegen. </>}
-        {alsZahl(online)} Dateien liegen nur online. Registerwerk lädt sie nicht selbst: den Ordner im Finder
-        „Offline verfügbar machen“, den Download abwarten und danach „Dateibaum einlesen“.{" "}
+        {alsZahl(online)} Dateien liegen nur online. Geladen werden sie mit „Verarbeiten“ im Abgleich oben. Stand des
+        Registers: Wechselt eine Datei zwischen lokal und „nur online“, steht das erst nach dem nächsten Verarbeiten
+        oder Einlesen hier.{" "}
         {ordner === null && (
           <button className="knopf knopf--leise" onClick={laden}>
             Ordner zeigen
@@ -591,7 +599,7 @@ function InhaltMeldung({ e }: { e: InhaltErgebnis }) {
   return (
     <div className="lauf">
       <p>
-        {e.abgebrochen ? "Angehalten" : "Fertig"} nach {alsDauer(e.dauer_ms)}: <b>{alsZahl(e.gelesen)} PDFs</b> mit{" "}
+        {e.abgebrochen ? "Angehalten" : "Fertig"} nach {alsDauer(e.dauer_ms)}: <b>{alsZahl(e.gelesen)} Dateien</b> mit{" "}
         {alsZahl(e.seiten)} Seiten gelesen
         {e.fehler > 0 && (
           <>
@@ -759,11 +767,20 @@ function MessungAnzeige({ e }: { e: VorschauErgebnis }) {
   );
 }
 
-function FehlerListe({ anzahl, liste }: { anzahl: number; liste: FehlerZeile[] }) {
+function FehlerListe({
+  anzahl,
+  liste,
+  titel,
+}: {
+  anzahl: number;
+  liste: FehlerZeile[];
+  /** Überschrift, sonst „… ließen sich nicht lesen“ */
+  titel?: (n: number) => string;
+}) {
   return (
     <details className="fehlerliste">
       <summary>
-        {alsZahl(anzahl)} {anzahl === 1 ? "PDF ließ" : "PDFs ließen"} sich nicht lesen
+        {titel ? titel(anzahl) : `${alsZahl(anzahl)} ${anzahl === 1 ? "Datei ließ" : "Dateien ließen"} sich nicht lesen`}
       </summary>
       <table>
         <tbody>
@@ -807,7 +824,7 @@ function StandAnzeige({ stand }: { stand: RegisterStand }) {
           <Kachel
             titel="Seiten im Register"
             wert={alsZahl(i.seiten)}
-            zusatz={`aus ${alsZahl(i.gelesen - i.fehler)} von ${alsZahl(i.pdfs)} PDFs`}
+            zusatz={`aus ${alsZahl(i.gelesen - i.fehler)} von ${alsZahl(i.pdfs)} Dateien`}
           />
           <Kachel
             titel="Seiten mit Text"

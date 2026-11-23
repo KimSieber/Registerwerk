@@ -5,7 +5,8 @@
 //!   `altoffice.rs`), keine Vorschau
 //! - Bilder: eine Seite ohne Text, Vorschau und OCR (`bild.rs`), der erkannte
 //!   Text kommt nur ins Register. HEIC und HEIF seit v0.0.7
-//! - Textdateien (txt, md): dazu eine gezeichnete Vorschau (`textbild.rs`)
+//! - Textdateien (txt, md, seit v0.0.9 rtf, csv, tsv, log, htm, html, vcf): dazu eine gezeichnete
+//!   Vorschau (`textbild.rs`)
 //!
 //! Die Listen stehen als Makros, damit sie in SQL-Bedingungen als Text
 //! eingesetzt werden können.
@@ -14,7 +15,7 @@
 #[macro_export]
 macro_rules! lesbar_sql {
     () => {
-        "('pdf','docx','docm','dotx','dotm','xlsx','xlsm','xltx','xltm','pptx','pptm','odt','ods','odp','txt','md','pages','key','doc','dot','xls','xlt','ppt','pps','jpg','jpeg','png','tif','tiff','bmp','gif','webp','heic','heif')"
+        "('pdf','docx','docm','dotx','dotm','xlsx','xlsm','xltx','xltm','pptx','pptm','odt','ods','odp','txt','md','rtf','csv','tsv','log','htm','html','vcf','pages','key','doc','dot','xls','xlt','ppt','pps','jpg','jpeg','png','tif','tiff','bmp','gif','webp','heic','heif')"
     };
 }
 
@@ -23,7 +24,7 @@ macro_rules! lesbar_sql {
 #[macro_export]
 macro_rules! vorschau_sql {
     () => {
-        "('pdf','jpg','jpeg','png','tif','tiff','bmp','gif','webp','heic','heif','txt','md')"
+        "('pdf','jpg','jpeg','png','tif','tiff','bmp','gif','webp','heic','heif','txt','md','rtf','csv','tsv','log','htm','html','vcf')"
     };
 }
 
@@ -39,14 +40,15 @@ macro_rules! ocr_sql {
 /// Office- und Textformate, deren Text gelesen wird (ohne PDF).
 pub const DOKUMENTE: &[&str] = &[
     "docx", "docm", "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "odt", "ods", "odp", "txt", "md",
-    "pages", "key", "doc", "dot", "xls", "xlt", "ppt", "pps",
+    "rtf", "csv", "tsv", "log", "htm", "html", "vcf", "pages", "key", "doc", "dot", "xls", "xlt", "ppt", "pps",
 ];
 
 /// Bildformate, die eine Vorschau bekommen.
 pub const BILDER: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "bmp", "gif", "webp", "heic", "heif"];
 
 /// Textdateien: Ihre Vorschau wird aus dem Text gezeichnet (`textbild.rs`).
-pub const TEXT: &[&str] = &["txt", "md"];
+/// Seit v0.0.9 auch RTF, Tabellen als Text, Protokolle, HTML und Visitenkarten.
+pub const TEXT: &[&str] = &["txt", "md", "rtf", "csv", "tsv", "log", "htm", "html", "vcf"];
 
 /// Formate, die in der Stufe Voll nur mit Name, Ordner, Größe und Datum ins
 /// Register kommen: Dokumente und Sammlungen, deren Inhalt nicht gelesen wird.
@@ -57,10 +59,10 @@ pub const NUR_NAME: &[&str] = &[
     // Archive und Abbilder
     "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "dmg", "iso",
     // Office und Text ohne Leser
-    "numbers", "rtf", "csv", "htm", "html", "mht", "xps", "pub", "vsd",
+    "numbers", "mht", "xps", "pub", "vsd",
     "vsdx", "mpp", "one",
     // E-Mail, Kontakte, Termine
-    "eml", "msg", "mbox", "vcf", "ics",
+    "eml", "msg", "mbox", "ics",
     // eBooks
     "epub", "mobi", "azw", "azw3", "djvu",
     // Bilder ohne Leser, Grafik

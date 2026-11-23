@@ -343,18 +343,36 @@ impl Register {
     fn scheibe(&self, nr: i64) -> Ergebnis<RefMut<'_, Connection>> {
         let mut offen = self.scheiben.borrow_mut();
         if let std::collections::hash_map::Entry::Vacant(platz) = offen.entry(nr) {
+            // Nur lesend (Suche, Anzeige): Die Scheibe bleibt unberührt (v0.0.9)
+            if self.nur_lesen {
+                let ordner = self.ordner().ok_or_else(|| crate::Fehler::Konfiguration("Register ohne Ordner".into()))?;
+                let db = Connection::open_with_flags(
+                    ordner.join(dateiname(nr)),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                db.busy_timeout(std::time::Duration::from_secs(15))?;
+                platz.insert(db);
+                return Ok(RefMut::map(offen, |o| o.get_mut(&nr).expect("eben geöffnet")));
+            }
             let db = match self.ordner() {
                 Some(ordner) => Connection::open(ordner.join(dateiname(nr)))?,
                 None => Connection::open_in_memory()?,
             };
-            db.execute_batch(
-                "CREATE TABLE IF NOT EXISTS vorschau (
-                     -- AUTOINCREMENT: ein Schlüssel wird nie wieder vergeben
-                     id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                     avif  BLOB NOT NULL
-                 );
-                 PRAGMA user_version = 1;",
-            )?;
+            db.busy_timeout(std::time::Duration::from_secs(15))?;
+            // Nur eine neue Scheibe wird angelegt. Bis v0.0.8 schrieb jedes
+            // Öffnen die Versionsnummer neu und änderte damit die Datei.
+            let version: i64 = db.query_row("PRAGMA user_version", [], |z| z.get(0))?;
+            if version == 0 {
+                db.execute_batch(
+                    "PRAGMA journal_mode = DELETE;
+                     CREATE TABLE IF NOT EXISTS vorschau (
+                         -- AUTOINCREMENT: ein Schlüssel wird nie wieder vergeben
+                         id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                         avif  BLOB NOT NULL
+                     );
+                     PRAGMA user_version = 1;",
+                )?;
+            }
             platz.insert(db);
         }
         Ok(RefMut::map(offen, |o| o.get_mut(&nr).expect("eben geöffnet")))
@@ -666,6 +684,7 @@ mod tests {
                 groesse: 100,
                 geaendert: 1,
                 stufe: crate::regeln::Stufe::Voll,
+                nur_online: false,
             })
             .collect();
         Durchlauf { dateien, gelesene_verzeichnisse: vec!["A".into()], ..Default::default() }

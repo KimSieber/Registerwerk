@@ -334,7 +334,7 @@ async fn register_stand(app: AppHandle) -> Result<Option<RegisterStand>, String>
         if !ordner.join(registerwerk_core::register::DATEINAME).is_file() {
             return Ok(None);
         }
-        let register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let register = Register::oeffnen_lesend(&ordner).map_err(|e| e.to_string())?;
         register.stand().map(Some).map_err(|e| e.to_string())
     })
     .await
@@ -387,7 +387,7 @@ async fn delta_pruefen(app: AppHandle, zustand: State<'_, Lesen>) -> Result<Delt
     let app2 = app.clone();
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
         let regeln = regeln_laden(&konfig, &ordner)?;
-        let mut register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let mut register = Register::oeffnen_lesend(&ordner).map_err(|e| e.to_string())?;
         let delta = registerwerk_core::delta_pruefen(&konfig, &regeln, &mut register).map_err(|e| e.to_string())?;
         let antwort = DeltaAntwort {
             lauf: delta.lauf.clone(),
@@ -535,7 +535,7 @@ async fn ordner_liste(app: AppHandle, ordner: String) -> Result<Vec<BaumEintrag>
     tauri::async_runtime::spawn_blocking(move || {
         let mut liste = registerwerk_core::dateibaum::unterordner(&konfig, &ordner).map_err(|e| e.to_string())?;
         let r = if register.join(registerwerk_core::register::DATEINAME).is_file() {
-            Some(Register::oeffnen(&register).map_err(|e| e.to_string())?)
+            Some(Register::oeffnen_lesend(&register).map_err(|e| e.to_string())?)
         } else {
             None
         };
@@ -965,7 +965,7 @@ fn mit_leser<T>(app: &AppHandle, f: impl FnOnce(&Register) -> Result<T, String>)
         if !ordner.join(registerwerk_core::register::DATEINAME).is_file() {
             return Err("Noch kein Register vorhanden.".into());
         }
-        let register = Register::oeffnen(&ordner).map_err(|e| e.to_string())?;
+        let register = Register::oeffnen_lesend(&ordner).map_err(|e| e.to_string())?;
         *offen = Some((ordner, register));
     }
     f(&offen.as_ref().expect("eben geöffnet").1)
@@ -1140,7 +1140,7 @@ fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result
         }
     }
     if info.vorhanden {
-        let r = Register::oeffnen(ordner).map_err(|e| e.to_string())?;
+        let r = Register::oeffnen_lesend(ordner).map_err(|e| e.to_string())?;
         let stand = r.stand().map_err(|e| e.to_string())?;
         info.dateien = stand.dateien;
         info.seiten = stand.inhalt.seiten;
@@ -1313,6 +1313,21 @@ fn main() {
         .manage(Pruefen::default())
         .manage(DeltaStand::default())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Vor dem ersten Zugriff der Oberfläche: Register aus v0.0.8 auf das
+            // klassische Journal umstellen. Danach ändert Lesen keine Datei (v0.0.9).
+            let handle = app.handle();
+            if let Ok((_, konfig)) = konfig_laden(handle) {
+                if let Ok(ordner) = register_ordner(handle, &konfig) {
+                    match Register::journal_vorbereiten(&ordner) {
+                        Ok(true) => {}
+                        Ok(false) => eprintln!("Register: Journal noch nicht umgestellt, das Register ist in Gebrauch."),
+                        Err(f) => eprintln!("Register: Journal nicht umgestellt: {f}"),
+                    }
+                }
+            }
+            Ok(())
+        })
         .register_asynchronous_uri_scheme_protocol("vorschau", |ctx, anfrage, antwort| {
             vorschau_protokoll(ctx.app_handle().clone(), anfrage, antwort)
         })

@@ -15,29 +15,30 @@
 
 .ablauf__fuss { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .ablauf__fuss .leise, .ablauf .leise { color: var(--text-leise); }
+/* Baum des Delta-Laufs. Nur im Reiter „Register“: Der Reiter „Ordner“ hat einen eigenen Baum (v0.0.9). */
 
-.baum {
+.ablauf .baum {
   border: 1px solid var(--rand); border-radius: 10px; max-height: 420px; overflow: auto;
   padding: 4px 0; font-size: 13px;
 }
-.baum__zeile { display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 4px; min-height: 28px; }
-.baum__zeile:hover { background: var(--grund); }
-.baum__pfeil {
+.ablauf .baum__zeile { display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 4px; min-height: 28px; }
+.ablauf .baum__zeile:hover { background: var(--grund); }
+.ablauf .baum__pfeil {
   width: 20px; height: 20px; padding: 0; background: none; color: var(--text-leise); font-size: 12px;
 }
-.baum__haken { margin: 0; accent-color: var(--blau); }
-@media (prefers-color-scheme: dark) { .baum__haken { accent-color: var(--orange); } }
-.baum__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
-.baum__datei .baum__name { color: var(--text); }
-.baum__zahlen { display: flex; gap: 6px; align-items: center; flex: none; }
-.baum__anzahl { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-leise); }
-.baum__marke {
+.ablauf .baum__haken { margin: 0; accent-color: var(--blau); }
+@media (prefers-color-scheme: dark) { .ablauf .baum__haken { accent-color: var(--orange); } }
+.ablauf .baum__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.ablauf .baum__datei .baum__name { color: var(--text); }
+.ablauf .baum__zahlen { display: flex; gap: 6px; align-items: center; flex: none; }
+.ablauf .baum__anzahl { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-leise); }
+.ablauf .baum__marke {
   font-size: 11px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--rand); color: var(--text-leise);
   white-space: nowrap;
 }
-.baum__marke--neu { color: var(--akzent); border-color: currentColor; }
-.baum__marke--online { color: var(--graublau); }
-.baum__marke--leise { opacity: 0.7; }
+.ablauf .baum__marke--neu { color: var(--akzent); border-color: currentColor; }
+.ablauf .baum__marke--online { color: var(--graublau); }
+.ablauf .baum__marke--leise { opacity: 0.7; }
 
 .schritte { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .schritte__zeile {
@@ -56,12 +57,12 @@
   cursor: pointer; color: var(--text-leise); font-weight: 600; padding: 6px 2px;
 }
 
-.reiter__zahl {
-  margin-left: 6px; padding: 0 6px; border-radius: 9px; font-size: 11px;
-  background: var(--orange); color: var(--blau);
+/* Knopf neben den Reitern: Der Abgleich hat Änderungen gefunden (v0.0.9) */
+.reiter button.reiter__aenderungen {
+  height: 24px; padding: 0 12px; border-radius: 12px; font-size: 12px; font-weight: 600;
+  background: var(--orange); color: var(--blau); cursor: pointer; white-space: nowrap;
 }
-.umschalter--text button:has(.reiter__zahl) { display: flex; align-items: center; white-space: nowrap; }
-.reiter__zahl { display: inline-block; line-height: 16px; vertical-align: 1px; }
+.reiter button.reiter__aenderungen:hover { filter: brightness(1.08); }
 
 /* Zahlen und Marken zum Anklicken (Fenster mit Dateinamen) */
 button.ablauf__zahl {

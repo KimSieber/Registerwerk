@@ -1,7 +1,9 @@
 //! Text aus den alten Binärformaten von Office (v0.0.7): doc, xls, ppt.
 //!
-//! Die Dateien sind OLE-Verbunddateien (`cfb`) mit je einem Datenstrom für
-//! den Inhalt. Gelesen wird nur der Text, ohne fremdes Programm:
+//! Die Dateien sind OLE-Verbunddateien mit je einem Datenstrom für den Inhalt.
+//! Seit v0.0.9 liest sie ein eigener, toleranter Leser (`ole.rs`), weil die
+//! Bibliothek `cfb` Dateien mit kleinen Fehlern ablehnt. Gelesen wird nur der
+//! Text, ohne fremdes Programm:
 //!
 //! | Format | Strom | Seiten im Register |
 //! |---|---|---|
@@ -9,9 +11,10 @@
 //! | Excel (xls, xlt) | über `calamine` | eine Seite je Tabellenblatt, wie bei xlsx |
 //! | PowerPoint (ppt, pps) | `PowerPoint Document`, Textatome | eine Seite mit dem ganzen Text |
 //!
-//! Verschlüsselte Dateien und Word vor Version 6 werden nicht gelesen.
+//! Dazu seit v0.0.9: Word für Windows 2 (ohne Verbunddatei) und Word-6-Dateien,
+//! deren Kopf um zwei Byte versetzt ist. Excel 5 und 95 liest `biff.rs`, wenn
+//! `calamine` scheitert. Verschlüsselte Dateien werden nicht gelesen.
 
-use std::io::Read;
 use std::path::Path;
 
 use crate::dokumente::MAX_ZEICHEN;
@@ -20,20 +23,27 @@ use crate::dokumente::MAX_ZEICHEN;
 /// Grenze schützt nur vor beschädigten Dateien.
 const MAX_STROM: u64 = 256 * 1024 * 1024;
 
-type Ole = cfb::CompoundFile<std::fs::File>;
+use crate::ole::Verbund;
 
-fn oeffnen(pfad: &Path) -> Result<Ole, String> {
-    let mut anfang = [0u8; 5];
-    if std::fs::File::open(pfad).and_then(|mut d| d.read_exact(&mut anfang)).is_ok() && anfang == *b"{\\rtf" {
+fn oeffnen(pfad: &Path) -> Result<Verbund, String> {
+    let daten = std::fs::read(pfad).map_err(|e| e.to_string())?;
+    if daten.starts_with(b"{\\rtf") {
         return Err("RTF mit der Endung eines Office-Dokuments wird nicht gelesen".into());
     }
-    cfb::open(pfad).map_err(|e| format!("kein gültiges Office-Dokument: {e}"))
+    // Word, Excel und PowerPoint 97 bis 2003 sind OLE-Verbunddateien. Ohne
+    // deren Kennung ist es ein älteres Format (vor 1997) oder ein fremdes.
+    if !daten.starts_with(&crate::ole::KENNUNG) {
+        return Err(VOR_97.into());
+    }
+    Verbund::oeffnen(daten).map_err(|e| format!("Office-Datei beschädigt oder nicht lesbar ({e})"))
 }
 
-fn strom(ole: &mut Ole, name: &str) -> Result<Vec<u8>, String> {
-    let strom = ole.open_stream(name).map_err(|_| format!("{name} fehlt im Dokument"))?;
-    let mut daten = Vec::new();
-    strom.take(MAX_STROM).read_to_end(&mut daten).map_err(|e| e.to_string())?;
+/// Meldung für Office-Dateien ohne OLE-Kennung (v0.0.9).
+pub const VOR_97: &str = "älteres Office-Format (vor 97) oder fremdes Format, wird nicht gelesen";
+
+fn strom(ole: &Verbund, name: &str) -> Result<Vec<u8>, String> {
+    let mut daten = ole.strom(name).ok_or_else(|| format!("{name} fehlt im Dokument"))?;
+    daten.truncate(MAX_STROM as usize);
     Ok(daten)
 }
 
@@ -47,14 +57,7 @@ fn u32_bei(d: &[u8], i: usize) -> Option<u32> {
 
 /// Windows-1252: wie Latin-1, nur der Bereich 0x80 bis 0x9F ist belegt.
 fn cp1252(b: u8) -> char {
-    const OBEN: [char; 32] = [
-        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}', '\u{90}', '‘',
-        '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
-    ];
-    match b {
-        0x80..=0x9F => OBEN[(b - 0x80) as usize],
-        _ => b as char,
-    }
+    crate::textformate::cp1252(b)
 }
 
 fn utf16(daten: &[u8]) -> impl Iterator<Item = char> + '_ {
@@ -67,17 +70,62 @@ fn utf16(daten: &[u8]) -> impl Iterator<Item = char> + '_ {
 /// Text eines Word-Dokuments (Word 6 bis 2003): Haupttext, Fußnoten, Kopf-
 /// und Fußzeilen, in der Reihenfolge der Datei.
 pub fn word(pfad: &Path) -> Result<String, String> {
-    let mut ole = oeffnen(pfad)?;
-    let dok = strom(&mut ole, "WordDocument")?;
+    let ole = oeffnen(pfad)?;
+    let ergebnis = strom(&ole, "WordDocument").and_then(|dok| word_text(&dok, |name| strom(&ole, name)));
+    match ergebnis {
+        Ok(text) => Ok(text),
+        Err(meldung) if !meldung.contains("verschlüsselt") && !meldung.contains("vor Word 6") => {
+            // Beschädigtes Verzeichnis der Verbunddatei: Den Kopf des Dokuments
+            // (FIB) direkt an den Sektorgrenzen suchen. Kleine Dokumente stehen
+            // meist zusammenhängend in der Datei (v0.0.9).
+            let roh = std::fs::read(pfad).map_err(|e| e.to_string())?;
+            word_suchen(&roh).ok_or(meldung)
+        }
+        Err(meldung) => Err(meldung),
+    }
+}
+
+/// Sucht den Kopf eines Word-6/95-Dokuments an den Sektorgrenzen und liest
+/// den Text ab dort. Word 97 braucht einen zweiten Strom und bleibt außen vor.
+fn word_suchen(roh: &[u8]) -> Option<String> {
+    let mut stelle = 512;
+    while stelle + 0x20 < roh.len() {
+        for versatz in [0usize, 2] {
+            let k = stelle + versatz;
+            let kennung = u16_bei(roh, k);
+            let n_fib = u16_bei(roh, k + 2).unwrap_or(0);
+            if matches!(kennung, Some(0xA5DC | 0xA5EC)) && (0x0065..0x00C1).contains(&n_fib) {
+                // Die Stellen im Kopf zählen ab dem Anfang des Stroms
+                let dok = &roh[stelle..];
+                let kein_strom = |_: &str| Err::<Vec<u8>, String>("kein Tabellenstrom".into());
+                if let Ok(text) = word_text(dok, kein_strom) {
+                    if text.chars().filter(|z| z.is_alphabetic()).count() >= 10 {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+        stelle += 512;
+    }
+    None
+}
+
+/// Text aus dem Strom `WordDocument`. `tabelle` liefert für Word 97 den
+/// Tabellenstrom.
+fn word_text(dok: &[u8], tabelle: impl Fn(&str) -> Result<Vec<u8>, String>) -> Result<String, String> {
+    let dok = dok.to_vec();
     let kaputt = || "Word-Dokument ist beschädigt".to_string();
-    let n_fib = u16_bei(&dok, 2).ok_or_else(kaputt)?;
-    let merkmale = u16_bei(&dok, 0x0A).ok_or_else(kaputt)?;
+    // Manche Word-6-Dateien tragen zwei Nullbytes vor dem Kopf. Die Stellen
+    // des Textes zählen trotzdem ab dem Anfang des Stroms (v0.0.9).
+    let kopf = if u16_bei(&dok, 0) == Some(0) && matches!(u16_bei(&dok, 2), Some(0xA5DC | 0xA5EC)) { 2 } else { 0 };
+    let n_fib = u16_bei(&dok, kopf + 2).ok_or_else(kaputt)?;
+    let merkmale = u16_bei(&dok, kopf + 0x0A).ok_or_else(kaputt)?;
     if merkmale & 0x0100 != 0 {
         return Err("Word-Dokument ist verschlüsselt".into());
     }
     let roh: Vec<char> = if n_fib >= 0x00C1 {
         // Word 97 bis 2003: Stücktabelle im Tabellenstrom
-        let tabelle = strom(&mut ole, if merkmale & 0x0200 != 0 { "1Table" } else { "0Table" })?;
+        let tabelle = tabelle(if merkmale & 0x0200 != 0 { "1Table" } else { "0Table" })?;
         let fc = u32_bei(&dok, 0x01A2).ok_or_else(kaputt)? as usize;
         let lcb = u32_bei(&dok, 0x01A6).ok_or_else(kaputt)? as usize;
         let clx = tabelle.get(fc..fc.saturating_add(lcb)).ok_or_else(kaputt)?;
@@ -86,19 +134,42 @@ pub fn word(pfad: &Path) -> Result<String, String> {
         // Word 6 und 95: 8-Bit-Text, zusammenhängend oder über eine
         // Stücktabelle im selben Strom
         if merkmale & 0x0004 != 0 {
-            let fc = u32_bei(&dok, 0x0160).ok_or_else(kaputt)? as usize;
-            let lcb = u32_bei(&dok, 0x0164).ok_or_else(kaputt)? as usize;
+            let fc = u32_bei(&dok, kopf + 0x0160).ok_or_else(kaputt)? as usize;
+            let lcb = u32_bei(&dok, kopf + 0x0164).ok_or_else(kaputt)? as usize;
             let clx = dok.get(fc..fc.saturating_add(lcb)).ok_or_else(kaputt)?;
             stuecke(clx, &dok, false).ok_or_else(kaputt)?
         } else {
-            let von = u32_bei(&dok, 0x18).ok_or_else(kaputt)? as usize;
-            let bis = u32_bei(&dok, 0x1C).ok_or_else(kaputt)? as usize;
-            dok.get(von..bis).ok_or_else(kaputt)?.iter().map(|&b| cp1252(b)).collect()
+            let von = u32_bei(&dok, kopf + 0x18).ok_or_else(kaputt)? as usize;
+            let bis = u32_bei(&dok, kopf + 0x1C).ok_or_else(kaputt)? as usize;
+            dok.get(von..bis.min(dok.len())).ok_or_else(kaputt)?.iter().map(|&b| cp1252(b)).collect()
         }
     } else {
         return Err("Word-Dokumente vor Word 6 werden nicht gelesen".into());
     };
     Ok(word_bereinigen(roh))
+}
+
+/// Ist es Word für Windows 2 (ohne Verbunddatei, Kennung 0xA5DB)?
+pub fn ist_word2(daten: &[u8]) -> bool {
+    u16_bei(daten, 0) == Some(0xA5DB)
+}
+
+/// Text eines Dokuments aus Word für Windows 2 (v0.0.9): 8-Bit-Text,
+/// zusammenhängend zwischen `fcMin` und `fcMac`. Schnell gespeicherte
+/// Dokumente (mit Stücktabelle) werden nicht gelesen.
+pub fn word2(daten: &[u8]) -> Result<String, String> {
+    let kaputt = || "Word-2-Dokument ist beschädigt".to_string();
+    let merkmale = u16_bei(daten, 0x0A).ok_or_else(kaputt)?;
+    if merkmale & 0x0100 != 0 {
+        return Err("Word-Dokument ist verschlüsselt".into());
+    }
+    if merkmale & 0x0004 != 0 {
+        return Err("schnell gespeichertes Word-2-Dokument wird nicht gelesen".into());
+    }
+    let von = u32_bei(daten, 0x18).ok_or_else(kaputt)? as usize;
+    let bis = u32_bei(daten, 0x1C).ok_or_else(kaputt)? as usize;
+    let roh = daten.get(von..bis.min(daten.len())).filter(|_| von < bis).ok_or_else(kaputt)?;
+    Ok(word_bereinigen(roh.iter().map(|&b| cp1252(b)).collect()))
 }
 
 /// Liest den Text über die Stücktabelle (Clx): Jedes Stück nennt eine Stelle
@@ -197,11 +268,14 @@ fn word_bereinigen(roh: Vec<char>) -> String {
 /// Text einer PowerPoint-Datei (97 bis 2003): alle Textatome der Folien und
 /// Notizen, ohne die Folienmaster. Gleicher Text steht nur einmal.
 pub fn powerpoint(pfad: &Path) -> Result<String, String> {
-    let mut ole = oeffnen(pfad)?;
-    if ole.exists("EncryptedSummary") {
+    let ole = oeffnen(pfad)?;
+    if ole.hat("EncryptedSummary") {
         return Err("PowerPoint-Datei ist verschlüsselt".into());
     }
-    let dok = strom(&mut ole, "PowerPoint Document")?;
+    if ole.hat("PP40") && !ole.hat("PowerPoint Document") {
+        return Err("PowerPoint 4 wird nicht gelesen".into());
+    }
+    let dok = strom(&ole, "PowerPoint Document")?;
     let mut texte: Vec<String> = Vec::new();
     ppt_lesen(&dok, 0, &mut texte);
     Ok(texte.join("\n"))
@@ -255,8 +329,27 @@ fn ppt_lesen(d: &[u8], tiefe: usize, texte: &mut Vec<String>) {
 /// des Blatts. Zellen mit Tab, Zeilen mit Zeilenumbruch, leere entfallen.
 pub fn excel(pfad: &Path) -> Result<Vec<String>, String> {
     use calamine::{Data, Reader};
-    let mut mappe: calamine::Xls<_> =
-        calamine::open_workbook(pfad).map_err(|e| format!("kein gültiges Excel-Dokument: {e}"))?;
+    // Gleiche Prüfung und Meldung wie bei Word und PowerPoint
+    let ole = oeffnen(pfad)?;
+    // Excel 5 und 95 (Strom "Book", BIFF5) liest der eigene Leser, ebenso,
+    // wenn calamine an der Datei scheitert (v0.0.9)
+    let eigen = || -> Option<Result<Vec<String>, String>> {
+        let d = ole.strom("Workbook").or_else(|| ole.strom("Book"))?;
+        let version = u16_bei(&d, 4)?;
+        (crate::biff::ist_biff(&d) && version < 0x0600).then(|| crate::biff::excel_alt(&d))
+    };
+    let mut mappe: calamine::Xls<_> = match calamine::open_workbook(pfad) {
+        Ok(m) => m,
+        Err(e) => {
+            return eigen().unwrap_or_else(|| {
+                Err(if e.to_string().contains("password") {
+                    "Excel-Datei ist verschlüsselt (Kennwortschutz)".to_string()
+                } else {
+                    format!("Excel-Datei beschädigt oder nicht lesbar ({e})")
+                })
+            });
+        }
+    };
     let mut seiten = Vec::new();
     for name in mappe.sheet_names() {
         let Ok(bereich) = mappe.worksheet_range(&name) else { continue };

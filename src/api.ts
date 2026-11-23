@@ -183,6 +183,9 @@ export interface InhaltStand {
   pdfs_ohne_text: number;
   pdfs_schwach: number;
   fehler_liste: FehlerZeile[];
+  /** Text nur grob gelesen (v0.0.9) */
+  grob: number;
+  grob_liste: FehlerZeile[];
 }
 
 export interface Fortschritt {

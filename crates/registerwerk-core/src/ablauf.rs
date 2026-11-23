@@ -200,13 +200,25 @@ pub(crate) fn anstehend(db: &Connection) -> Ergebnis<BTreeMap<i64, u8>> {
     Ok(alle)
 }
 
-/// Liest das Delta innerhalb der Transaktion des Abgleichs.
+/// Je Datei-ID die anstehenden Schritte, nur für Dateien, die der Abgleich
+/// auf diesem Gerät gesehen hat (v0.0.9). Was er nicht gesehen hat, liegt in
+/// einem vermissten Ordner oder auf einem anderen Gerät und lässt sich hier
+/// weder laden noch lesen.
+fn anstehend_gesehen(db: &Connection, gesehen: &HashSet<i64>) -> Ergebnis<BTreeMap<i64, u8>> {
+    let mut offen = anstehend(db)?;
+    offen.retain(|id, _| gesehen.contains(id));
+    Ok(offen)
+}
+
+/// Liest das Delta innerhalb der Transaktion des Abgleichs. `gesehen` sind
+/// die Dateien, die der Durchlauf gefunden hat.
 pub(crate) fn delta_lesen(
     db: &Connection,
+    gesehen: &HashSet<i64>,
     neu: &[i64],
     geaendert: &[i64],
 ) -> Ergebnis<(Vec<DeltaDatei>, Vec<DeltaDatei>)> {
-    let offen = anstehend(db)?;
+    let offen = anstehend_gesehen(db, gesehen)?;
     let neu: HashSet<i64> = neu.iter().copied().collect();
     let geaendert: HashSet<i64> = geaendert.iter().copied().collect();
     let mut lesen = db.prepare("SELECT pfad, nur_online FROM datei WHERE id = ?1")?;
@@ -239,14 +251,24 @@ impl Register {
     /// Bildet die Auswahl für einen Delta-Lauf: alle Dateien mit anstehendem
     /// Schritt außer den ausgeschlossenen, mit `ohne_online` auch ohne die
     /// "nur online"-Dateien. Dazu die "nur online" liegenden mit Pfad.
-    pub fn auswahl_bilden(&self, ausgeschlossen: &[String], ohne_online: bool) -> Ergebnis<Auswahl> {
+    ///
+    /// Mit `gesehen` nur Dateien, die der Durchlauf gefunden hat (Pfade im
+    /// Register). Dateien in vermissten Ordnern oder auf anderen Geräten
+    /// gehören dann nicht dazu (v0.0.9).
+    pub fn auswahl_bilden(
+        &self,
+        ausgeschlossen: &[String],
+        ohne_online: bool,
+        gesehen: Option<&HashSet<&str>>,
+    ) -> Ergebnis<Auswahl> {
         let offen = anstehend(&self.db)?;
         let mut lesen = self.db.prepare("SELECT pfad, nur_online FROM datei WHERE id = ?1")?;
         let mut auswahl = HashSet::new();
         let mut online = Vec::new();
         for id in offen.into_keys() {
             let (pfad, nur_online): (String, bool) = lesen.query_row([id], |z| Ok((z.get(0)?, z.get(1)?)))?;
-            if ausgewaehlt(&pfad, ausgeschlossen) && !(ohne_online && nur_online) {
+            let hier = gesehen.is_none_or(|g| g.contains(pfad.as_str()));
+            if hier && ausgewaehlt(&pfad, ausgeschlossen) && !(ohne_online && nur_online) {
                 auswahl.insert(id);
                 if nur_online {
                     online.push((id, pfad));
@@ -277,7 +299,7 @@ pub struct LadenErgebnis {
 
 fn datei_stand(ort: &std::path::Path) -> Option<(u64, i64)> {
     let m = std::fs::metadata(ort).ok()?;
-    if crate::dateibaum::lokale_groesse(&m) == 0 {
+    if crate::dateibaum::platzhalter(ort, &m) {
         return None;
     }
     let geaendert =
@@ -565,6 +587,7 @@ mod tests {
             groesse,
             geaendert,
             stufe: Stufe::Voll,
+            nur_online: groesse == 0,
         }
     }
 
@@ -650,9 +673,9 @@ mod tests {
             eintrag("A/y/drei.pdf", 10, 1),
         ]))
         .unwrap();
-        let (ohne, _) = r.auswahl_bilden(&["A/y".to_string()], true).unwrap();
+        let (ohne, _) = r.auswahl_bilden(&["A/y".to_string()], true, None).unwrap();
         assert_eq!(ohne.len(), 1);
-        let (auswahl, online) = r.auswahl_bilden(&["A/y".to_string()], false).unwrap();
+        let (auswahl, online) = r.auswahl_bilden(&["A/y".to_string()], false, None).unwrap();
         assert_eq!(auswahl.len(), 2);
         assert_eq!(online.iter().map(|o| o.1.as_str()).collect::<Vec<_>>(), vec!["A/x/zwei.pdf"]);
         r.auswahl_setzen(Some(auswahl));
@@ -687,12 +710,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("A")).unwrap();
         std::fs::write(tmp.path().join("A/da.pdf"), b"%PDF-1.4 inhalt").unwrap();
-        std::fs::write(tmp.path().join("A/leer.pdf"), b"").unwrap();
+        crate::dateibaum::platzhalter_anlegen(&tmp.path().join("A/leer.pdf"));
         let mut konfig = Konfiguration::default();
         konfig.aeste.insert("A".into(), tmp.path().join("A"));
         let mut r = Register::im_speicher().unwrap();
         r.abgleichen(&durchlauf(vec![eintrag("A/da.pdf", 0, 1), eintrag("A/leer.pdf", 0, 1)])).unwrap();
-        let (_, online) = r.auswahl_bilden(&[], false).unwrap();
+        let (_, online) = r.auswahl_bilden(&[], false, None).unwrap();
         assert_eq!(online.len(), 2);
 
         let nein = AtomicBool::new(false);
@@ -720,12 +743,12 @@ mod tests {
     fn laden_wartet_nicht_weiter_auf_wunsch() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("A")).unwrap();
-        std::fs::write(tmp.path().join("A/leer.pdf"), b"").unwrap();
+        crate::dateibaum::platzhalter_anlegen(&tmp.path().join("A/leer.pdf"));
         let mut konfig = Konfiguration::default();
         konfig.aeste.insert("A".into(), tmp.path().join("A"));
         let mut r = Register::im_speicher().unwrap();
         r.abgleichen(&durchlauf(vec![eintrag("A/leer.pdf", 0, 1)])).unwrap();
-        let (_, online) = r.auswahl_bilden(&[], false).unwrap();
+        let (_, online) = r.auswahl_bilden(&[], false, None).unwrap();
         let start = Instant::now();
         let e = laden(
             &konfig,

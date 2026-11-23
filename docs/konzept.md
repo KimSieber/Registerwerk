@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 22.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.8). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 23.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.9). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -38,13 +38,14 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 
 - Indizieren der Ordner, für die eine Regel gilt, nach Behandlungsstufe. Die Ordner können überall auf dem Gerät liegen, nicht nur im Cloud-Ordner (seit v0.0.7)
 - Volltext aller Seiten, nicht nur der ersten
-- Text aus Office-, OpenDocument-, Pages-, Keynote- und Textdateien (seit v0.0.6), aus doc, xls und ppt (seit v0.0.7)
-- Vorschau aller Seiten, auch für einzelne Bilder im Archiv (seit v0.0.6) und für Textdateien (seit v0.0.7)
+- Text aus Office-, OpenDocument-, Pages-, Keynote- und Textdateien (seit v0.0.6), aus doc, xls und ppt (seit v0.0.7), aus RTF, HTML, csv, tsv, log und Visitenkarten sowie aus Word 2 bis 95, Excel 2 bis 95, Lotus 1-2-3 und Pages '09 (seit v0.0.9)
+- Vorschau aller Seiten, auch für einzelne Bilder im Archiv (seit v0.0.6) und für Textdateien (seit v0.0.7, weitere Textformate seit v0.0.9)
 - Fehlertolerante Suche mit Gewichtung von Dateiname und Pfad
 - Öffnen des Originals aus dem Cloud-Ordner
 - OCR für Seiten ohne Text und für einzelne Bilder im Archiv
 - Anwendung mit eigener Oberfläche für Indizierung, Suche und Anzeige
 - Delta-Lauf: Prüfung beim Öffnen, Auswahl im Ordnerbaum, Verarbeitung durch alle Schritte, Laden von "nur online"-Dateien und Zurückstellen auf "nur online" (seit v0.0.8)
+- Lesen, Suchen und Prüfen ändern das Register nicht. Geschrieben wird nur, wenn eine Datei neu, geändert oder entfernt ist (seit v0.0.9)
 
 ### Unterstützte Cloud-Speicher
 
@@ -104,14 +105,15 @@ Der bestehende Scan-Prozess bleibt unverändert: Scan per Smartphone-App mit Bil
 
 Gemessen am 15.11.2026 auf dem Notebook:
 
-- Platzhalter melden 0 Byte, 0 belegte Blöcke und keine besondere Markierung. Sie sind für ein Programm von einer leeren Datei nicht zu unterscheiden.
+- Platzhalter melden 0 Byte, 0 belegte Blöcke und keine Dateiflags.
+- **Ergänzung 22.11.2026 (v0.0.9):** Die klassische Dropbox hängt an jeden Platzhalter das erweiterte Attribut `com.dropbox.placeholder`. Eine lokale leere Datei trägt es nicht. Daran unterscheidet Registerwerk beides. Das Attribut ist undokumentiert. **Annahme**, dass es bleibt.
 - Name, Pfad und Änderungsdatum sind lesbar, die Größe nicht.
 - Das Auflisten lädt nichts herunter.
 - **Korrektur 22.11.2026 (v0.0.8):** Das bloße Öffnen und Lesen durch ein Programm lädt nichts. Ein Lesen mit `head` kam nach 4 ms mit 0 Byte zurück. Geladen wird, wenn die Datei über das System geöffnet wird (`open`, Doppelklick) oder ein Programm sie über die Dateikoordination von macOS (`NSFileCoordinator`) anfordert. Die Dateikoordination lud eine Datei ohne sichtbares Fenster. Vorher stand hier, dass Öffnen den Download auslöst.
 
 Folgen:
 
-- Eine Datei mit 0 Byte gilt als "nur online oder leer".
+- Eine Datei mit 0 Byte gilt unter macOS nur mit dem Attribut der Dropbox als "nur online", sonst als lokal und leer. Eine leere Datei gilt als gelesen, ohne Seiten und ohne Fehler (v0.0.9). Auf anderen Systemen gilt weiter: 0 Byte heißt "nur online oder leer".
 - Inhalte, Vorschauen und OCR öffnen nur lokal vorhandene Dateien. "Nur online"-Dateien bleiben ausstehend. Umgesetzt in v0.0.2.
 - Seit v0.0.8 lädt der Delta-Lauf die ausgewählten "nur online"-Dateien selbst über die Dateikoordination (Abschnitt Delta-Lauf).
 - **File Provider:** Platzhalter von Google Drive, OneDrive, iCloud und der Dropbox unter `~/Library/CloudStorage` melden die echte Größe. Erkennbar sind sie am Kennzeichen `SF_DATALESS` in den Dateiflags. Seit v0.0.8 gelten sie wie Dateien mit 0 Byte als "nur online", sonst würden sie beim Lesen still geladen. Ob dort ein einfaches Lesen den Download auslöst, ist nicht gemessen. **Annahme**, vor der Aufnahme solcher Äste zu prüfen.
@@ -123,7 +125,7 @@ Folgen:
 
 Umgesetzt in v0.0.8 (Stufe 4, ohne Sperre und Inhalts-Hash).
 
-1. **Prüfen:** Beim Öffnen der Anwendung läuft der Abgleich des Dateibaums als Probe. In derselben, danach verworfenen Transaktion wird gelesen, bei welchen Dateien ein Schritt ansteht. Das Register bleibt unverändert. Die Zahl steht am Reiter „Register“.
+1. **Prüfen:** Beim Öffnen der Anwendung läuft der Abgleich des Dateibaums als Probe, im Hintergrund, während die Suche schon bedienbar ist. Seit v0.0.9 rechnet die Probe auf Kopien der Tabellen im Arbeitsspeicher, über eine nur lesend geöffnete Verbindung. Das Register bleibt unverändert, keine Datei im Register-Ordner wird angefasst. Steht etwas an, erscheint neben den Reitern ein gelber Knopf („Änderungen gefunden“ oder „Verarbeitung ausstehend“), der in den Reiter „Register“ führt. Geprüft wird nur beim Start, mit „Erneut prüfen“ und nach eigenen Aktionen, nicht nach Zeit (Kim: keine unerwarteten Läufe während der Suche). Dateien in vermissten Ordnern stehen nicht im Ablauf.
 2. **Anzeigen:** Zahlen für neu, geändert, noch offen, nur online, neu nur mit Namen und zu entfernen. Jede Zahl öffnet die Liste der Dateien. Darunter ein Ordnerbaum mit Anzahl je Ordner, aufklappbar bis zu den Dateien.
 3. **Auswählen:** Alles ist angehakt, auch "nur online". Ordner und Dateien lassen sich herausnehmen, alle "nur online"-Dateien mit einem Schalter.
 4. **Verarbeiten:** neue und geänderte Dateien aufnehmen, ohne etwas zu entfernen → aus der Cloud laden → Inhalte lesen → Vorschauen erzeugen → Text erkennen → in PDFs schreiben → wieder "nur online" → Suchindex nachführen. Jeder Schritt nur für die Auswahl.
@@ -213,9 +215,13 @@ In einem Ordner der Stufe Voll entscheidet die Endung. Die Listen sind fest (`fo
 
 - **Einzelne Bilder** (jpg, jpeg, png, tif, tiff, bmp, gif, webp, seit v0.0.7 heic und heif) bekommen eine Vorschau und OCR. Der erkannte Text kommt nur ins Register. Meist sind es versehentlich als Bild gespeicherte Belege. Bildordner bleiben ausgeschlossen, sie deckt Bilderwerk ab. Von mehrseitigen TIFF wird die erste Seite gelesen, Fax-TIFF (CCITT Gruppe 3) seit v0.0.7.
 
-**Nur Name:** Archive und Abbilder (zip, rar, 7z, dmg …), Numbers, rtf, csv, html, E-Mail (eml, msg), Kontakte und Termine, eBooks (epub, mobi …), Grafik- und Rohformate, Audio, Video, Notizbuch- und Tracking-Dateien.
+- **Weitere Textformate** (seit v0.0.9) mit Vorschau wie txt: rtf (eigener Leser), csv, tsv, log, htm und html (Tags entfernt), vcf (je Eigenschaft eine Zeile, ohne Verwaltungsangaben und Fotos).
+- **Alte Office-Dateien** (seit v0.0.9): Hinter den Endungen doc, xls und ppt steckt im Archiv vieles. Registerwerk erkennt am Inhalt, was es ist: Verbunddatei (eigener toleranter Leser, verzeiht kleine Fehler), neues Format, RTF, HTML, Text, Word für Windows 2, Excel 2 bis 95, Lotus 1-2-3. Word 6 und 95 mit beschädigtem Verzeichnis werden über die Suche des Dokumentkopfs gelesen. Pages und Keynote '09 liefern ihren Text aus `index.xml`.
+- **Grober Rückfall** (seit v0.0.9): Scheitert jeder Leser an einer alten Office- oder iWork-Datei, kommen lesbare Zeichenfolgen der Datei ins Register, mit dem Vermerk „Text nur grob gelesen“. Die Datei ist so über die Suche auffindbar. Verschlüsselte Dateien sind ausgenommen.
 
-**Nicht gelesen** werden weiter Numbers, Pages vor 2013, verschlüsselte Office-Dateien und Word vor Version 6.
+**Nur Name:** Archive und Abbilder (zip, rar, 7z, dmg …), Numbers, E-Mail (eml, msg, mbox), Termine (ics), eBooks (epub, mobi …), Grafik- und Rohformate, Audio, Video, Notizbuch- und Tracking-Dateien. E-Mail und Termine bleiben bewusst ohne Inhalt (Kim, v0.0.9).
+
+**Nicht gelesen** werden weiter Numbers, verschlüsselte Office-Dateien (auch Excel mit dem Standardkennwort von Excel), schnell gespeicherte Word-2-Dokumente und Word 1.
 
 ## 7. Verarbeitung von PDFs
 
@@ -347,7 +353,7 @@ Die Replikation großer Dateien ist kein Engpass: Leitungen und Laufzeit reichen
 
 - Der Ordner des Registers ist je Gerät wählbar (seit v0.0.7), über das Datenbank-Symbol der Anwendung. Ohne Angabe liegt es im Datenordner der Anwendung im Benutzerprofil. Der Ort steht in `docs/intern/umgebung.md`.
 - Im Ordner liegen die Index-Datenbank `register.db`, die Scheiben, die Regeln `regeln.toml` und das Protokoll der Textebene. Verschoben wird der ganze Inhalt bei beendetem Programm, danach wird der neue Ordner gewählt.
-- Kim legt das Register direkt in den Cloud-Ordner, damit alle Geräte dasselbe sehen. Voraussetzungen: Das Programm ist nur auf einem Gerät geöffnet, und die Cloud hat vor dem Wechsel fertig abgeglichen. Beim Schließen schreibt das Register seine Protokolldateien in die Datenbanken zurück, damit nur vollständige Dateien abgeglichen werden.
+- Kim legt das Register direkt in den Cloud-Ordner, damit alle Geräte dasselbe sehen. Voraussetzungen: Das Programm ist nur auf einem Gerät geöffnet, und die Cloud hat vor dem Wechsel fertig abgeglichen. Seit v0.0.9 arbeitet SQLite im klassischen Journal (`DELETE`) statt im WAL-Journal. Lesen ändert damit keine Datei. Beim Schreiben entsteht kurz `register.db-journal`. Geschrieben wird nur, was sich ändert: kein Vermerk „zuletzt gesehen“ je Datei, keine Zeile je Durchlauf ohne Änderung, keine Zeitstempel je Ordner. Grund: Jede Änderung löst einen Upload der Dropbox aus, der andere Abgleiche behindert (Kim).
 - Die ursprünglich vorgesehene Arbeitskopie außerhalb des Cloud-Ordners mit Veröffentlichen des fertigen Standes ist damit zurückgestellt. Sie bleibt der Weg, falls der direkte Betrieb Konflikte erzeugt. **Annahme**
 - Eine Sperre mit Stand-Zähler soll festhalten, welches Gerät zuletzt geschrieben hat. Beim Start prüft das Programm, ob die lokale Kopie diesen Stand hat. Wenn nicht, öffnet es nur lesend und meldet das. **Annahme**, noch nicht gebaut. Das Register hält seit v0.0.7 je Durchlauf das Gerät fest.
 
@@ -409,7 +415,9 @@ Aufbau und Bedienung wie Bilderwerk:
 | Office, OpenDocument | `zip` und `quick-xml`, eigene Auslese | entschieden, im Einsatz seit v0.0.6 |
 | Pages, Keynote | eigener Leser für die Textspeicher der IWA-Archive, entpackt mit `snap` | entschieden, im Einsatz seit v0.0.6 |
 | Bilder | `image` (jpeg, png, tiff, bmp, gif, webp), `zune-heic` für HEIC, `tiff` und `fax` für Fax-TIFF, eigener Leser für TIFF mit Farbpalette (`weezl` für LZW) | entschieden, im Einsatz seit v0.0.6, HEIC und Fax seit v0.0.7, Palette seit v0.0.8 |
-| Altes Office | `cfb` mit eigenem Leser für doc und ppt, `calamine` für xls | entschieden, im Einsatz seit v0.0.7 |
+| Altes Office | eigener toleranter Leser für OLE-Verbunddateien (`ole.rs`, seit v0.0.9, vorher `cfb`) mit eigenem Leser für doc und ppt, `calamine` für xls ab Excel 97, eigener Leser für Excel 2 bis 95 und Lotus 1-2-3 (`biff.rs`, seit v0.0.9) | entschieden, im Einsatz seit v0.0.7 |
+| RTF, HTML, Visitenkarten | eigene Leser (`textformate.rs`) | entschieden, seit v0.0.9 |
+| Journal von SQLite | klassisch (`DELETE`), lesende Zugriffe mit `SQLITE_OPEN_READ_ONLY` | entschieden, seit v0.0.9 |
 | Vorschau für Text | `ab_glyph` mit DejaVu Sans Mono, Schrift im Repo | entschieden, im Einsatz seit v0.0.7 |
 | Regeln und Konfiguration | TOML: `regeln.toml` beim Register, `config.local.toml` je Gerät | entschieden, im Einsatz seit v0.0.7 |
 | PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
@@ -418,6 +426,7 @@ Aufbau und Bedienung wie Bilderwerk:
 | Laden aus der Cloud | Dateikoordination von macOS (`NSFileCoordinator`) über `objc2-foundation`, eigenes Paket `registerwerk-macos` | entschieden, im Einsatz seit v0.0.8 |
 | Zurück auf "nur online" | Werkzeug `onlineonly` (MIT), wird aufgerufen, wenn installiert | entschieden, im Einsatz seit v0.0.8. Beigabe im Programmpaket offen |
 | Platzhalter des File Providers | Kennzeichen `SF_DATALESS` in den Dateiflags | entschieden, seit v0.0.8 |
+| Platzhalter der Dropbox | erweitertes Attribut `com.dropbox.placeholder` (`getxattr` in `registerwerk-macos`) | entschieden, seit v0.0.9 |
 | Build-Ordner | `target/cargo` über `.cargo/config.toml`, damit `cargo clean` den von der Dropbox ausgenommenen Ordner `target` stehen lässt | entschieden, seit v0.0.8 |
 | Zugangsdaten | lokaler Schlüsselbund des Betriebssystems, wie in Stellwerk | Annahme |
 
@@ -540,6 +549,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.6 | Suchindex und Suche mit Filtern, Suchansicht wie Bilderwerk, Text aus Office, OpenDocument, Pages und Text, Vorschau und OCR für Bilder, Vorschauen nach der kurzen Kante | Stufe 2 abgeschlossen, Teile von Stufe 3 (Dateitypen) |
 | v0.0.7 | Ordnerregeln mit Stufen, Reiter "Ordner", feste Einteilung der Dateitypen, Äste und Geräte, Entfernen nur mit Grund und Rückfrage, altes Office, HEIC, Vorschau für Text, Fax-TIFF, Register-Ort wählbar | Stufe 3 ohne Verschlüsselung |
 | v0.0.8 | Reiter "Register" als Delta-Lauf: Prüfung beim Öffnen, Ordnerbaum mit Auswahl, Dateilisten je Zahl, Verarbeiten durch alle Schritte, Laden aus der Dropbox über die Dateikoordination, zurück auf "nur online" mit `onlineonly`. Scheiben 200 MB mit Aufteilen, TIFF mit Farbpalette, Platzhalter des File Providers, Build-Ordner `target/cargo` | Stufe 4 ohne Sperre und Inhalts-Hash |
+| v0.0.9 | Fehlerrelease: Lesen und Prüfen ändern das Register nicht mehr (klassisches Journal, nur lesend geöffnet, Schreiben nur bei Änderung), "nur online" am Attribut der Dropbox, Start mit der Suche und gelber Knopf, toleranter Leser für alte Office-Formate, Excel 2 bis 95, Lotus, Word 2, Pages '09, grober Rückfall, RTF, HTML, csv, tsv, log, vcf. Seit v0.0.9 nutzt Kim Registerwerk produktiv, die nächste Version heißt v0.1.0 | Korrekturen in Stufe 3 und 4 |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -553,12 +563,13 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | `onlineonly` als Beigabe ins Programmpaket legen, mit Lizenztext | mit dem ersten Paket |
-| Reiter "Ordner": statt eigenem „Dateibaum einlesen“ zum Abgleich im Reiter "Register" führen | v0.0.9 |
+| Reiter "Ordner": statt eigenem „Dateibaum einlesen“ zum Abgleich im Reiter "Register" führen | v0.1.0 |
+| Ohne „zuletzt gesehen“ je Datei: Unterscheidung „anderes Gerät“ gegenüber „gelöscht“ auf dem Mac mini prüfen | mit dem zweiten Gerät |
 | Laden bei Anbietern über den File Provider (Google Drive, OneDrive): löst Lesen den Download aus? | vor der Aufnahme solcher Äste |
 | Hinweis „nur klassische Dropbox vollständig unterstützt“ auf der Webseite | mit der Webseite |
 | Verschlüsselung des Registers. Dringender, seit es im Cloud-Ordner liegt | Stufe 3 |
 | Sperre mit Stand-Zähler für den Gerätewechsel | Stufe 4 |
-| Text aus Numbers und Pages vor 2013. Mehrseitige TIFF | später |
+| Text aus Numbers. Mehrseitige TIFF. Excel-Mappen mit dem Standardkennwort von Excel (Kim speichert sie bisher als .xlsx neu) | später |
 | Antwortzeiten der Suche im ganzen Archiv | Stufe 6 |
 | Vergrößern über 100 %: Original bei Bedarf hoch aufgelöst rendern | später |
 | Verhalten eines europäischen Cloud-Anbieters bei der Replikation des Registers | vor einem Anbieterwechsel |
@@ -634,6 +645,13 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Schreiben in die PDFs im Delta-Lauf | ohne zweiten Klick | die Textebene wird nur angehängt, im Pilot ohne Probleme (Kim) |
 | Platzhalter des File Providers | gelten wie 0 Byte als "nur online" | sonst würden sie beim Lesen still geladen |
 | TIFF mit Farbpalette | eigener Leser | `tiff` liest sie nicht. Kommt im Altarchiv vor (Scans von 2003) |
+| Schreiben ins Register | nur bei neu, geändert oder entfernt. Keine Protokolle, keine zweite Datenbank (v0.0.9) | jede Änderung löst einen Upload der Dropbox aus, der andere Abgleiche behindert |
+| Journal von SQLite | klassisch (`DELETE`) statt WAL (v0.0.9) | WAL ändert schon beim Lesen die Datei `-shm` |
+| Erkennen von "nur online" | bei 0 Byte am Attribut `com.dropbox.placeholder` (v0.0.9) | einzige gemessene Unterscheidung von lokal leeren Dateien |
+| Startseite | Suche, Abgleich im Hintergrund, gelber Knopf neben den Reitern (v0.0.9) | Suchen ist der Alltag, Verarbeiten die Ausnahme |
+| Zeitpunkt der Prüfung | beim Start, auf Wunsch und nach eigenen Aktionen, nie nach Zeit (v0.0.9) | keine unerwarteten Läufe während der Suche |
+| Unlesbare alte Office-Dateien | eigene tolerante Leser, sonst grober Rückfall mit Vermerk (v0.0.9) | fast alle ließen sich in den Originalprogrammen öffnen |
+| Weitere Textformate | rtf, csv, tsv, log, htm, html, vcf lesen. eml, mbox, ics nur mit Namen (v0.0.9) | Kim |
 
 ## 17. Verworfene Alternativen
 
@@ -667,6 +685,11 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Datei für Datei 2 Minuten warten | eine volle Warteschlange hielt den ganzen Lauf auf |
 | Scheiben still beim ersten Start aufteilen | einmaliger großer Upload zu einem Zeitpunkt, den Kim nicht wählt |
 | Suchindex der Index-Datenbank in eine eigene Datei | jeder Beleg ändert Text und Index, es würden beide Dateien abgeglichen |
+| WAL-Journal für das Register im Cloud-Ordner | schon Lesen ändert `-shm` und `-wal`, die Dropbox gleicht bei jedem Zugriff ab (v0.0.9) |
+| Vermerk „zuletzt gesehen“ je Datei | änderte bei jedem Durchlauf jede Zeile des Registers (v0.0.9) |
+| Prüfung alle 15 Minuten im Hintergrund | unerwartete Läufe stören die Suche (Kim, v0.0.9) |
+| `cfb` für alte Office-Dateien | lehnt Dateien mit kleinen Fehlern ab, die Word und Excel öffnen (v0.0.9) |
+| Entschlüsseln von Excel mit dem Standardkennwort | Aufwand für 9 Dateien zu hoch, Kim speichert sie neu (v0.0.9) |
 
 ## 18. Werkzeuge
 

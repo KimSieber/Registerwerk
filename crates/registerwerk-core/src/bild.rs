@@ -25,7 +25,7 @@ pub fn laden(pfad: &Path) -> Result<Bild, String> {
 /// Inhalt eines Bilds: eine Seite ohne Text, ganz Bild. Die OCR erkennt sie
 /// wie eine Scan-Seite ohne Text.
 pub fn inhalt() -> crate::pdf::Inhalt {
-    crate::pdf::Inhalt { seiten: vec![crate::pdf::Seite { nr: 1, text: String::new(), bildanteil: 1.0 }], erstellt: None }
+    crate::pdf::Inhalt { seiten: vec![crate::pdf::Seite { nr: 1, text: String::new(), bildanteil: 1.0 }], erstellt: None, grob: false }
 }
 
 /// Lädt ein Bild für die OCR in Graustufen in voller Auflösung, die längste

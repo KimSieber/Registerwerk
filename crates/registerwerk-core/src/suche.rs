@@ -731,7 +731,7 @@ mod tests {
             .map(|(pfad, _)| {
                 let name = pfad.rsplit('/').next().unwrap().to_string();
                 let endung = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-                DateiEintrag { pfad: pfad.to_string(), name, endung, groesse: 10, geaendert: 100, stufe: crate::regeln::Stufe::Voll }
+                DateiEintrag { pfad: pfad.to_string(), name, endung, groesse: 10, geaendert: 100, stufe: crate::regeln::Stufe::Voll, nur_online: false }
             })
             .collect();
         r.abgleichen(&Durchlauf { dateien: eintraege, gelesene_verzeichnisse: vec!["A".into()], ..Default::default() })
@@ -748,6 +748,7 @@ mod tests {
                     .map(|(i, t)| Seite { nr: i as u32 + 1, text: t.to_string(), bildanteil: 1.0 })
                     .collect(),
                 erstellt: None,
+                grob: false,
             };
             r.inhalt_speichern(id, 100, 10, &Ok(inhalt)).unwrap();
         }
@@ -874,7 +875,7 @@ mod tests {
         let mut r = register(&[("A/a.pdf", &["Alter Text"]), ("A/b.pdf", &["Bleibt"])]);
         assert_eq!(r.suche_ausstehend().unwrap(), 0);
         let id: i64 = r.db.query_row("SELECT id FROM datei WHERE pfad = 'A/a.pdf'", [], |z| z.get(0)).unwrap();
-        let inhalt = Inhalt { seiten: vec![Seite { nr: 1, text: "Neuer Inhalt".into(), bildanteil: 1.0 }], erstellt: None };
+        let inhalt = Inhalt { seiten: vec![Seite { nr: 1, text: "Neuer Inhalt".into(), bildanteil: 1.0 }], erstellt: None, grob: false };
         r.inhalt_speichern(id, 100, 10, &Ok(inhalt)).unwrap();
         assert_eq!(r.suche_ausstehend().unwrap(), 1);
         r.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).unwrap();
@@ -884,7 +885,7 @@ mod tests {
         assert!(!r.aehnliche_woerter("altr").unwrap().contains(&"alter".to_string()));
 
         // a.pdf verschwindet aus dem Dateibaum
-        let b = DateiEintrag { pfad: "A/b.pdf".into(), name: "b.pdf".into(), endung: "pdf".into(), groesse: 10, geaendert: 100, stufe: crate::regeln::Stufe::Voll };
+        let b = DateiEintrag { pfad: "A/b.pdf".into(), name: "b.pdf".into(), endung: "pdf".into(), groesse: 10, geaendert: 100, stufe: crate::regeln::Stufe::Voll, nur_online: false };
         r.abgleichen(&Durchlauf { dateien: vec![b], gelesene_verzeichnisse: vec!["A".into()], ..Default::default() })
             .unwrap();
         assert!(suche(&r, "neuer").treffer.is_empty());
@@ -915,6 +916,7 @@ mod tests {
                      tokenize='trigram remove_diacritics 1');
                  UPDATE datei SET suche_stand = 1;
                  ALTER TABLE datei DROP COLUMN stufe;
+                 ALTER TABLE datei DROP COLUMN inhalt_hinweis;
                  ALTER TABLE lauf DROP COLUMN geraet;
                  DROP TABLE ordner_gesehen;
                  DROP TABLE geraet;
@@ -929,7 +931,7 @@ mod tests {
             .db
             .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'suche_text'", [], |z| z.get(0))
             .unwrap();
-        assert_eq!((version, tabellen), (9, 0));
+        assert_eq!((version, tabellen), (10, 0));
     }
 
     #[test]

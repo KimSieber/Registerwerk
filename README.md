@@ -9,14 +9,17 @@ dessen Originale nur noch in der Cloud liegen. Es hält Volltext und lesbare
 Vorschauen aller Seiten lokal vor, sodass die Suche ohne Download der Originale
 funktioniert.
 
-**Stand:** v0.0.8 (November 2026). Beim Öffnen prüft Registerwerk, was neu,
-geändert oder noch offen ist, und zeigt es als Ordnerbaum mit Dateilisten. Ein
+**Stand:** v0.0.9 (November 2026), im produktiven Einsatz. Registerwerk öffnet
+mit der Suche und prüft im Hintergrund, was neu, geändert oder noch offen ist.
+Steht etwas an, führt ein Knopf zum Ordnerbaum mit Dateilisten. Lesen und Suchen
+ändern das Register nicht, so gleicht die Dropbox nur echte Änderungen ab. Ein
 Klick auf „Verarbeiten“ lädt die gewählten Dateien bei Bedarf aus der Dropbox,
 führt sie durch alle Schritte und stellt sie danach wieder auf „nur online“.
 Im Reiter „Ordner“ wird gewählt, welche
 Ordner des Geräts ins Register kommen und wie: voll, nur mit Namen oder gar
 nicht. Aus den gewählten Ordnern werden der Dateibaum, der Text jeder PDF-Seite,
-der Text von Office-, Pages- und Textdateien und eine Vorschau jeder PDF-Seite,
+der Text von Office-, Pages-, RTF-, HTML- und Textdateien sowie Visitenkarten
+(auch sehr alter Formate wie Word 2, Excel 4 oder Lotus 1-2-3) und eine Vorschau jeder PDF-Seite,
 jedes Bildes und jeder Textdatei eingelesen. Seiten ohne Text und Bilder werden
 per OCR erkannt, in Scans kommt der erkannte Text als unsichtbare Textebene in
 die PDF. Die Suche ist fehlertolerant, mit Filtern nach Ordner, Datum und
@@ -108,12 +111,15 @@ die geladenen Dateien lokal.
 
 - **Anwendung:** Tauri (Rust) mit Web-Oberfläche, lauffähig auf macOS, Windows
   und Linux
-- **Register:** SQLite, Suchindex mit FTS5 und Trigrammen, verschlüsselt (ab Stufe 3)
+- **Register:** SQLite im klassischen Journal, Suchindex mit FTS5 und Trigrammen,
+  verschlüsselt (ab Stufe 3)
 - **PDF:** PDFium für Text und Rendering
 - **OCR:** Tesseract, nur für Seiten ohne Text
-- **Weitere Formate:** Text aus Word, Excel, PowerPoint (auch doc, xls, ppt),
-  OpenDocument, Pages, Keynote, txt und md ohne fremdes Programm. Bilder
-  (auch HEIC) bekommen Vorschau und OCR, Textdateien eine Vorschau
+- **Weitere Formate:** Text aus Word, Excel, PowerPoint (auch doc, xls, ppt bis
+  zurück zu Word 2, Excel 2 und Lotus 1-2-3), OpenDocument, Pages, Keynote (auch
+  '09), RTF, HTML, csv, tsv, log, txt, md und Visitenkarten ohne fremdes
+  Programm. Bilder (auch HEIC) bekommen Vorschau und OCR, Textdateien eine
+  Vorschau. Was kein Leser versteht, wird grob gelesen und so gekennzeichnet
 - **Vorschau:** jede Seite mit 1024 px an der kurzen Kante, AVIF mit Qualität 25,
   kodiert mit libavif und libaom, abgelegt in Vorschau-Scheiben (eigene
   SQLite-Dateien neben dem Register)
@@ -128,7 +134,8 @@ in der Entwicklungsdokumentation unter `docs/`:
 [v0.0.5](docs/v0.0.5%20Entwicklungsdokumentation.md),
 [v0.0.6](docs/v0.0.6%20Entwicklungsdokumentation.md),
 [v0.0.7](docs/v0.0.7%20Entwicklungsdokumentation.md),
-[v0.0.8](docs/v0.0.8%20Entwicklungsdokumentation.md).
+[v0.0.8](docs/v0.0.8%20Entwicklungsdokumentation.md),
+[v0.0.9](docs/v0.0.9%20Entwicklungsdokumentation.md).
 
 ## Aufbau des Repos
 

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/registerwerk-core", "crates/registerwerk-macos", "crates/registerwerk-ocr", "src-tauri", "tools/pdf_pruefen"]
 
 [workspace.package]
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 authors = ["Kim Sieber"]
 license = "UNLICENSED"

@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 
 use std::collections::BTreeMap;
@@ -42,7 +42,7 @@ use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 /// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
 /// Bis v0.0.7 waren es 1,5 GB. Liegt das Register in einem Cloud-Ordner, wird
@@ -78,6 +78,9 @@ pub struct Register {
     /// Begrenzt die Schritte (Inhalte, Vorschauen, OCR, Textebene) auf diese
     /// Dateien (v0.0.8, Delta-Lauf). `None`: alle ausstehenden.
     pub(crate) auswahl: Option<std::collections::HashSet<i64>>,
+    /// Nur lesend geöffnet ([`Register::oeffnen_lesend`]): auch die Scheiben
+    /// werden dann nur lesend geöffnet (v0.0.9).
+    pub(crate) nur_lesen: bool,
 }
 
 /// Art des Abgleichs.
@@ -249,6 +252,9 @@ pub struct InhaltStand {
     /// PDFs mit Text, deren Güte insgesamt unter der Schwelle liegt.
     pub pdfs_schwach: u64,
     pub fehler_liste: Vec<FehlerZeile>,
+    /// Dateien, deren Text nur grob gelesen ist (v0.0.9), und die ersten 50.
+    pub grob: u64,
+    pub grob_liste: Vec<FehlerZeile>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -293,28 +299,68 @@ fn jetzt() -> i64 {
         .unwrap_or(0)
 }
 
-/// Beim Schließen wandert alles aus den Protokolldateien (`-wal`) in die
-/// Datenbanken selbst. Liegt das Register in einem Cloud-Ordner, werden so
-/// nur vollständige Datenbankdateien synchronisiert. Ein nur lesend
-/// geöffnetes Register kann das nicht, der Fehler ist dann ohne Belang.
-impl Drop for Register {
-    fn drop(&mut self) {
-        // Ohne Wartezeit: Arbeitet gerade eine andere Verbindung, erledigt sie es.
-        const LEEREN: &str = "PRAGMA busy_timeout = 0; PRAGMA wal_checkpoint(TRUNCATE)";
-        let _ = self.db.execute_batch(LEEREN);
-        for scheibe in self.scheiben.borrow().values() {
-            let _ = scheibe.execute_batch(LEEREN);
-        }
-    }
-}
+/// Wartezeit, wenn eine andere Verbindung das Register gerade sperrt. Mit dem
+/// klassischen Journal (v0.0.9) sperrt ein Schreiber beim Abschluss kurz auch
+/// die Leser.
+const WARTEN_MS: u64 = 15_000;
+
+/// Tabellen, die ein Abgleich ändert. Die Probe arbeitet auf Kopien davon.
+const SCHATTEN: [&str; 4] = ["lauf", "geraet", "datei", "ordner_gesehen"];
 
 impl Register {
-    /// Öffnet das Register in `ordner` und legt es bei Bedarf an.
+    /// Öffnet das Register in `ordner` zum Schreiben und legt es bei Bedarf an.
     pub fn oeffnen(ordner: &Path) -> Ergebnis<Self> {
         std::fs::create_dir_all(ordner)?;
         let pfad = ordner.join(DATEINAME);
         let db = Connection::open(&pfad)?;
         Self::einrichten(db, Some(pfad))
+    }
+
+    /// Beim Programmstart, bevor irgendetwas anderes das Register öffnet:
+    /// stellt ein Register aus v0.0.8 auf das klassische Journal um (v0.0.9).
+    /// Liefert, ob es danach im klassischen Journal läuft. Ohne Register
+    /// geschieht nichts.
+    pub fn journal_vorbereiten(ordner: &Path) -> Ergebnis<bool> {
+        let pfad = ordner.join(DATEINAME);
+        if !pfad.is_file() {
+            return Ok(true);
+        }
+        let db = Connection::open(&pfad)?;
+        db.busy_timeout(std::time::Duration::ZERO)?;
+        journal_umstellen(&db, 40)?;
+        let modus: String = db.query_row("PRAGMA journal_mode", [], |z| z.get(0))?;
+        Ok(modus.eq_ignore_ascii_case("delete"))
+    }
+
+    /// Öffnet das Register nur lesend (v0.0.9): Suche, Anzeige und die Prüfung
+    /// beim Start. SQLite verweigert dann jedes Schreiben, die Dateien im
+    /// Register-Ordner bleiben unberührt. Muss das Schema noch umgestellt
+    /// werden, geschieht das einmal über [`Register::oeffnen`].
+    pub fn oeffnen_lesend(ordner: &Path) -> Ergebnis<Self> {
+        let pfad = ordner.join(DATEINAME);
+        if !pfad.is_file() {
+            return Err(crate::Fehler::Konfiguration("Noch kein Register vorhanden.".into()));
+        }
+        let lesend = || -> rusqlite::Result<Connection> {
+            let db = Connection::open_with_flags(
+                &pfad,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,
+            )?;
+            db.busy_timeout(std::time::Duration::from_millis(WARTEN_MS))?;
+            // Hilfstabellen der Prüfung nur im Arbeitsspeicher
+            db.pragma_update(None, "temp_store", "MEMORY")?;
+            Ok(db)
+        };
+        let mut db = lesend()?;
+        if !Self::ist_aktuell(&db) {
+            drop(db);
+            drop(Self::oeffnen(ordner)?);
+            db = lesend()?;
+        }
+        rusqlite::vtab::array::load_module(&db)?;
+        let mut r = Self::fertig(db, Some(pfad));
+        r.nur_lesen = true;
+        Ok(r)
     }
 
     /// Register nur im Arbeitsspeicher, für Tests.
@@ -337,9 +383,25 @@ impl Register {
     /// Öffnen zwei Aufrufe das Register gleichzeitig, wartet der zweite und
     /// sieht danach das bereits umgestellte Schema.
     fn einrichten(mut db: Connection, pfad: Option<PathBuf>) -> Ergebnis<Self> {
-        wal_einschalten(&db)?;
+        if pfad.is_some() {
+            // Ein Versuch ohne Warten: Sind andere Verbindungen offen, gelingt
+            // es beim nächsten Start ([`Register::journal_vorbereiten`]).
+            db.busy_timeout(std::time::Duration::ZERO)?;
+            journal_umstellen(&db, 1)?;
+        }
+        db.busy_timeout(std::time::Duration::from_millis(WARTEN_MS))?;
+        db.pragma_update(None, "temp_store", "MEMORY")?;
+        // Größerer Zwischenspeicher: Ein Schreiber sperrt die Leser erst, wenn
+        // er Seiten auslagern muss
+        db.pragma_update(None, "cache_size", -65_536)?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         rusqlite::vtab::array::load_module(&db)?;
+        if Self::ist_aktuell(&db) {
+            // Der Regelfall braucht keine Schreibsperre (v0.0.9). Sonst
+            // scheitert jedes Öffnen mit "database is locked", solange eine
+            // andere Verbindung schreibt, etwa die Prüfung beim Start.
+            return Ok(Self::fertig(db, pfad));
+        }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |z| z.get(0))?;
         if version > SCHEMA_VERSION {
@@ -429,6 +491,13 @@ impl Register {
                  PRAGMA user_version = 9;",
             )?;
         }
+        if version < 10 {
+            // Hinweis zum gelesenen Inhalt, etwa „Text nur grob gelesen“ (v0.0.9)
+            tx.execute_batch(
+                "ALTER TABLE datei ADD COLUMN inhalt_hinweis TEXT;
+                 PRAGMA user_version = 10;",
+            )?;
+        }
         // v0.0.7 liest Fax-TIFFs. Ein festgehaltener Fehler gilt sonst, bis
         // sich die Datei ändert: Diese Dateien werden einmal neu versucht.
         let versucht: bool = tx.query_row("SELECT count(*) FROM merkmal WHERE name = 'fax_tiff'", [], |z| z.get(0))?;
@@ -453,15 +522,57 @@ impl Register {
                  INSERT INTO merkmal (name, wert) VALUES ('tiff_palette', '1');",
             )?;
         }
+        // v0.0.9: Lokale leere Dateien galten kurz als Lesefehler. Sie sind
+        // gelesen, ohne Seiten, und gehören nicht in die Fehlerliste.
+        let erledigt: bool =
+            tx.query_row("SELECT count(*) FROM merkmal WHERE name = 'leer_ohne_fehler'", [], |z| z.get(0))?;
+        if !erledigt {
+            tx.execute("UPDATE datei SET inhalt_fehler = NULL WHERE inhalt_fehler = ?1", [crate::inhalte::LEER])?;
+            tx.execute("INSERT INTO merkmal (name, wert) VALUES ('leer_ohne_fehler', '1')", [])?;
+        }
+        // v0.0.9: Toleranter Leser für alte Office-Formate, RTF, Word 2, Excel 2–5,
+        // grober Rückfall. Alte Office-Dateien mit Lesefehler einmal neu versuchen.
+        let erledigt: bool =
+            tx.query_row("SELECT count(*) FROM merkmal WHERE name = 'office_tolerant'", [], |z| z.get(0))?;
+        if !erledigt {
+            tx.execute(
+                "UPDATE datei SET inhalt_verfahren = NULL
+                 WHERE inhalt_fehler IS NOT NULL AND endung IN ('doc','dot','xls','xlt','ppt','pps','pages','key')",
+                [],
+            )?;
+            tx.execute("INSERT INTO merkmal (name, wert) VALUES ('office_tolerant', '1')", [])?;
+        }
         tx.commit()?;
-        Ok(Self {
+        Ok(Self::fertig(db, pfad))
+    }
+
+    /// Einmalige Umstellungen, die `einrichten` in `merkmal` festhält.
+    const MERKMALE: [&'static str; 4] = ["fax_tiff", "tiff_palette", "leer_ohne_fehler", "office_tolerant"];
+
+    /// Ist das Schema auf dem aktuellen Stand und jede einmalige Umstellung
+    /// erledigt? Nur lesend. Im Zweifel `false`, dann prüft `einrichten`
+    /// unter der Schreibsperre erneut.
+    fn ist_aktuell(db: &Connection) -> bool {
+        let version: rusqlite::Result<i64> = db.query_row("PRAGMA user_version", [], |z| z.get(0));
+        if version.ok() != Some(SCHEMA_VERSION) {
+            return false;
+        }
+        Self::MERKMALE.iter().all(|name| {
+            db.query_row("SELECT count(*) FROM merkmal WHERE name = ?1", [name], |z| z.get::<_, bool>(0))
+                .unwrap_or(false)
+        })
+    }
+
+    fn fertig(db: Connection, pfad: Option<PathBuf>) -> Self {
+        Self {
             db,
             pfad,
             scheiben: RefCell::default(),
             scheibe_grenze: SCHEIBE_GRENZE,
             wortliste: RefCell::default(),
             auswahl: None,
-        })
+            nur_lesen: false,
+        }
     }
 
     /// Schema 2: Text je Seite, Verarbeitungsstand, Dokumentdatum für jede Datei.
@@ -657,12 +768,59 @@ impl Register {
         mit_delta: bool,
     ) -> Ergebnis<(LaufErgebnis, Option<(Vec<crate::ablauf::DeltaDatei>, Vec<crate::ablauf::DeltaDatei>)>)> {
         let probe = modus == Modus::Probe;
+        let start = Instant::now();
+        if !probe {
+            return self.abgleich_tx(durchlauf, modus, mit_delta, start);
+        }
+        // Die Probe schreibt nicht ins Register (v0.0.9). Sie arbeitet auf
+        // Kopien der Tabellen, die sie ändern würde, im Arbeitsspeicher. Die
+        // Kopien verdecken die Tabellen des Registers für die Dauer der Probe.
+        self.db.execute_batch("PRAGMA foreign_keys = OFF")?;
+        let ergebnis = self.schatten_anlegen().and_then(|_| self.abgleich_tx(durchlauf, modus, mit_delta, start));
+        for t in SCHATTEN {
+            let _ = self.db.execute_batch(&format!("DROP TABLE IF EXISTS temp.{t}"));
+        }
+        if !self.nur_lesen {
+            let _ = self.db.execute_batch("PRAGMA foreign_keys = ON");
+        }
+        ergebnis
+    }
+
+    /// Kopien der Tabellen, die ein Abgleich ändert, als Hilfstabellen im
+    /// Arbeitsspeicher, mit derselben Definition (v0.0.9).
+    fn schatten_anlegen(&self) -> Ergebnis<()> {
+        for t in SCHATTEN {
+            let sql: String = self.db.query_row(
+                "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = ?1",
+                [t],
+                |z| z.get(0),
+            )?;
+            let sql = sql.replacen("CREATE TABLE", "CREATE TEMP TABLE", 1);
+            self.db.execute_batch(&format!(
+                "DROP TABLE IF EXISTS temp.{t}; {sql}; INSERT INTO temp.{t} SELECT * FROM main.{t};"
+            ))?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn abgleich_tx(
+        &mut self,
+        durchlauf: &Durchlauf,
+        modus: Modus,
+        mit_delta: bool,
+        start: Instant,
+    ) -> Ergebnis<(LaufErgebnis, Option<(Vec<crate::ablauf::DeltaDatei>, Vec<crate::ablauf::DeltaDatei>)>)> {
+        let probe = modus == Modus::Probe;
         let nur_aufnehmen = modus == Modus::NurAufnehmen;
         let mut neu_ids: Vec<i64> = Vec::new();
         let mut geaendert_ids: Vec<i64> = Vec::new();
-        let start = Instant::now();
+        let mut gesehen: std::collections::HashSet<i64> = Default::default();
+        let mut geschrieben = false;
         let tx = self.db.transaction()?;
-        tx.execute("INSERT OR IGNORE INTO geraet (name) VALUES (?1)", [&durchlauf.geraet])?;
+        if tx.execute("INSERT OR IGNORE INTO geraet (name) VALUES (?1)", [&durchlauf.geraet])? > 0 {
+            geschrieben = true;
+        }
         let geraet: i64 = tx.query_row("SELECT id FROM geraet WHERE name = ?1", [&durchlauf.geraet], |z| z.get(0))?;
         tx.execute("INSERT INTO lauf (begonnen, geraet) VALUES (?1, ?2)", params![jetzt(), geraet])?;
         let lauf = tx.last_insert_rowid();
@@ -690,7 +848,8 @@ impl Register {
                     });
                 }
             };
-            let mut suchen = tx.prepare("SELECT id, groesse, geaendert, stufe, seiten FROM datei WHERE pfad = ?1")?;
+            let mut suchen =
+                tx.prepare("SELECT id, groesse, geaendert, stufe, seiten, nur_online FROM datei WHERE pfad = ?1")?;
             let mut einfuegen = tx.prepare(
                 "INSERT INTO datei (pfad, name, endung, groesse, geaendert, nur_online,
                                     datum_dokument, datum_quelle, erfasst_lauf, gesehen_lauf, stufe)
@@ -705,16 +864,16 @@ impl Register {
             )?;
 
             for d in &durchlauf.dateien {
-                let leer = d.nur_online_oder_leer();
+                let leer = d.nur_online;
                 if leer {
                     e.nur_online += 1;
                 }
                 let groesse_neu = (!leer).then_some(d.groesse as i64);
                 let stufe_neu = d.stufe.als_zahl();
-                // id, Größe, Änderungsdatum, Stufe, Seiten
-                type Vorhanden = (i64, Option<i64>, i64, i64, Option<i64>);
+                // id, Größe, Änderungsdatum, Stufe, Seiten, nur online
+                type Vorhanden = (i64, Option<i64>, i64, i64, Option<i64>, bool);
                 let vorhanden: Option<Vorhanden> = suchen
-                    .query_row([&d.pfad], |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?, z.get(3)?, z.get(4)?)))
+                    .query_row([&d.pfad], |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?, z.get(3)?, z.get(4)?, z.get(5)?)))
                     .optional()?;
                 match vorhanden {
                     None => {
@@ -723,9 +882,13 @@ impl Register {
                             d.pfad, d.name, d.endung, groesse_neu, d.geaendert, leer, datum, quelle, lauf, stufe_neu
                         ])?;
                         e.neu += 1;
-                        neu_ids.push(tx.last_insert_rowid());
+                        let id = tx.last_insert_rowid();
+                        neu_ids.push(id);
+                        gesehen.insert(id);
+                        geschrieben = true;
                     }
-                    Some((id, groesse_alt, geaendert_alt, stufe_alt, seiten)) => {
+                    Some((id, groesse_alt, geaendert_alt, stufe_alt, seiten, online_alt)) => {
+                        gesehen.insert(id);
                         let gleiches_datum = geaendert_alt == d.geaendert;
                         let gleiche_groesse = groesse_alt == groesse_neu;
                         // Bei gleichem Datum ist ein Wechsel von oder zu 0 Byte
@@ -742,7 +905,14 @@ impl Register {
                         let zuruecknehmen = stufe_alt != stufe_neu && d.stufe == Stufe::Metadaten;
                         let stufe_neu = if nur_aufnehmen && zuruecknehmen { stufe_alt } else { stufe_neu };
                         let groesse = if gleiches_datum { groesse_neu.or(groesse_alt) } else { groesse_neu };
-                        aktualisieren.execute(params![
+                        // Nur schreiben, was sich ändert (v0.0.9)
+                        let anders = groesse != groesse_alt
+                            || d.geaendert != geaendert_alt
+                            || leer != online_alt
+                            || stufe_neu != stufe_alt;
+                        if anders {
+                            geschrieben = true;
+                            aktualisieren.execute(params![
                             id,
                             groesse,
                             d.geaendert,
@@ -752,7 +922,9 @@ impl Register {
                             datum::aus_zeitstempel(d.geaendert),
                             stufe_neu
                         ])?;
-                        if zuruecknehmen && !nur_aufnehmen && Self::inhalt_entfernen(&tx, id)? {
+                        }
+                        if zuruecknehmen && !nur_aufnehmen && Self::inhalt_entfernen(&tx, id, probe)? {
+                            geschrieben = true;
                             e.reduziert += 1;
                             e.reduziert_seiten += seiten.unwrap_or(0) as u64;
                             betroffen(&d.pfad, Grund::NurMetadaten, seiten, &mut e.betroffen);
@@ -770,15 +942,22 @@ impl Register {
             let unvollstaendig =
                 |ordner: &str| durchlauf.unvollstaendige_verzeichnisse.iter().any(|v| v == ordner);
             let fehlend = |ordner: &str| durchlauf.fehlende_verzeichnisse.iter().any(|v| v == ordner);
+            // Nicht gesehen ist, was dieser Durchlauf nicht gefunden hat. Seit
+            // v0.0.9 ohne Vermerk je Datei: Der hätte bei jedem Durchlauf jede
+            // Zeile des Registers geändert. Wann und wo eine Datei zuletzt
+            // gesehen wurde, ist damit nicht mehr bekannt.
             type Fehlende = (i64, String, String, Option<i64>, Option<i64>, Option<String>);
-            let fehlen: Vec<Fehlende> = tx
-                .prepare(
-                    "SELECT d.id, d.pfad, d.endung, d.seiten, l.begonnen, g.name
-                     FROM datei d LEFT JOIN lauf l ON l.id = d.gesehen_lauf LEFT JOIN geraet g ON g.id = l.geraet
-                     WHERE d.gesehen_lauf <> ?1",
-                )?
-                .query_map([lauf], |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?, z.get(3)?, z.get(4)?, z.get(5)?)))?
-                .collect::<Result<_, _>>()?;
+            let mut fehlen: Vec<Fehlende> = Vec::new();
+            {
+                let mut alle = tx.prepare("SELECT id, pfad, endung, seiten FROM datei")?;
+                let mut zeilen = alle.query([])?;
+                while let Some(z) = zeilen.next()? {
+                    let id: i64 = z.get(0)?;
+                    if !gesehen.contains(&id) {
+                        fehlen.push((id, z.get(1)?, z.get(2)?, z.get(3)?, None, None));
+                    }
+                }
+            }
             let mut entfernen = tx.prepare("DELETE FROM datei WHERE id = ?1")?;
             // oberster fehlender Ordner -> Zahl der Dateien darin
             let mut ohne_ordner: BTreeMap<String, u64> = BTreeMap::new();
@@ -829,6 +1008,7 @@ impl Register {
                     e.entfernt += 1;
                 } else {
                     e.entfernt += entfernen.execute([id])? as u64;
+                    geschrieben = true;
                 }
             }
             // Fehlende Ordner mit Regel stehen auch ohne Bestand in der Liste
@@ -857,14 +1037,16 @@ impl Register {
                 }
             }
 
-            // Dieses Gerät hat die betretenen Ordner jetzt gesehen
-            let mut merken = tx.prepare(
-                "INSERT INTO ordner_gesehen (ordner, geraet, zuletzt) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (ordner, geraet) DO UPDATE SET zuletzt = excluded.zuletzt",
-            )?;
+            // Dieses Gerät hat die betretenen Ordner jetzt gesehen. Nur neue
+            // Ordner werden eingetragen (v0.0.9), `zuletzt` ist der Zeitpunkt
+            // des ersten Sehens.
+            let mut merken =
+                tx.prepare("INSERT OR IGNORE INTO ordner_gesehen (ordner, geraet, zuletzt) VALUES (?1, ?2, ?3)")?;
             let zeit = jetzt();
             for ordner in &durchlauf.ordner {
-                merken.execute(params![ordner, geraet, zeit])?;
+                if merken.execute(params![ordner, geraet, zeit])? > 0 {
+                    geschrieben = true;
+                }
             }
         }
 
@@ -880,11 +1062,13 @@ impl Register {
             ],
         )?;
         let delta = if mit_delta {
-            Some(crate::ablauf::delta_lesen(&tx, &neu_ids, &geaendert_ids)?)
+            Some(crate::ablauf::delta_lesen(&tx, &gesehen, &neu_ids, &geaendert_ids)?)
         } else {
             None
         };
-        if probe {
+        // Ohne Änderung bleibt das Register unberührt, auch ohne Eintrag des
+        // Durchlaufs (v0.0.9). Die Dropbox hat dann nichts abzugleichen.
+        if probe || !geschrieben {
             tx.rollback()?;
         } else {
             tx.commit()?;
@@ -921,7 +1105,8 @@ impl Register {
 
     /// Entfernt Text, erkannten Text und Vorschauen einer Datei, deren Ordner
     /// auf "nur Metadaten" steht. Liefert, ob es etwas zu entfernen gab.
-    fn inhalt_entfernen(tx: &rusqlite::Transaction, id: i64) -> Ergebnis<bool> {
+    /// Mit `nur_pruefen` (Probe) wird nichts entfernt.
+    fn inhalt_entfernen(tx: &rusqlite::Transaction, id: i64, nur_pruefen: bool) -> Ergebnis<bool> {
         let (name, geaendert, gelesen): (String, i64, bool) = tx.query_row(
             "SELECT name, geaendert,
                     inhalt_verfahren IS NOT NULL OR vorschau_verfahren IS NOT NULL
@@ -930,8 +1115,8 @@ impl Register {
             [id],
             |z| Ok((z.get(0)?, z.get(1)?, z.get(2)?)),
         )?;
-        if !gelesen {
-            return Ok(false);
+        if !gelesen || nur_pruefen {
+            return Ok(gelesen);
         }
         tx.execute("DELETE FROM seite WHERE datei = ?1", [id])?;
         tx.execute("DELETE FROM ocr WHERE datei = ?1", [id])?;
@@ -1072,6 +1257,7 @@ impl Register {
              WHERE id = ?1",
             [id],
         )?;
+        let hinweis = inhalt.as_ref().ok().filter(|i| i.grob).map(|_| crate::textformate::GROB);
         let (seiten, erstellt, fehler) = match inhalt {
             Ok(inhalt) => {
                 let mut einfuegen = tx.prepare(
@@ -1096,9 +1282,9 @@ impl Register {
         };
         tx.execute(
             "UPDATE datei SET inhalt_geaendert = ?2, inhalt_groesse = ?3, inhalt_verfahren = ?4,
-                              inhalt_fehler = ?5, seiten = ?6, pdf_erstellt = ?7
+                              inhalt_fehler = ?5, seiten = ?6, pdf_erstellt = ?7, inhalt_hinweis = ?8
              WHERE id = ?1",
-            params![id, geaendert, groesse as i64, INHALT_VERFAHREN, fehler, seiten, erstellt],
+            params![id, geaendert, groesse as i64, INHALT_VERFAHREN, fehler, seiten, erstellt, hinweis],
         )?;
         // Dokumentdatum neu bestimmen, das PDF-Erstellungsdatum ist jetzt bekannt
         let (name, geaendert_reg): (String, i64) =
@@ -1294,6 +1480,15 @@ impl Register {
             params![guete::MIN_ZEICHEN as i64, guete::SCHWELLE],
             |z| Ok((zahl(z, 0)?, zahl(z, 1)?)),
         )?;
+        s.grob = self.db.query_row("SELECT count(*) FROM datei WHERE inhalt_hinweis IS NOT NULL AND inhalt_fehler IS NULL", [], |z| zahl(z, 0))?;
+        s.grob_liste = self
+            .db
+            .prepare(
+                "SELECT pfad, inhalt_hinweis FROM datei WHERE inhalt_hinweis IS NOT NULL AND inhalt_fehler IS NULL
+                 ORDER BY pfad LIMIT 50",
+            )?
+            .query_map([], |z| Ok(FehlerZeile { pfad: z.get(0)?, meldung: z.get(1)? }))?
+            .collect::<Result<Vec<_>, _>>()?;
         s.fehler_liste = self
             .db
             .prepare("SELECT pfad, inhalt_fehler FROM datei WHERE inhalt_fehler IS NOT NULL ORDER BY pfad LIMIT 50")?
@@ -1303,23 +1498,41 @@ impl Register {
     }
 }
 
-/// Schaltet das WAL-Journal ein. Das Umschalten wartet nicht wie andere
-/// Zugriffe auf eine Sperre. Öffnen mehrere Aufrufe ein neues Register
-/// gleichzeitig, meldet es "database is locked". Dann kurz warten und erneut
-/// versuchen.
-fn wal_einschalten(db: &Connection) -> rusqlite::Result<()> {
-    let mut versuche = 0;
-    loop {
-        match db.pragma_update(None, "journal_mode", "WAL") {
+/// Stellt das Journal auf das klassische Verfahren (`DELETE`) um (v0.0.9).
+///
+/// Bis v0.0.8 lief das Register im WAL-Journal. Dabei fasst schon jeder
+/// lesende Zugriff die Dateien `-shm` und `-wal` an, und die Dropbox gleicht
+/// sie ab. Mit dem klassischen Journal ändert Lesen keine Datei, nur beim
+/// Schreiben entsteht kurz `register.db-journal`.
+///
+/// Das Umstellen braucht das Register für sich allein: Solange eine andere
+/// Verbindung offen ist, gelingt es nicht. Nach `versuche` vergeblichen
+/// Versuchen bleibt es beim alten Journal, ohne Fehler.
+fn journal_umstellen(db: &Connection, versuche: u32) -> rusqlite::Result<()> {
+    // Ist das Register gerade gesperrt, wird es diesmal nicht umgestellt
+    match db.query_row("PRAGMA journal_mode", [], |z| z.get::<_, String>(0)) {
+        Ok(modus) if modus.eq_ignore_ascii_case("wal") => {}
+        Ok(_) => return Ok(()),
+        Err(rusqlite::Error::SqliteFailure(f, _))
+            if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) =>
+        {
+            return Ok(())
+        }
+        Err(f) => return Err(f),
+    }
+    for i in 0..versuche {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        match db.query_row("PRAGMA journal_mode = DELETE", [], |z| z.get::<_, String>(0)) {
+            Ok(modus) if modus.eq_ignore_ascii_case("delete") => return Ok(()),
+            Ok(_) => {}
             Err(rusqlite::Error::SqliteFailure(f, _))
-                if f.code == rusqlite::ErrorCode::DatabaseBusy && versuche < 100 =>
-            {
-                versuche += 1;
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            andere => return andere,
+                if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {}
+            Err(f) => return Err(f),
         }
     }
+    Ok(())
 }
 
 /// Fällt ein nicht mehr gesehener Eintrag wegen der Ordnerregeln aus dem
@@ -1361,7 +1574,7 @@ mod tests {
     fn datei(pfad: &str, groesse: u64, geaendert: i64) -> DateiEintrag {
         let name = pfad.rsplit('/').next().unwrap().to_string();
         let endung = name.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-        DateiEintrag { pfad: pfad.into(), name, endung, groesse, geaendert, stufe: Stufe::Voll }
+        DateiEintrag { pfad: pfad.into(), name, endung, groesse, geaendert, stufe: Stufe::Voll, nur_online: groesse == 0 }
     }
 
     fn durchlauf(dateien: Vec<DateiEintrag>) -> Durchlauf {
@@ -1382,6 +1595,116 @@ mod tests {
             gelesene_verzeichnisse: vec!["A".into()],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn oeffnet_auch_waehrend_eine_andere_verbindung_schreibt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let erste = Register::oeffnen(tmp.path()).unwrap();
+        // wie die Prüfung beim Start: Schreibsperre über längere Zeit
+        erste.db.execute_batch("BEGIN IMMEDIATE; INSERT INTO geraet (name) VALUES ('x')").unwrap();
+        let start = Instant::now();
+        let zweite = Register::oeffnen(tmp.path()).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(zweite.stand().unwrap().dateien, 0);
+        erste.db.execute_batch("ROLLBACK").unwrap();
+    }
+
+    /// Inhalt aller Dateien im Ordner, nach Name
+    fn dateien_im_ordner(ordner: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut v: Vec<_> = std::fs::read_dir(ordner)
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                (e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).unwrap())
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn lesen_und_probe_aendern_keine_datei() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dateien: Vec<_> = (0..3_000).map(|i| datei(&format!("A/{i:05} beleg.pdf"), 10, 1)).collect();
+        {
+            let mut r = Register::oeffnen(tmp.path()).unwrap();
+            r.abgleichen(&durchlauf(dateien.clone())).unwrap();
+        }
+        let vorher = dateien_im_ordner(tmp.path());
+        // nur register.db, kein Journal
+        assert_eq!(vorher.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec![DATEINAME]);
+
+        let mut r = Register::oeffnen_lesend(tmp.path()).unwrap();
+        let mut neu = dateien.clone();
+        neu.push(datei("A/neu.pdf", 10, 1));
+        let d = r.delta_pruefen(&durchlauf(neu)).unwrap();
+        assert_eq!(d.lauf.neu, 1);
+        assert_eq!(d.dateien.len(), 3_001);
+        assert_eq!(r.stand().unwrap().dateien, 3_000);
+        // Schreiben verweigert SQLite
+        assert!(r.abgleichen(&durchlauf(vec![])).is_err());
+        drop(r);
+        assert!(dateien_im_ordner(tmp.path()) == vorher);
+
+        // Auch ein echter Abgleich ohne Änderung lässt die Datei unberührt
+        let mut r = Register::oeffnen(tmp.path()).unwrap();
+        let e = r.abgleichen(&durchlauf(dateien.clone())).unwrap();
+        assert_eq!((e.neu, e.geaendert, e.entfernt), (0, 0, 0));
+        r.aufnehmen(&durchlauf(dateien.clone())).unwrap();
+        drop(r);
+        assert!(dateien_im_ordner(tmp.path()) == vorher);
+
+        // Eine neue Datei ändert das Register
+        let mut r = Register::oeffnen(tmp.path()).unwrap();
+        let mut neu = dateien.clone();
+        neu.push(datei("A/neu.pdf", 10, 1));
+        assert_eq!(r.abgleichen(&durchlauf(neu)).unwrap().neu, 1);
+        drop(r);
+        assert!(dateien_im_ordner(tmp.path()) != vorher);
+    }
+
+    #[test]
+    fn stellt_ein_wal_register_auf_das_klassische_journal_um() {
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            let r = Register::oeffnen(tmp.path()).unwrap();
+            let modus: String = r.db.query_row("PRAGMA journal_mode = WAL", [], |z| z.get(0)).unwrap();
+            assert_eq!(modus, "wal");
+        }
+        // Solange eine andere Verbindung offen ist, bleibt es beim WAL, ohne Wartezeit
+        let leser = Register::oeffnen_lesend(tmp.path()).unwrap();
+        let start = Instant::now();
+        drop(Register::oeffnen(tmp.path()).unwrap());
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert!(!Register::journal_vorbereiten(tmp.path()).unwrap());
+        drop(leser);
+        // Allein gelingt es
+        assert!(Register::journal_vorbereiten(tmp.path()).unwrap());
+        let r = Register::oeffnen_lesend(tmp.path()).unwrap();
+        let modus: String = r.db.query_row("PRAGMA journal_mode", [], |z| z.get(0)).unwrap();
+        assert_eq!(modus, "delete");
+        drop(r);
+        let namen: Vec<_> = dateien_im_ordner(tmp.path()).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(namen, vec![DATEINAME.to_string()]);
+    }
+
+    #[test]
+    fn delta_ohne_dateien_in_vermissten_ordnern() {
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![datei("A/da.pdf", 10, 1), datei("A/weg/log.pdf", 0, 1)])).unwrap();
+        // Der Ordner "A/weg" ist gelöscht: Sein Bestand bleibt, steht aber nicht zur Verarbeitung an
+        let d = r.delta_pruefen(&durchlauf(vec![datei("A/da.pdf", 10, 1)])).unwrap();
+        let pfade: Vec<_> = d.dateien.iter().map(|x| x.pfad.as_str()).collect();
+        assert_eq!(pfade, vec!["A/da.pdf"]);
+        assert_eq!(d.lauf.vermisst.len(), 1);
+        r.aufnehmen(&durchlauf(vec![datei("A/da.pdf", 10, 1)])).unwrap();
+        let gesehen: std::collections::HashSet<&str> = ["A/da.pdf"].into();
+        let (auswahl, online) = r.auswahl_bilden(&[], false, Some(&gesehen)).unwrap();
+        assert_eq!((auswahl.len(), online.len()), (1, 0));
+        // ohne Angabe auch die Datei im vermissten Ordner
+        assert_eq!(r.auswahl_bilden(&[], false, None).unwrap().1.len(), 1);
+        assert_eq!(r.stand().unwrap().dateien, 2);
     }
 
     #[test]
@@ -1458,8 +1781,8 @@ mod tests {
         let e = r.abgleich_pruefen(&d).unwrap();
         assert_eq!((e.entfernt, e.entfernt_regel, e.bestaetigung_noetig()), (1, 0, true));
         let b = &e.betroffen[0];
-        assert_eq!((b.pfad.as_str(), b.grund, b.geraet.as_deref()), ("A/a.pdf", Grund::Fehlt, Some("Notebook")));
-        assert!(b.zuletzt.is_some_and(|z| z > 1_600_000_000));
+        // Wann und wo zuletzt gesehen, ist seit v0.0.9 nicht mehr bekannt
+        assert_eq!((b.pfad.as_str(), b.grund, b.geraet.as_deref(), b.zuletzt), ("A/a.pdf", Grund::Fehlt, None, None));
         assert_eq!(r.stand().unwrap().dateien, 3);
         let e = r.abgleichen(&d).unwrap();
         assert_eq!(e.entfernt, 1);
@@ -1555,6 +1878,7 @@ mod tests {
         let inhalt = pdf::Inhalt {
             seiten: vec![pdf::Seite { nr: 1, text: "Rechnung über zwölf Euro".into(), bildanteil: 0.0 }],
             erstellt: Some("D:20190304120000".into()),
+            grob: false,
         };
         r.inhalt_speichern(id, 100, 10, &Ok(inhalt)).unwrap();
         id

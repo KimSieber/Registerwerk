@@ -21,12 +21,25 @@ import { alsDauer, alsZahl, alsZeitpunkt } from "../format";
 import Verwaltung from "../Verwaltung";
 
 /**
- * Reiter „Register“ (v0.0.8): ein klarer Ablauf. Beim Öffnen der Anwendung prüft Registerwerk, was
- * ansteht, ohne etwas zu ändern. Der Baum zeigt die Dateien nach Ordnern, alles ist angehakt.
+ * Reiter „Register“ (v0.0.8): ein klarer Ablauf. Beim Öffnen der Anwendung prüft Registerwerk im
+ * Hintergrund, was ansteht, ohne etwas zu ändern, und meldet Änderungen an den Rahmen (v0.0.9). Der Baum zeigt die Dateien nach Ordnern, alles ist angehakt.
  * „Verarbeiten“ nimmt auf, lädt „nur online“-Dateien und führt die Auswahl durch alle Schritte.
  * Entfernen bleibt ein eigener Schritt mit Rückfrage. Die bisherige Ansicht steht unter „Einzelheiten“.
  */
-export default function Ablauf({ sichtbar, onAnstehend }: { sichtbar: boolean; onAnstehend: (n: number) => void }) {
+/** Stand der letzten Prüfung für den Knopf neben den Reitern (v0.0.9). */
+export interface Anstehend {
+  /** Es steht etwas an: neu, geändert, noch offen, zu entfernen oder ein vermisster Ordner */
+  etwas: boolean;
+  /** Darunter neue, geänderte oder zu entfernende Dateien oder vermisste Ordner */
+  aenderungen: boolean;
+}
+
+export default function Ablauf({
+  onAenderungen,
+}: {
+  /** Ergebnis der letzten Prüfung: Gibt es etwas zu tun, und sind Änderungen dabei (neu, geändert, zu entfernen)? */
+  onAenderungen: (stand: Anstehend) => void;
+}) {
   const [delta, setDelta] = useState<DeltaAntwort | null>(null);
   const [prueft, setPrueft] = useState(false);
   const [fehler, setFehler] = useState<string | null>(null);
@@ -56,7 +69,15 @@ export default function Ablauf({ sichtbar, onAnstehend }: { sichtbar: boolean; o
       setDelta(d);
       setAus(new Set());
       dateienCache.current = new Map();
-      onAnstehend(d.uebersicht.dateien);
+      const aenderungen =
+        d.uebersicht.neu +
+          d.uebersicht.geaendert +
+          d.nur_namen +
+          d.lauf.entfernt +
+          d.lauf.reduziert +
+          d.lauf.vermisst.filter((o) => o.dateien > 0).length >
+        0;
+      onAenderungen({ etwas: aenderungen || d.uebersicht.dateien > 0, aenderungen });
     } catch (e) {
       // Läuft gerade ein Vorgang (etwa unter „Einzelheiten“), bleibt der letzte Stand stehen
       const text = String(e);
@@ -69,19 +90,15 @@ export default function Ablauf({ sichtbar, onAnstehend }: { sichtbar: boolean; o
       pruefLauf.current = false;
       setPrueft(false);
     }
-  }, [onAnstehend]);
+  }, [onAenderungen]);
 
   // Beim Start der Anwendung
   useEffect(() => {
     void pruefen();
   }, [pruefen]);
 
-  // Beim Wechsel in den Reiter, wenn die letzte Prüfung älter als eine Minute ist
-  useEffect(() => {
-    if (!sichtbar || laeuft || prueft || !delta) return;
-    if (Date.now() / 1000 - delta.geprueft > 60) void pruefen();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sichtbar]);
+  // Geprüft wird nur beim Start und mit „Erneut prüfen“ (v0.0.9, Kim): keine unerwarteten
+  // Läufe während der Suche. Beim Wechsel in den Reiter steht der letzte Stand.
 
   // Nach Änderungen an anderer Stelle (Regeln, Einlesen unter „Einzelheiten“)
   useEffect(() => {

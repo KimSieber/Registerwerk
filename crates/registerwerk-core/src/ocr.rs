@@ -624,8 +624,9 @@ where
                 }
                 let pfad = orte.ort_oder_nichts(&auftrag.pfad);
                 let meta = std::fs::metadata(&pfad).ok();
-                let groesse = meta.as_ref().map(crate::dateibaum::lokale_groesse).unwrap_or(0);
-                if auftrag.nur_online || groesse == 0 {
+                let platzhalter = meta.as_ref().is_none_or(|m| crate::dateibaum::platzhalter(&pfad, m));
+                let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                if auftrag.nur_online || platzhalter {
                     let _ = tx.send(Meldung::Uebergangen { nr, veraendert: false });
                     continue;
                 }
@@ -814,7 +815,7 @@ mod tests {
             "leer.pdf" => vec![seite(1, "", 1.0)],
             _ => vec![seite(1, "", 1.0)],
         };
-        Ok(Inhalt { seiten, erstellt: None })
+        Ok(Inhalt { seiten, erstellt: None, grob: false })
     }
 
     /// Rendert jede Seite als 1×1-Bild, dessen Pixel die Seitennummer trägt.

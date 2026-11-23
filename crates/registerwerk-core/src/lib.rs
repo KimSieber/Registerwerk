@@ -8,6 +8,7 @@
 pub mod ablauf;
 pub mod altoffice;
 pub mod bild;
+pub mod biff;
 pub mod dateibaum;
 pub mod datum;
 pub mod dokumente;
@@ -15,6 +16,7 @@ pub mod formate;
 pub mod guete;
 pub mod inhalte;
 pub mod konfiguration;
+pub mod ole;
 pub mod ocr;
 pub mod pdf;
 pub mod regeln;
@@ -24,6 +26,7 @@ pub mod suche;
 pub mod vorschau;
 pub mod textbild;
 pub mod textebene;
+pub mod textformate;
 pub mod vorschauen;
 pub mod woerter;
 
@@ -169,7 +172,8 @@ pub fn verarbeiten(
     e.aufgenommen = register.aufnehmen(&durchlauf)?;
     melden(&Meldung { schritt: S::Aufnehmen, erledigt: 1, gesamt: 1, datei: String::new() });
 
-    let (auswahl, online) = register.auswahl_bilden(ausgeschlossen, ohne_online)?;
+    let gesehen: std::collections::HashSet<&str> = durchlauf.dateien.iter().map(|d| d.pfad.as_str()).collect();
+    let (auswahl, online) = register.auswahl_bilden(ausgeschlossen, ohne_online, Some(&gesehen))?;
     e.ausgewaehlt = auswahl.len() as u64;
     register.auswahl_setzen(Some(auswahl));
     let lauf = (|| -> Ergebnis<()> {

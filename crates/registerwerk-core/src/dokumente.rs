@@ -33,10 +33,93 @@ use crate::pdf::{Inhalt, Seite};
 pub const MAX_ZEICHEN: usize = 500_000;
 
 /// Liest den Text einer Office- oder Textdatei.
+///
+/// Scheitert der Leser an einem alten Office-Format, zieht der grobe
+/// Rückfall lesbare Zeichenfolgen aus der Datei (v0.0.9). Das Ergebnis trägt
+/// dann `grob`.
 pub fn lesen(pfad: &Path) -> Result<Inhalt, String> {
+    // Ein Fehler im Leser einer einzelnen Datei darf den Lauf nicht beenden
+    // (v0.0.9): Die Datei bekommt dann einen Lesefehler.
+    std::panic::catch_unwind(|| lesen_innen(pfad))
+        .unwrap_or_else(|_| Err("Lesefehler: Der Leser ist an dieser Datei gescheitert".into()))
+}
+
+fn lesen_innen(pfad: &Path) -> Result<Inhalt, String> {
     let endung = pfad.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let seiten: Vec<String> = match endung.as_str() {
+    match genau(pfad, &endung) {
+        Ok(inhalt) => Ok(inhalt),
+        // Verschlüsselte Dateien liefern nur Zufallszeichen, kein grober Text
+        Err(meldung) if GROB_ERLAUBT.contains(&endung.as_str()) && !meldung.contains("verschlüsselt") => {
+            let daten = std::fs::read(pfad).map_err(|e| e.to_string())?;
+            match crate::textformate::grob(&daten) {
+                Some(text) => Ok(Inhalt {
+                    seiten: vec![Seite { nr: 1, text: kuerzen(text), bildanteil: 0.0 }],
+                    erstellt: None,
+                    grob: true,
+                }),
+                None => Err(meldung),
+            }
+        }
+        Err(meldung) => Err(meldung),
+    }
+}
+
+/// Formate, für die der grobe Rückfall gilt: die alten Office-Formate und
+/// iWork. PDFs, Bilder und die XML-Formate haben eigene, verlässliche Leser.
+const GROB_ERLAUBT: &[&str] = &["doc", "dot", "xls", "xlt", "ppt", "pps", "pages", "key"];
+
+/// Liest die alten Office-Endungen. Hinter ihnen steckt im Archiv vieles:
+/// neue Formate, RTF, HTML, Text, Excel 2–5, Lotus 1-2-3, Word 2 (v0.0.9).
+fn alt_office(pfad: &Path, endung: &str) -> Result<Vec<String>, String> {
+    use crate::textformate as t;
+    let daten = std::fs::read(pfad).map_err(|e| e.to_string())?;
+    let word = matches!(endung, "doc" | "dot");
+    let tabelle = matches!(endung, "xls" | "xlt");
+    if daten.starts_with(&crate::ole::KENNUNG) {
+        return Ok(match endung {
+            "doc" | "dot" => vec![crate::altoffice::word(pfad)?],
+            "xls" | "xlt" => crate::altoffice::excel(pfad)?,
+            _ => vec![crate::altoffice::powerpoint(pfad)?],
+        });
+    }
+    if daten.starts_with(b"PK\x03\x04") {
+        let mut zip = oeffnen(pfad)?;
+        return if word {
+            Ok(vec![xml_text(&eintrag(&mut zip, "word/document.xml")?, &WORD)?])
+        } else if tabelle {
+            excel(&mut zip)
+        } else {
+            Err("PowerPoint im neuen Format mit alter Endung wird nicht gelesen".into())
+        };
+    }
+    if t::ist_rtf(&daten) {
+        return Ok(vec![t::rtf(&daten)]);
+    }
+    if t::ist_html(&daten) {
+        return Ok(vec![t::html(&daten)]);
+    }
+    if tabelle && crate::biff::ist_lotus(&daten) {
+        return crate::biff::lotus(&daten);
+    }
+    if tabelle && crate::biff::ist_biff(&daten) {
+        return crate::biff::excel_alt(&daten);
+    }
+    if word && crate::altoffice::ist_word2(&daten) {
+        return Ok(vec![crate::altoffice::word2(&daten)?]);
+    }
+    if t::ist_text(&daten) {
+        return Ok(vec![text_datei(&daten)]);
+    }
+    Err(crate::altoffice::VOR_97.into())
+}
+
+fn genau(pfad: &Path, endung: &str) -> Result<Inhalt, String> {
+    let seiten: Vec<String> = match endung {
         "txt" | "md" => vec![text_datei(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
+        "rtf" => vec![crate::textformate::rtf(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
+        "csv" | "tsv" | "log" => vec![text_datei(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
+        "htm" | "html" => vec![crate::textformate::html(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
+        "vcf" => vec![crate::textformate::vcf(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
         "docx" | "docm" | "dotx" | "dotm" => {
             let mut zip = oeffnen(pfad)?;
             vec![xml_text(&eintrag(&mut zip, "word/document.xml")?, &WORD)?]
@@ -52,15 +135,7 @@ pub fn lesen(pfad: &Path) -> Result<Inhalt, String> {
         }
         "xlsx" | "xlsm" | "xltx" | "xltm" => excel(&mut oeffnen(pfad)?)?,
         "pages" | "key" => vec![iwork(&mut oeffnen(pfad)?)?],
-        // Manche Datei mit alter Endung ist in Wahrheit ein neues Format
-        "doc" | "dot" if ist_zip(pfad) => {
-            let mut zip = oeffnen(pfad)?;
-            vec![xml_text(&eintrag(&mut zip, "word/document.xml")?, &WORD)?]
-        }
-        "xls" | "xlt" if ist_zip(pfad) => excel(&mut oeffnen(pfad)?)?,
-        "doc" | "dot" => vec![crate::altoffice::word(pfad)?],
-        "xls" | "xlt" => crate::altoffice::excel(pfad)?,
-        "ppt" | "pps" => vec![crate::altoffice::powerpoint(pfad)?],
+        "doc" | "dot" | "xls" | "xlt" | "ppt" | "pps" => alt_office(pfad, endung)?,
         "odt" | "ods" | "odp" => {
             let mut zip = oeffnen(pfad)?;
             vec![xml_text(&eintrag(&mut zip, "content.xml")?, &OPEN_DOCUMENT)?]
@@ -74,16 +149,11 @@ pub fn lesen(pfad: &Path) -> Result<Inhalt, String> {
             .map(|(i, text)| Seite { nr: i as u32 + 1, text: kuerzen(text.trim().to_string()), bildanteil: 0.0 })
             .collect(),
         erstellt: None,
+        grob: false,
     })
 }
 
 type Zip = zip::ZipArchive<std::fs::File>;
-
-/// Beginnt die Datei wie ein ZIP-Archiv?
-fn ist_zip(pfad: &Path) -> bool {
-    let mut anfang = [0u8; 4];
-    std::fs::File::open(pfad).and_then(|mut d| d.read_exact(&mut anfang)).is_ok() && anfang == *b"PK\x03\x04"
-}
 
 fn oeffnen(pfad: &Path) -> Result<Zip, String> {
     let datei = std::fs::File::open(pfad).map_err(|e| e.to_string())?;
@@ -134,6 +204,8 @@ struct Regeln {
 
 const WORD: Regeln = Regeln { text_in: &[b"t"], absatz: &[b"p", b"tr"], tab: &[b"tab", b"tc"], umbruch: &[b"br", b"cr"] };
 const FOLIE: Regeln = Regeln { text_in: &[b"t"], absatz: &[b"p"], tab: &[b"tab"], umbruch: &[b"br"] };
+const IWORK_09: Regeln =
+    Regeln { text_in: &[b"text-body"], absatz: &[b"p"], tab: &[b"tab"], umbruch: &[b"br", b"lnbr", b"pgbr"] };
 const OPEN_DOCUMENT: Regeln =
     Regeln { text_in: &[b"body"], absatz: &[b"p", b"h", b"table-row"], tab: &[b"tab", b"table-cell"], umbruch: &[b"line-break"] };
 
@@ -208,7 +280,7 @@ fn iwork(zip: &mut Zip) -> Result<String, String> {
         .map(str::to_string)
         .collect();
     if namen.is_empty() {
-        return Err("Pages/Keynote vor 2013 wird nicht gelesen".into());
+        return iwork_09(zip);
     }
     // Document.iwa zuerst, der Rest in Namensfolge
     namen.sort_by_key(|n| (!n.ends_with("/Document.iwa"), n.clone()));
@@ -224,6 +296,23 @@ fn iwork(zip: &mut Zip) -> Result<String, String> {
         }
     }
     Ok(text.replace(['\u{2028}', '\u{2029}'], "\n").replace('\u{fffc}', ""))
+}
+
+/// Pages und Keynote vor 2013 (iWork '09): Der Text steht als XML in
+/// `index.xml` (Pages) oder `index.apxl` (Keynote), wahlweise gepackt (v0.0.9).
+fn iwork_09(zip: &mut Zip) -> Result<String, String> {
+    for name in ["index.xml", "index.apxl", "index.xml.gz", "index.apxl.gz"] {
+        let Ok(daten) = eintrag(zip, name) else { continue };
+        let xml = if name.ends_with(".gz") {
+            let mut aus = Vec::new();
+            flate2::read::GzDecoder::new(&daten[..]).read_to_end(&mut aus).map_err(|e| format!("iWork '09: {e}"))?;
+            aus
+        } else {
+            daten
+        };
+        return xml_text(&xml, &IWORK_09);
+    }
+    Err("Pages/Keynote vor 2013 ohne lesbaren Text".into())
 }
 
 /// IWA: Blöcke aus 1 Byte Typ, 3 Byte Länge (little endian) und Snappy-Daten ohne Rahmen.

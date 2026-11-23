@@ -55,3 +55,51 @@ pub fn anfordern(pfad: &Path) -> Result<(), String> {
 pub fn anfordern(_pfad: &Path) -> Result<(), String> {
     Ok(())
 }
+
+/// Name des erweiterten Attributs, das die klassische Dropbox an ihre
+/// Platzhalter ("nur online") hängt. Gemessen am 22.11.2026 auf Kims MacBook
+/// Air: alle geprüften Platzhalter tragen es, eine lokale leere Datei nicht.
+pub const DROPBOX_PLATZHALTER: &str = "com.dropbox.placeholder";
+
+/// Trägt die Datei das Kennzeichen eines Dropbox-Platzhalters (v0.0.9)?
+/// Nur so lässt sich eine "nur online"-Datei von einer lokalen leeren Datei
+/// unterscheiden: Beide melden 0 Byte. Liest nur das Attribut, lädt nichts.
+#[cfg(target_os = "macos")]
+pub fn dropbox_platzhalter(pfad: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_pfad) = std::ffi::CString::new(pfad.as_os_str().as_bytes()) else { return false };
+    let name = std::ffi::CString::new(DROPBOX_PLATZHALTER).expect("fester Name");
+    // Größe abfragen genügt: -1 heißt "kein solches Attribut" (oder Fehler)
+    let n = unsafe {
+        libc::getxattr(c_pfad.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, libc::XATTR_NOFOLLOW)
+    };
+    n >= 0
+}
+
+/// Unter anderen Systemen gibt es diese Kennzeichnung nicht.
+#[cfg(not(target_os = "macos"))]
+pub fn dropbox_platzhalter(_pfad: &Path) -> bool {
+    false
+}
+
+/// Für Tests: kennzeichnet eine Datei wie einen Platzhalter der Dropbox.
+/// Unter anderen Systemen geschieht nichts, dort gilt jede Datei mit 0 Byte
+/// als Platzhalter.
+#[doc(hidden)]
+#[cfg(target_os = "macos")]
+pub fn dropbox_platzhalter_setzen(pfad: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_pfad = std::ffi::CString::new(pfad.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    let name = std::ffi::CString::new(DROPBOX_PLATZHALTER).expect("fester Name");
+    let wert = [1u8];
+    let n = unsafe {
+        libc::setxattr(c_pfad.as_ptr(), name.as_ptr(), wert.as_ptr().cast(), wert.len(), 0, libc::XATTR_NOFOLLOW)
+    };
+    if n == 0 { Ok(()) } else { Err(std::io::Error::last_os_error().to_string()) }
+}
+
+#[doc(hidden)]
+#[cfg(not(target_os = "macos"))]
+pub fn dropbox_platzhalter_setzen(_pfad: &Path) -> Result<(), String> {
+    Ok(())
+}

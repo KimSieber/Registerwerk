@@ -37,6 +37,10 @@ pub struct InhaltErgebnis {
     pub abgebrochen: bool,
 }
 
+/// Meldung, die v0.0.9 zunächst für lokale leere Dateien speicherte. Seit
+/// dem Fehlerrelease gelten sie als fehlerfrei gelesen, ohne Seiten.
+pub const LEER: &str = "Die Datei ist leer (0 Byte).";
+
 /// Liest die ausstehenden PDFs mit `leser` und schreibt das Ergebnis ins
 /// Register. `fortschritt` wird nach jeder Datei aufgerufen. Ist `abbrechen`
 /// gesetzt, endet der Lauf nach der aktuellen Datei. Bereits Gelesenes bleibt
@@ -58,11 +62,12 @@ pub fn lesen(
             break;
         }
         let pfad = konfig.ort_oder_nichts(&eintrag.pfad);
-        // Vor dem Öffnen noch einmal prüfen: 0 Byte heißt "nur online oder leer".
+        // Vor dem Öffnen noch einmal prüfen, ob die Datei lokal liegt.
         // Öffnen würde den Download auslösen.
         let meta = std::fs::metadata(&pfad).ok();
-        let groesse = meta.as_ref().map(crate::dateibaum::lokale_groesse).unwrap_or(0);
-        if eintrag.nur_online || groesse == 0 {
+        let platzhalter = meta.as_ref().is_none_or(|m| crate::dateibaum::platzhalter(&pfad, m));
+        let groesse = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        if eintrag.nur_online || platzhalter {
             e.nur_online += 1;
         } else {
             let geaendert = meta
@@ -70,7 +75,10 @@ pub fn lesen(
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            let inhalt = leser(&pfad);
+            // Eine lokale leere Datei ist gelesen: kein Fehler, keine Seiten.
+            // Sie steht mit Namen im Register und ist fertig (v0.0.9).
+            let inhalt =
+                if groesse == 0 { Ok(Inhalt { seiten: Vec::new(), erstellt: None, grob: false }) } else { leser(&pfad) };
             match &inhalt {
                 Ok(i) => {
                     e.gelesen += 1;
@@ -108,10 +116,12 @@ mod tests {
                     seite(2, "", 1.0),
                 ],
                 erstellt: Some("D:20190515120000+02'00'".into()),
+                grob: false,
             }),
             _ => Ok(Inhalt {
                 seiten: vec![seite(1, "ÿ§ 3a %$ Ü1 ~~ ¶ q ® 7x ±± ab ¤¤ ½x", 0.0)],
                 erstellt: None,
+                grob: false,
             }),
         }
     }
@@ -123,7 +133,7 @@ mod tests {
         fs::write(a.join("Brief ohne Datum.pdf"), b"%PDF brief").unwrap();
         fs::write(a.join("2020-01-02 Auszug.pdf"), b"%PDF auszug").unwrap();
         fs::write(a.join("kaputt.pdf"), b"kaputt").unwrap();
-        fs::write(a.join("online.pdf"), b"").unwrap();
+        crate::dateibaum::platzhalter_anlegen(&a.join("online.pdf"));
         fs::write(a.join("archiv.zip"), b"nicht lesbar").unwrap();
         // Ast "A" liegt im Ordner A: Die Pfade im Register heißen "A/…"
         let konfig = Konfiguration::mit_ast("A", &tmp.path().join("A"));
