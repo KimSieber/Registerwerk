@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 23.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.0.9). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 24.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.0). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -46,6 +46,7 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 - Anwendung mit eigener Oberfläche für Indizierung, Suche und Anzeige
 - Delta-Lauf: Prüfung beim Öffnen, Auswahl im Ordnerbaum, Verarbeitung durch alle Schritte, Laden von "nur online"-Dateien und Zurückstellen auf "nur online" (seit v0.0.8)
 - Lesen, Suchen und Prüfen ändern das Register nicht. Geschrieben wird nur, wenn eine Datei neu, geändert oder entfernt ist (seit v0.0.9)
+- Verschlüsseltes Register mit einem Schlüssel, den Kim selbst erzeugt und verwahrt, je Gerät im Schlüsselbund (seit v0.1.0)
 
 ### Unterstützte Cloud-Speicher
 
@@ -359,12 +360,15 @@ Die Replikation großer Dateien ist kein Engpass: Leitungen und Laufzeit reichen
 
 ### Verschlüsselung
 
-Das Register wird verschlüsselt, zusätzlich zur Verschlüsselung der Festplatte. Noch nicht umgesetzt: Seit v0.0.7 kann das Register im Cloud-Ordner liegen und ist dort unverschlüsselt. Es enthält den Volltext und die Vorschauen aller Unterlagen.
+Umgesetzt in v0.1.0. Das Register ist verschlüsselt, zusätzlich zur Verschlüsselung der Festplatte. Seit v0.0.7 lag es mit Volltext und Vorschauen unverschlüsselt im Cloud-Ordner.
 
-- Bei der Einrichtung wird ein Kennwort vergeben. Es wird im eigenen Passwortsafe aufbewahrt. Kein Cloud-Schlüsselbund eines Herstellers.
-- Die Datenbanken sind mit einem Zufallsschlüssel verschlüsselt, den das Kennwort schützt. Das Kennwort lässt sich so ändern, ohne das Register neu zu verschlüsseln. **Annahme**
-- Pro Gerät kann der lokale Schlüsselbund des Betriebssystems das Kennwort speichern, ohne Cloud-Abgleich. Das ist abschaltbar, dann fragt das Programm bei jedem Start. **Annahme**
-- Ein verlorenes Kennwort kostet keine Daten. Das Register wird aus den Dateien neu aufgebaut.
+- **Verfahren:** SQLCipher (AES-256). Jede Seite der Datenbank ist für sich verschlüsselt, mit eigenem Zufallswert und Prüfsumme. Suche, Journal und nur lesendes Öffnen bleiben, wie sie sind. Ein neuer Beleg ändert weiter nur wenige Seiten, die Cloud gleicht nur geänderte Blöcke ab.
+- **Schlüssel:** ein fertiger Schlüssel mit 256 Bit (64 Hex-Zeichen). Kim erzeugt ihn selbst auf einem anderen Rechner und verwahrt ihn im eigenen Passwortsafe. Kein Kennwort, keine Schlüsselableitung, kein Salt und keine Schlüsseldatei in Registerwerk (Kim, 24.11.2026).
+- **Je Gerät:** Der Schlüssel liegt im lokalen Schlüsselbund des Betriebssystems, ohne Cloud-Abgleich, ein Eintrag je Register-Ordner. Registerwerk liest ihn beim Start, ohne Abfrage. Eingegeben wird er einmal je Gerät. Fehlt er oder passt er nicht, zeigt die Anwendung nur die Eingabe. Schutzbedarf ist der Verlust der Daten aus der Cloud. Das Gerät selbst schützen Anmeldung und Festplattenverschlüsselung (Kim).
+- **Umstellung** eines unverschlüsselten Registers per Knopf im Datenbank-Symbol, nach erneuter Eingabe des Schlüssels zur Bestätigung. Datei für Datei: verschlüsselte Arbeitskopie außerhalb des Cloud-Ordners, Prüfung (Schlüssel, Integrität, Zeilen je Tabelle), dann Ersetzen in einem Schritt. Die Index-Datenbank zuletzt. Anhaltbar, abbruchsicher, ohne Sicherungskopie. Die Dateinamen bleiben gleich.
+- **Gemischter Zustand:** Ob eine Datei verschlüsselt ist, zeigt ihr Kopf. Unverschlüsselte und verschlüsselte Dateien können nebeneinander liegen. Neue Dateien entstehen verschlüsselt, sobald ein Schlüssel hinterlegt ist.
+- **Ein verlorener Schlüssel** kostet keine Daten. Das Register wird aus den Dateien neu aufgebaut, was bei diesem Bestand viele Stunden dauert.
+- Unverschlüsselt bleiben `regeln.toml` (Ordnernamen) und `textebene.log` (Pfade geänderter PDFs). **Annahme**, dass das genügt.
 
 Die Verschlüsselung schützt das Register. Die Originale im Cloud-Ordner schützt sie nicht.
 
@@ -410,7 +414,7 @@ Aufbau und Bedienung wie Bilderwerk:
 | Anwendung | Tauri 2 mit Rust, lauffähig auf macOS, Windows und Linux | entschieden, im Einsatz seit v0.0.1 |
 | Oberfläche | React mit TypeScript und Vite, Listen mit `react-virtuoso` | entschieden, im Einsatz seit v0.0.1 |
 | Aufbau | Kern als eigene Rust-Bibliothek ohne Oberfläche, die Tauri-Anwendung ist nur eine Hülle darüber | entschieden. Hält den lesenden Teil für eine Web-Oberfläche wiederverwendbar |
-| Datenbank | SQLite, verschlüsselt | entschieden. Bis Stufe 3 unverschlüsselt, der Wechsel auf die verschlüsselnde Variante ist eine Einstellung der Bibliothek |
+| Datenbank | SQLCipher über `rusqlite` (`bundled-sqlcipher`), unter macOS mit CommonCrypto, sonst mit beim Bau übersetztem OpenSSL | entschieden, im Einsatz seit v0.1.0 |
 | Suchindex | SQLite FTS5 mit Trigrammen im Register, Wortliste als Automat (`fst`) | entschieden, im Einsatz seit v0.0.6 |
 | Office, OpenDocument | `zip` und `quick-xml`, eigene Auslese | entschieden, im Einsatz seit v0.0.6 |
 | Pages, Keynote | eigener Leser für die Textspeicher der IWA-Archive, entpackt mit `snap` | entschieden, im Einsatz seit v0.0.6 |
@@ -428,7 +432,7 @@ Aufbau und Bedienung wie Bilderwerk:
 | Platzhalter des File Providers | Kennzeichen `SF_DATALESS` in den Dateiflags | entschieden, seit v0.0.8 |
 | Platzhalter der Dropbox | erweitertes Attribut `com.dropbox.placeholder` (`getxattr` in `registerwerk-macos`) | entschieden, seit v0.0.9 |
 | Build-Ordner | `target/cargo` über `.cargo/config.toml`, damit `cargo clean` den von der Dropbox ausgenommenen Ordner `target` stehen lässt | entschieden, seit v0.0.8 |
-| Zugangsdaten | lokaler Schlüsselbund des Betriebssystems, wie in Stellwerk | Annahme |
+| Schlüssel des Registers | lokaler Schlüsselbund, unter macOS über `security-framework` ohne iCloud. Windows und Linux offen | entschieden, im Einsatz seit v0.1.0 |
 
 Die Oberfläche muss AVIF auf allen Zielsystemen anzeigen. Die Bilder kommen über ein eigenes Protokoll (`vorschau://`) aus dem Register. Unter macOS geprüft in v0.0.3. Windows und Linux sind offen. Wo die eingebettete Browser-Komponente AVIF nicht kann, dekodiert der Rust-Teil das Bild und reicht es weiter.
 
@@ -535,7 +539,7 @@ Der Pilot umfasste bis v0.0.6 nur die zwei Hauptverzeichnisse des aktuellen Arch
 | 5 | OCR für Seiten ohne Text, Zurückschreiben in Scans | Suchqualität auf dem Pilotbestand geprüft |
 | 6 | Erstindizierung des gesamten Archivs in Tranchen | vollständiges Register |
 
-Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird. Stufe 2 folgte in v0.0.6, die Ordnerregeln aus Stufe 3 in v0.0.7, der Delta-Lauf aus Stufe 4 in v0.0.8. Von Stufe 4 fehlen noch die Sperre mit Stand-Zähler und das Erkennen verschobener Dateien, von Stufe 3 die Verschlüsselung.
+Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4 und v0.0.5), damit die Suche am endgültigen Text eingestellt wird. Stufe 2 folgte in v0.0.6, die Ordnerregeln aus Stufe 3 in v0.0.7, der Delta-Lauf aus Stufe 4 in v0.0.8. Von Stufe 4 fehlen noch die Sperre mit Stand-Zähler und das Erkennen verschobener Dateien. Stufe 3 ist mit der Verschlüsselung in v0.1.0 abgeschlossen.
 
 ### Stand der Umsetzung
 
@@ -550,6 +554,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.7 | Ordnerregeln mit Stufen, Reiter "Ordner", feste Einteilung der Dateitypen, Äste und Geräte, Entfernen nur mit Grund und Rückfrage, altes Office, HEIC, Vorschau für Text, Fax-TIFF, Register-Ort wählbar | Stufe 3 ohne Verschlüsselung |
 | v0.0.8 | Reiter "Register" als Delta-Lauf: Prüfung beim Öffnen, Ordnerbaum mit Auswahl, Dateilisten je Zahl, Verarbeiten durch alle Schritte, Laden aus der Dropbox über die Dateikoordination, zurück auf "nur online" mit `onlineonly`. Scheiben 200 MB mit Aufteilen, TIFF mit Farbpalette, Platzhalter des File Providers, Build-Ordner `target/cargo` | Stufe 4 ohne Sperre und Inhalts-Hash |
 | v0.0.9 | Fehlerrelease: Lesen und Prüfen ändern das Register nicht mehr (klassisches Journal, nur lesend geöffnet, Schreiben nur bei Änderung), "nur online" am Attribut der Dropbox, Start mit der Suche und gelber Knopf, toleranter Leser für alte Office-Formate, Excel 2 bis 95, Lotus, Word 2, Pages '09, grober Rückfall, RTF, HTML, csv, tsv, log, vcf. Seit v0.0.9 nutzt Kim Registerwerk produktiv, die nächste Version heißt v0.1.0 | Korrekturen in Stufe 3 und 4 |
+| v0.1.0 | Verschlüsselung des Registers mit SQLCipher, eigener Schlüssel mit 256 Bit im Passwortsafe und je Gerät im Schlüsselbund, Umstellung per Knopf Datei für Datei, Sperre ohne Schlüssel, Prüfung des Dateibaums anhaltbar. Erste Version nach Beginn des produktiven Einsatzes | Stufe 3 abgeschlossen |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -563,11 +568,13 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | `onlineonly` als Beigabe ins Programmpaket legen, mit Lizenztext | mit dem ersten Paket |
-| Reiter "Ordner": statt eigenem „Dateibaum einlesen“ zum Abgleich im Reiter "Register" führen | v0.1.0 |
+| Reiter "Ordner": statt eigenem „Dateibaum einlesen“ zum Abgleich im Reiter "Register" führen | nächste Version |
 | Ohne „zuletzt gesehen“ je Datei: Unterscheidung „anderes Gerät“ gegenüber „gelöscht“ auf dem Mac mini prüfen | mit dem zweiten Gerät |
 | Laden bei Anbietern über den File Provider (Google Drive, OneDrive): löst Lesen den Download aus? | vor der Aufnahme solcher Äste |
 | Hinweis „nur klassische Dropbox vollständig unterstützt“ auf der Webseite | mit der Webseite |
-| Verschlüsselung des Registers. Dringender, seit es im Cloud-Ordner liegt | Stufe 3 |
+| Schlüsselbund unter Windows und Linux, SQLCipher unter Windows bauen | vor dem ersten Windows-Paket |
+| `pdf_pruefen` (`--suche`, `--aufteilen`) für ein verschlüsseltes Register | bei Bedarf |
+| `regeln.toml` und `textebene.log` verschlüsseln? | bei Bedarf |
 | Sperre mit Stand-Zähler für den Gerätewechsel | Stufe 4 |
 | Text aus Numbers. Mehrseitige TIFF. Excel-Mappen mit dem Standardkennwort von Excel (Kim speichert sie bisher als .xlsx neu) | später |
 | Antwortzeiten der Suche im ganzen Archiv | Stufe 6 |
@@ -601,7 +608,9 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Ablage der Vorschauen | in der Datenbank, verteilt auf Scheiben von rund 200 MB (bis v0.0.7: 1 bis 2 GB) | nur Geändertes wird repliziert, Anbieterwechsel bleibt offen |
 | Sicherungskopien | keine | sollen kein Volumen erzeugen, das von Hand bereinigt werden muss |
 | Datum | Dateiname, dann PDF, dann Datei | Dateinamen tragen fast immer ein Datum |
-| Verschlüsselung | Register verschlüsselt, Kennwort im eigenen Passwortsafe | hochsensible Inhalte, keine Bindung an einen Hersteller |
+| Verschlüsselung | Register mit SQLCipher verschlüsselt, fertiger Schlüssel mit 256 Bit von Kim im eigenen Passwortsafe, je Gerät im lokalen Schlüsselbund (v0.1.0) | hochsensible Inhalte, keine Bindung an einen Hersteller. Stärkster Schutz gegen Durchprobieren, keine Schlüsseldatei, die verloren gehen kann |
+| Umstellung auf Verschlüsselung | per Knopf, Datei für Datei mit Prüfung, nach zweiter Eingabe des Schlüssels, gleiche Dateinamen. Erst an einer Kopie geprüft (v0.1.0) | abbruchsicher, kein vertippter Schlüssel. Die Originale liegen ohnehin unverschlüsselt daneben |
+| Prüfung beim Start | lässt sich anhalten, beim Wählen eines Registers und beim Verschlüsseln automatisch (v0.1.0) | blockierte bei 290.000 Dateien das Wählen (Kim) |
 | Betrieb | Erstlauf stationär, danach Delta auf dem Notebook | kein Dauerbetrieb, keine dauerhafte Vollkopie |
 | Systemsuche | nicht angebunden | gesucht wird in Registerwerk |
 | KI | nicht vorgesehen | kein Bedarf |
@@ -672,6 +681,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Scheiben nach Jahr des Dokumentdatums | ein nachträglich gescanntes altes Dokument hätte eine alte Scheibe geändert |
 | Eine einzige große Datenbankdatei | jede Änderung beträfe die ganze Datei, die Arbeitskopie bräuchte doppelten Platz, ein Schaden träfe alles |
 | Suchindex mit Tantivy | eigene Indexdateien außerhalb von SQLite, Fremdkörper bei Verschlüsselung und Replikation |
+| Kennwort, aus dem der Schlüssel abgeleitet wird | Stärke hängt am Kennwort, SQLCipher leitet je Datei neu ab, bei vielen Scheiben spürbar beim Start (v0.1.0) |
+| Zufallsschlüssel in einer Datei neben dem Register, durch ein Kennwort geschützt | eine Datei mehr, deren Verlust das Register verschließt. Der billige Kennwortwechsel ist nur scheinbar sicher (v0.1.0) |
+| Neue Dateinamen bei der Umstellung, damit die unverschlüsselten Stände endgültig aus der Dropbox gelöscht werden können | die Originale liegen ohnehin unverschlüsselt in derselben Dropbox (Kim, v0.1.0) |
+| Schlüssel bei jedem Start eingeben | unpraktisch, und das laufende Herauslesen aus dem Passwortsafe wäre selbst ein Risiko (Kim, v0.1.0) |
 | Zweiter Trigramm-Index über den Text mit Leerraum | doppelte Größe, fand nichts zusätzlich (Messung v0.0.6) |
 | Ordnerwahl über die Suche nach Ordnernamen | der Name allein trägt die Bedeutung oft nicht |
 | Vorschauen im festen Maßstab bezogen auf A4 | falsche Seitengrößen in PDFs machten Belege unlesbar |
@@ -698,7 +711,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
 - `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
-- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien, mit `--aufteilen <Ordner>` eine Probe des Aufteilens der Scheiben an einer Kopie des Registers unter `target/aufteilen_probe/` samt Vergleich jeder Vorschau (v0.0.8). Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
+- `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien, mit `--aufteilen <Ordner>` eine Probe des Aufteilens der Scheiben an einer Kopie des Registers unter `target/aufteilen_probe/` samt Vergleich jeder Vorschau (v0.0.8). `--suche` und `--aufteilen` arbeiten seit v0.1.0 nur mit einem unverschlüsselten Register. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
 - `onlineonly` (fremd, MIT, über Homebrew): stellt Dateien der klassischen Dropbox auf "nur online". Registerwerk ruft es im Delta-Lauf auf, wenn es installiert ist
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

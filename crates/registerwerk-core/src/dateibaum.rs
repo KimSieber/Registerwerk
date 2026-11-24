@@ -295,9 +295,18 @@ fn geaendert_von(meta: &std::fs::Metadata) -> i64 {
 /// Liest alle Ordner, für die eine Regel außer Ausgeschlossen gilt. Der erste
 /// Teil jedes Pfads ist der Ast, sein Ort steht in der Konfiguration.
 pub fn durchlaufen(konfig: &Konfiguration, regeln: &Regeln) -> Durchlauf {
+    durchlaufen_abbrechbar(konfig, regeln, &AtomicBool::new(false)).expect("ohne Abbruch")
+}
+
+/// Wie [`durchlaufen`], lässt sich aber über `abbrechen` anhalten (v0.1.0).
+/// Angehalten gibt es kein Ergebnis: Ein halber Durchlauf würde fehlende
+/// Dateien vortäuschen.
+pub fn durchlaufen_abbrechbar(konfig: &Konfiguration, regeln: &Regeln, abbrechen: &AtomicBool) -> Option<Durchlauf> {
     let mut ergebnis = Durchlauf { regeln: regeln.clone(), geraet: konfig.geraet.clone(), ..Default::default() };
-    let nie = AtomicBool::new(false);
     for (verzeichnis, stufe) in regeln.wurzeln() {
+        if abbrechen.load(Ordering::Relaxed) {
+            return None;
+        }
         let Some(wurzel) = konfig.ort(verzeichnis).filter(|w| w.is_dir()) else {
             ergebnis.fehlende_verzeichnisse.push(verzeichnis.to_string());
             continue;
@@ -341,8 +350,11 @@ pub fn durchlaufen(konfig: &Konfiguration, regeln: &Regeln) -> Durchlauf {
                     });
                 }
             },
-            &nie,
+            abbrechen,
         );
+        if abbrechen.load(Ordering::Relaxed) {
+            return None;
+        }
         // Ein Ordner mit Lesefehlern gilt nicht als vollständig gelesen.
         // Sonst würden die Einträge eines kurzzeitig unlesbaren Unterordners
         // aus dem Register entfernt.
@@ -352,7 +364,7 @@ pub fn durchlaufen(konfig: &Konfiguration, regeln: &Regeln) -> Durchlauf {
             ergebnis.unvollstaendige_verzeichnisse.push(verzeichnis.to_string());
         }
     }
-    ergebnis
+    Some(ergebnis)
 }
 
 /// Zählung je Endung in einem geprüften Ordner.
@@ -599,6 +611,17 @@ mod tests {
         platzhalter_anlegen(&online);
         assert!(!platzhalter(&leer, &fs::metadata(&leer).unwrap()));
         assert!(platzhalter(&online, &fs::metadata(&online).unwrap()));
+    }
+
+    /// Angehaltener Durchlauf liefert nichts (v0.1.0)
+    #[test]
+    fn angehaltener_durchlauf_liefert_nichts() {
+        let tmp = tempfile::tempdir().unwrap();
+        anlegen(tmp.path(), &[("Archiv/Alles/a.pdf", b"abc")]);
+        let regeln = Regeln::voll(&["C/Archiv/Alles"]);
+        assert!(durchlaufen_abbrechbar(&konfig(tmp.path()), &regeln, &AtomicBool::new(true)).is_none());
+        let d = durchlaufen_abbrechbar(&konfig(tmp.path()), &regeln, &AtomicBool::new(false)).unwrap();
+        assert_eq!(d.dateien.len(), 1);
     }
 
     #[test]

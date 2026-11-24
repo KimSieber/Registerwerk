@@ -13,6 +13,7 @@ import {
   scheibenAufteilen,
 } from "./api";
 import { alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
+import Verschluesselung from "./Verschluesselung";
 
 /**
  * Datenbank-Symbol rechts oben (v0.0.7), wie in Bilderwerk: zeigt, wo das Register liegt und wie groß
@@ -29,6 +30,8 @@ export default function Registerinfo() {
   const [haelt, setHaelt] = useState(false);
   const [fortschritt, setFortschritt] = useState<Fortschritt | null>(null);
   const [geteilt, setGeteilt] = useState<AufteilErgebnis | null>(null);
+  // Verschlüsseln (v0.1.0): Feld bleibt offen, solange es läuft
+  const [verschluesselt, setVerschluesselt] = useState(false);
   const feld = useRef<HTMLDivElement>(null);
 
   const laden = useCallback(() => {
@@ -52,7 +55,7 @@ export default function Registerinfo() {
     laden();
     const klick = (e: MouseEvent) => {
       // Während des Aufteilens bleibt das Feld offen
-      if (!teilt && feld.current && !feld.current.contains(e.target as Node)) setOffen(false);
+      if (!teilt && !verschluesselt && feld.current && !feld.current.contains(e.target as Node)) setOffen(false);
     };
     const taste = (e: KeyboardEvent) => e.key === "Escape" && setOffen(false);
     window.addEventListener("mousedown", klick);
@@ -61,7 +64,7 @@ export default function Registerinfo() {
       window.removeEventListener("mousedown", klick);
       window.removeEventListener("keydown", taste);
     };
-  }, [offen, laden, teilt]);
+  }, [offen, laden, teilt, verschluesselt]);
 
   const aufteilen = async () => {
     setTeilt(true);
@@ -128,6 +131,7 @@ export default function Registerinfo() {
               <p className="pfad registerinfo__ort">{info.ordner}</p>
               {!info.gewaehlt && <p className="leise">Standard-Ort im Benutzerprofil dieses Geräts.</p>}
               {!info.vorhanden && <p className="achtung">In diesem Ordner liegt noch kein Register.</p>}
+              {!info.schluessel_fehler && (
               <dl className="registerinfo__zahlen">
                 <dt>Dokumente</dt>
                 <dd>{alsZahl(info.dateien)}</dd>
@@ -158,9 +162,16 @@ export default function Registerinfo() {
                   ))}
                 </dd>
               </dl>
+              )}
             </>
           )}
-          {info && (info.aufteilen_noetig || teilt || geteilt) && (
+          {!info && !fehler && (
+            <p className="leise">
+              <span className="kreisel" /> Kennzahlen werden gelesen …
+            </p>
+          )}
+          <Verschluesselung laeuft={setVerschluesselt} />
+          {info && !info.schluessel_fehler && (info.aufteilen_noetig || teilt || geteilt) && (
             <div className="registerinfo__frage">
               {teilt ? (
                 <>

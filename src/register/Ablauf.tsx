@@ -11,6 +11,7 @@ import {
   deltaDateien,
   deltaListe,
   deltaPruefen,
+  pruefungAnhalten,
   geaendertMelden,
   inhalteAbbrechen,
   ladenUeberspringen,
@@ -82,9 +83,11 @@ export default function Ablauf({
       // Läuft gerade ein Vorgang (etwa unter „Einzelheiten“), bleibt der letzte Stand stehen
       const text = String(e);
       setFehler(
-        text.includes("läuft")
-          ? "Nicht geprüft: Unter „Einzelheiten“ läuft gerade ein Schritt. Danach erneut prüfen."
-          : text,
+        text.includes("angehalten")
+          ? "Prüfung angehalten. Mit „Erneut prüfen“ neu starten."
+          : text.includes("läuft")
+            ? "Nicht geprüft: Unter „Einzelheiten“ läuft gerade ein Schritt. Danach erneut prüfen."
+            : text,
       );
     } finally {
       pruefLauf.current = false;
@@ -187,9 +190,15 @@ export default function Ablauf({
                   : "Noch nicht geprüft."}
             </p>
           </div>
-          <button className="knopf knopf--leise" onClick={() => void pruefen()} disabled={prueft || laeuft}>
-            Erneut prüfen
-          </button>
+          {prueft ? (
+            <button className="knopf knopf--leise" onClick={() => void pruefungAnhalten()}>
+              <span className="kreisel" /> Prüfung anhalten
+            </button>
+          ) : (
+            <button className="knopf knopf--leise" onClick={() => void pruefen()} disabled={laeuft}>
+              Erneut prüfen
+            </button>
+          )}
         </div>
 
         {(fehler || einlesenFehler) && <p className="achtung">{fehler ?? einlesenFehler}</p>}

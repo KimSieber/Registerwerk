@@ -392,6 +392,56 @@ export interface RegisterInfo {
   scheibe_grenze: number;
   /** Eine Scheibe liegt über der Grenze oder ein Aufteilen wurde angehalten */
   aufteilen_noetig: boolean;
+  /** Verschlüsselung der Dateien (v0.1.0) */
+  verschluesselung: VerschluesselungStand;
+  /** Dieses System speichert den Schlüssel im Schlüsselbund */
+  schluessel_dauerhaft: boolean;
+  /** Das Register ließ sich nicht öffnen: Schlüssel fehlt oder passt nicht */
+  schluessel_fehler: string | null;
+}
+
+export type DateiZustand = "fehlt" | "unverschluesselt" | "verschluesselt";
+
+/** Stand der Verschlüsselung (v0.1.0) */
+export interface VerschluesselungStand {
+  /** Index-Datenbank, wird als Letztes umgestellt. `null`: Ordner fehlt */
+  index: DateiZustand | null;
+  dateien: number;
+  verschluesselt: number;
+  unverschluesselt: number;
+  unverschluesselt_bytes: number;
+  unverschluesselt_liste: string[];
+  schluessel_hinterlegt: boolean;
+  /** Arbeitskopien einer abgebrochenen Umstellung im Register-Ordner */
+  arbeitskopien: string[];
+}
+
+export interface UmstellErgebnis {
+  dauer_ms: number;
+  dateien: number;
+  bytes: number;
+  abgebrochen: boolean;
+}
+
+/** Schneller Stand der Verschlüsselung, ohne das Register auszuwerten (v0.1.0) */
+export interface SchluesselStand {
+  verschluesselung: VerschluesselungStand;
+  /** Dieses System speichert den Schlüssel im Schlüsselbund */
+  schluessel_dauerhaft: boolean;
+  /** Das Register lässt sich nicht lesen: Schlüssel fehlt oder passt nicht */
+  schluessel_fehler: string | null;
+}
+export const schluesselStand = () => invoke<SchluesselStand>("schluessel_stand");
+/** Hält die Prüfung des Dateibaums an (v0.1.0) */
+export const pruefungAnhalten = () => invoke<void>("pruefung_anhalten");
+
+/** Schlüssel prüfen, im Schlüsselbund ablegen und hinterlegen (v0.1.0) */
+export const schluesselEingeben = (text: string) => invoke<void>("schluessel_eingeben", { text });
+export const schluesselEntfernen = () => invoke<void>("schluessel_entfernen");
+export function registerVerschluesseln(bestaetigung: string, beiFortschritt: (f: Fortschritt) => void) {
+  const kanal = new Channel<Fortschritt>();
+  kanal.onmessage = beiFortschritt;
+  return invoke<UmstellErgebnis>("register_verschluesseln", { bestaetigung, kanal });
 }
 
 /** Ergebnis des Aufteilens zu großer Scheiben */

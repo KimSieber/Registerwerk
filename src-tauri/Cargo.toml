@@ -16,3 +16,7 @@ serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 # Auswahldialog des Systems für "Ordner hinzufügen" (v0.0.7)
 tauri-plugin-dialog = "2"
+
+# Schlüssel des Registers im Schlüsselbund von macOS (v0.1.0)
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"

@@ -4,6 +4,8 @@
 //! Tauri-Hülle um den Kern. Enthält keine Fachlogik, nur die Befehle für die
 //! Oberfläche und die Suche nach Konfiguration und Register-Ordner.
 
+mod schluesselbund;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -12,8 +14,9 @@ use std::time::{Duration, Instant};
 use registerwerk_core::{
     AblaufErgebnis, AufteilErgebnis, Anfrage, Delta, DeltaDatei, DeltaUebersicht, Meldung, DateiDetails, DateiVorschau, Fortschritt, InhaltErgebnis, Konfiguration, LaufErgebnis, OcrErgebnis,
     OnlineOrdner, OrdnerPruefung, Regeln, Register, RegisterStand, SeitenText, Stufe, SuchErgebnis, SucheAngaben, SucheAufbau,
-    TextebeneErgebnis, VorschauErgebnis,
+    TextebeneErgebnis, UmstellErgebnis, VerschluesselungStand, VorschauErgebnis,
 };
+use registerwerk_core::verschluesselung::{self as vs, Schluessel};
 use serde::{Deserialize, Serialize};
 use tauri::http::{Request, Response, StatusCode};
 use tauri::ipc::Channel;
@@ -30,9 +33,24 @@ struct Lesen {
     /// Die Belegung gehört der Prüfung (Deltaanalyse). Andere Vorgänge
     /// warten dann, statt abgewiesen zu werden.
     prueft: AtomicBool,
+    /// Die Prüfung anhalten (v0.1.0), etwa wenn Kim ein anderes Register wählt.
+    pruefung_abbrechen: AtomicBool,
 }
 
 impl Lesen {
+    /// Hält eine laufende Prüfung an und wartet, bis sie endet (v0.1.0).
+    /// Andere Vorgänge bleiben unberührt.
+    async fn pruefung_anhalten(&self) {
+        if !self.prueft.load(Ordering::SeqCst) {
+            return;
+        }
+        self.pruefung_abbrechen.store(true, Ordering::SeqCst);
+        let start = Instant::now();
+        while self.prueft.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(60) {
+            let _ = tauri::async_runtime::spawn_blocking(|| std::thread::sleep(Duration::from_millis(50))).await;
+        }
+    }
+
     /// Belegt das Register für einen schreibenden Vorgang. Läuft gerade nur
     /// die Prüfung beim Öffnen (Deltaanalyse), wird auf sie gewartet: Sie
     /// ändert nichts und ist meist nach wenigen Sekunden fertig.
@@ -275,9 +293,34 @@ fn tessdata_ordner(app: &AppHandle) -> Option<PathBuf> {
 }
 
 fn register_ordner(app: &AppHandle, konfig: &Konfiguration) -> Result<PathBuf, String> {
-    match &konfig.register_ordner {
-        Some(ordner) => Ok(ordner.clone()),
-        None => app.path().app_data_dir().map_err(|e| e.to_string()),
+    let ordner = match &konfig.register_ordner {
+        Some(ordner) => ordner.clone(),
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    };
+    schluessel_laden(&ordner);
+    Ok(ordner)
+}
+
+/// Holt den Schlüssel des Registers einmal aus dem Schlüsselbund und
+/// hinterlegt ihn im Kern (v0.1.0). Ohne Eintrag geschieht nichts, dann
+/// bleiben verschlüsselte Dateien unlesbar, bis Kim den Schlüssel eingibt.
+fn schluessel_laden(ordner: &std::path::Path) {
+    static VERSUCHT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    if vs::hinterlegt(ordner) {
+        return;
+    }
+    let Ok(mut versucht) = VERSUCHT.lock() else { return };
+    if versucht.iter().any(|o| o == ordner) {
+        return;
+    }
+    versucht.push(ordner.to_path_buf());
+    match schluesselbund::lesen(ordner) {
+        Ok(Some(text)) => match Schluessel::aus_text(&text) {
+            Ok(s) => vs::hinterlegen(ordner, s),
+            Err(f) => eprintln!("Schlüsselbund: {f}"),
+        },
+        Ok(None) => {}
+        Err(f) => eprintln!("{f}"),
     }
 }
 
@@ -384,11 +427,18 @@ async fn delta_pruefen(app: AppHandle, zustand: State<'_, Lesen>) -> Result<Delt
         return Err("Es läuft gerade ein Vorgang.".into());
     }
     zustand.prueft.store(true, Ordering::SeqCst);
+    zustand.pruefung_abbrechen.store(false, Ordering::SeqCst);
     let app2 = app.clone();
     let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
         let regeln = regeln_laden(&konfig, &ordner)?;
         let mut register = Register::oeffnen_lesend(&ordner).map_err(|e| e.to_string())?;
-        let delta = registerwerk_core::delta_pruefen(&konfig, &regeln, &mut register).map_err(|e| e.to_string())?;
+        let start = Instant::now();
+        let delta =
+            registerwerk_core::delta_pruefen_abbrechbar(&konfig, &regeln, &mut register, &zustand.pruefung_abbrechen)
+                .map_err(|e| e.to_string())?;
+        eprintln!("Prüfung: {} ms{}", start.elapsed().as_millis(), if delta.is_none() { ", angehalten" } else { "" });
+        let delta = delta.ok_or_else(|| PRUEFUNG_ANGEHALTEN.to_string())?;
         let antwort = DeltaAntwort {
             lauf: delta.lauf.clone(),
             uebersicht: delta.uebersicht(),
@@ -408,6 +458,16 @@ async fn delta_pruefen(app: AppHandle, zustand: State<'_, Lesen>) -> Result<Delt
     zustand.prueft.store(false, Ordering::SeqCst);
     zustand.laeuft.store(false, Ordering::SeqCst);
     ergebnis?
+}
+
+/// Meldung, wenn die Prüfung angehalten wurde. Die Oberfläche erkennt sie.
+const PRUEFUNG_ANGEHALTEN: &str = "Prüfung angehalten.";
+
+/// Hält die laufende Prüfung des Dateibaums an (v0.1.0).
+#[tauri::command]
+async fn pruefung_anhalten(zustand: State<'_, Lesen>) -> Result<(), String> {
+    zustand.pruefung_anhalten().await;
+    Ok(())
 }
 
 /// Die Dateien der letzten Deltaprüfung direkt in `ordner`.
@@ -1108,6 +1168,12 @@ struct RegisterInfo {
     /// Mindestens eine Scheibe liegt über der Grenze oder ein Aufteilen
     /// wurde angehalten.
     aufteilen_noetig: bool,
+    /// Verschlüsselung der Dateien (v0.1.0).
+    verschluesselung: VerschluesselungStand,
+    /// Speichert dieses System den Schlüssel im Schlüsselbund?
+    schluessel_dauerhaft: bool,
+    /// Das Register ließ sich nicht öffnen: Schlüssel fehlt oder passt nicht.
+    schluessel_fehler: Option<String>,
 }
 
 fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result<RegisterInfo, String> {
@@ -1126,7 +1192,12 @@ fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result
         regeln: 0,
         scheibe_grenze: registerwerk_core::register::SCHEIBE_GRENZE,
         aufteilen_noetig: false,
+        verschluesselung: VerschluesselungStand::default(),
+        schluessel_dauerhaft: schluesselbund::DAUERHAFT,
+        schluessel_fehler: None,
     };
+    schluessel_laden(ordner);
+    info.verschluesselung = vs::stand(ordner).map_err(|e| e.to_string())?;
     if let Ok(eintraege) = std::fs::read_dir(ordner) {
         for e in eintraege.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -1140,7 +1211,14 @@ fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result
         }
     }
     if info.vorhanden {
-        let r = Register::oeffnen_lesend(ordner).map_err(|e| e.to_string())?;
+        let r = match Register::oeffnen_lesend(ordner) {
+            Ok(r) => r,
+            Err(f @ (registerwerk_core::Fehler::SchluesselFehlt | registerwerk_core::Fehler::SchluesselFalsch)) => {
+                info.schluessel_fehler = Some(f.to_string());
+                return Ok(info);
+            }
+            Err(f) => return Err(f.to_string()),
+        };
         let stand = r.stand().map_err(|e| e.to_string())?;
         info.dateien = stand.dateien;
         info.seiten = stand.inhalt.seiten;
@@ -1202,6 +1280,129 @@ async fn scheiben_aufteilen(
     ergebnis?
 }
 
+/// Stand der Verschlüsselung, schnell und ohne das Register auszuwerten
+/// (v0.1.0): liest die Dateiköpfe und, wenn die Index-Datenbank
+/// verschlüsselt ist, eine Seite mit dem hinterlegten Schlüssel. Für die
+/// Sperre beim Start und den Kasten im Datenbank-Symbol.
+#[derive(Serialize)]
+struct SchluesselStand {
+    verschluesselung: VerschluesselungStand,
+    schluessel_dauerhaft: bool,
+    /// Das Register lässt sich nicht lesen: Schlüssel fehlt oder passt nicht.
+    schluessel_fehler: Option<String>,
+}
+
+#[tauri::command]
+async fn schluessel_stand(app: AppHandle) -> Result<SchluesselStand, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let verschluesselung = vs::stand(&ordner).map_err(|e| e.to_string())?;
+        let mut schluessel_fehler = None;
+        if verschluesselung.index == Some(vs::Zustand::Verschluesselt) {
+            schluessel_fehler = match vs::index_lesbar(&ordner) {
+                Ok(()) => None,
+                Err(f @ (registerwerk_core::Fehler::SchluesselFehlt | registerwerk_core::Fehler::SchluesselFalsch)) => {
+                    Some(f.to_string())
+                }
+                Err(f) => return Err(f.to_string()),
+            };
+        }
+        Ok(SchluesselStand { verschluesselung, schluessel_dauerhaft: schluesselbund::DAUERHAFT, schluessel_fehler })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Nimmt den Schlüssel des Registers entgegen (v0.1.0): prüft das Format,
+/// bei einem verschlüsselten Register auch, ob er passt, legt ihn im
+/// Schlüsselbund dieses Geräts ab und hinterlegt ihn im Kern.
+#[tauri::command]
+async fn schluessel_eingeben(app: AppHandle, text: String) -> Result<(), String> {
+    // Ändert keine Datei des Registers, darf also neben jedem Vorgang laufen
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let schluessel = Schluessel::aus_text(&text).map_err(|e| e.to_string())?;
+        drop(text);
+        if vs::schluessel_pruefen(&ordner, &schluessel).map_err(|e| e.to_string())? == Some(false) {
+            return Err(registerwerk_core::Fehler::SchluesselFalsch.to_string());
+        }
+        let gespeichert = schluesselbund::speichern(&ordner, &schluessel.als_text());
+        vs::hinterlegen(&ordner, schluessel);
+        leser_zuruecksetzen(&app2);
+        // Auf Systemen ohne Schlüsselbund gilt der Schlüssel bis zum Beenden
+        if schluesselbund::DAUERHAFT { gespeichert } else { Ok(()) }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Entfernt den Schlüssel von diesem Gerät: aus dem Schlüsselbund und aus
+/// dem Arbeitsspeicher. Das Register selbst bleibt unverändert.
+#[tauri::command]
+async fn schluessel_entfernen(app: AppHandle, zustand: State<'_, Lesen>) -> Result<(), String> {
+    zustand.pruefung_anhalten().await;
+    if zustand.laeuft.load(Ordering::SeqCst) {
+        return Err("Es läuft gerade ein Vorgang. Bitte erst abwarten.".into());
+    }
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    schluesselbund::entfernen(&ordner)?;
+    vs::vergessen(&ordner);
+    leser_zuruecksetzen(&app);
+    Ok(())
+}
+
+/// Verschlüsselt alle noch unverschlüsselten Dateien des Registers (v0.1.0).
+/// `bestaetigung`: der Schlüssel ein zweites Mal, damit kein vertippter
+/// Schlüssel das Register verschließt. Meldet den Fortschritt über `kanal`,
+/// anhalten über `inhalte_abbrechen`, der nächste Aufruf macht weiter.
+#[tauri::command]
+async fn register_verschluesseln(
+    app: AppHandle,
+    zustand: State<'_, Lesen>,
+    bestaetigung: String,
+    kanal: Channel<Fortschritt>,
+) -> Result<UmstellErgebnis, String> {
+    let (_, konfig) = konfig_laden(&app)?;
+    let ordner = register_ordner(&app, &konfig)?;
+    let schluessel = Schluessel::aus_text(&bestaetigung).map_err(|e| e.to_string())?;
+    drop(bestaetigung);
+    if !vs::hinterlegt(&ordner) {
+        return Err(registerwerk_core::Fehler::SchluesselFehlt.to_string());
+    }
+    if !vs::stimmt_ueberein(&ordner, &schluessel) {
+        return Err("Die Bestätigung stimmt nicht mit dem hinterlegten Schlüssel überein.".into());
+    }
+    drop(schluessel);
+    // Arbeitskopien außerhalb des Cloud-Ordners, auf demselben Laufwerk
+    let arbeit = app.path().app_cache_dir().ok().map(|o| o.join("verschluesseln"));
+    zustand.pruefung_anhalten().await;
+    zustand.belegen().await?;
+    zustand.abbrechen.store(false, Ordering::SeqCst);
+    // Die Suche hält Index und Scheiben zum Lesen offen
+    leser_zuruecksetzen(&app);
+    let app2 = app.clone();
+    let ergebnis = tauri::async_runtime::spawn_blocking(move || {
+        let zustand = app2.state::<Lesen>();
+        let mut zuletzt = Instant::now() - Duration::from_secs(1);
+        vs::umstellen(&ordner, arbeit.as_deref(), &zustand.abbrechen, |f| {
+            if f.erledigt == f.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {
+                zuletzt = Instant::now();
+                let _ = kanal.send(f.clone());
+            }
+        })
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string());
+    zustand.laeuft.store(false, Ordering::SeqCst);
+    leser_zuruecksetzen(&app);
+    ergebnis?
+}
+
 /// Wählt einen anderen Ordner für das Register, etwa nachdem es verschoben
 /// wurde. Liegt dort noch keines, geschieht ohne `bestaetigt` nichts: Die
 /// Oberfläche fragt erst nach, ob dort ein neues, leeres entstehen soll.
@@ -1213,6 +1414,8 @@ async fn register_waehlen(
     ordner: String,
     bestaetigt: bool,
 ) -> Result<(RegisterInfo, bool), String> {
+    // Die Prüfung beim Start gilt dem bisherigen Register
+    zustand.pruefung_anhalten().await;
     if zustand.laeuft.load(Ordering::SeqCst) {
         return Err("Es läuft gerade ein Vorgang. Bitte erst abwarten.".into());
     }
@@ -1350,6 +1553,11 @@ fn main() {
             register_info,
             register_waehlen,
             scheiben_aufteilen,
+            schluessel_stand,
+            schluessel_eingeben,
+            schluessel_entfernen,
+            pruefung_anhalten,
+            register_verschluesseln,
             register_im_finder,
             ordner_waehlen,
             ast_hinzufuegen,

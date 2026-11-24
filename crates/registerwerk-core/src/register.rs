@@ -313,6 +313,7 @@ impl Register {
         std::fs::create_dir_all(ordner)?;
         let pfad = ordner.join(DATEINAME);
         let db = Connection::open(&pfad)?;
+        crate::verschluesselung::verbinden(&db, &pfad)?;
         Self::einrichten(db, Some(pfad))
     }
 
@@ -326,6 +327,7 @@ impl Register {
             return Ok(true);
         }
         let db = Connection::open(&pfad)?;
+        crate::verschluesselung::verbinden(&db, &pfad)?;
         db.busy_timeout(std::time::Duration::ZERO)?;
         journal_umstellen(&db, 40)?;
         let modus: String = db.query_row("PRAGMA journal_mode", [], |z| z.get(0))?;
@@ -341,11 +343,12 @@ impl Register {
         if !pfad.is_file() {
             return Err(crate::Fehler::Konfiguration("Noch kein Register vorhanden.".into()));
         }
-        let lesend = || -> rusqlite::Result<Connection> {
+        let lesend = || -> Ergebnis<Connection> {
             let db = Connection::open_with_flags(
                 &pfad,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,
             )?;
+            crate::verschluesselung::verbinden(&db, &pfad)?;
             db.busy_timeout(std::time::Duration::from_millis(WARTEN_MS))?;
             // Hilfstabellen der Prüfung nur im Arbeitsspeicher
             db.pragma_update(None, "temp_store", "MEMORY")?;

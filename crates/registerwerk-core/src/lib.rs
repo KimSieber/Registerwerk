@@ -27,6 +27,7 @@ pub mod vorschau;
 pub mod textbild;
 pub mod textebene;
 pub mod textformate;
+pub mod verschluesselung;
 pub mod vorschauen;
 pub mod woerter;
 
@@ -43,6 +44,7 @@ pub use register::{LaufErgebnis, OnlineOrdner, OrdnerBestand, Register, Register
 pub use scheiben::{AufteilErgebnis, DateiVorschau, VorschauStand};
 pub use suche::{Anfrage, DateiDetails, SuchErgebnis, SucheAngaben, SucheAufbau, Treffer, Zaehler};
 pub use textebene::{TextebeneErgebnis, TextebeneStand};
+pub use verschluesselung::{Schluessel, UmstellErgebnis, VerschluesselungStand};
 pub use vorschauen::{Messung, VorschauErgebnis};
 
 /// Fehler des Kerns.
@@ -56,6 +58,13 @@ pub enum Fehler {
     Datenbank(#[from] rusqlite::Error),
     #[error("{0}")]
     Pdf(String),
+    /// Das Register ist verschlüsselt, für seinen Ordner ist kein Schlüssel hinterlegt (v0.1.0).
+    #[error("Das Register ist verschlüsselt. Auf diesem Gerät ist noch kein Schlüssel hinterlegt.")]
+    SchluesselFehlt,
+    #[error("Der Schlüssel passt nicht zum Register.")]
+    SchluesselFalsch,
+    #[error("Schlüssel ungültig: {0}")]
+    SchluesselUngueltig(String),
 }
 
 pub type Ergebnis<T> = Result<T, Fehler>;
@@ -134,6 +143,20 @@ pub fn dateibaum_einlesen(
 pub fn delta_pruefen(konfig: &Konfiguration, regeln: &Regeln, register: &mut Register) -> Ergebnis<Delta> {
     let durchlauf = dateibaum::durchlaufen(konfig, regeln);
     register.delta_pruefen(&durchlauf)
+}
+
+/// Wie [`delta_pruefen`], lässt sich während des Durchlaufs über `abbrechen`
+/// anhalten (v0.1.0). Angehalten: `None`.
+pub fn delta_pruefen_abbrechbar(
+    konfig: &Konfiguration,
+    regeln: &Regeln,
+    register: &mut Register,
+    abbrechen: &AtomicBool,
+) -> Ergebnis<Option<Delta>> {
+    match dateibaum::durchlaufen_abbrechbar(konfig, regeln, abbrechen) {
+        Some(durchlauf) => register.delta_pruefen(&durchlauf).map(Some),
+        None => Ok(None),
+    }
 }
 
 /// So lange wartet das Laden höchstens, ohne dass eine neue Datei aus der

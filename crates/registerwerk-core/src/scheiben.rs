@@ -346,16 +346,23 @@ impl Register {
             // Nur lesend (Suche, Anzeige): Die Scheibe bleibt unberührt (v0.0.9)
             if self.nur_lesen {
                 let ordner = self.ordner().ok_or_else(|| crate::Fehler::Konfiguration("Register ohne Ordner".into()))?;
+                let pfad = ordner.join(dateiname(nr));
                 let db = Connection::open_with_flags(
-                    ordner.join(dateiname(nr)),
+                    &pfad,
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )?;
+                crate::verschluesselung::verbinden(&db, &pfad)?;
                 db.busy_timeout(std::time::Duration::from_secs(15))?;
                 platz.insert(db);
                 return Ok(RefMut::map(offen, |o| o.get_mut(&nr).expect("eben geöffnet")));
             }
             let db = match self.ordner() {
-                Some(ordner) => Connection::open(ordner.join(dateiname(nr)))?,
+                Some(ordner) => {
+                    let pfad = ordner.join(dateiname(nr));
+                    let db = Connection::open(&pfad)?;
+                    crate::verschluesselung::verbinden(&db, &pfad)?;
+                    db
+                }
                 None => Connection::open_in_memory()?,
             };
             db.busy_timeout(std::time::Duration::from_secs(15))?;
@@ -696,6 +703,86 @@ mod tests {
 
     fn bilder_in(r: &Register, nr: i64) -> i64 {
         r.scheibe(nr).unwrap().query_row("SELECT count(*) FROM vorschau", [], |z| z.get(0)).unwrap()
+    }
+
+    /// Ganzes Register auf der Platte verschlüsseln (v0.1.0): Index mit
+    /// Suchindex und zwei Scheiben, Anhalten und Fortsetzen, danach Lesen,
+    /// Suchen und Ergänzen mit dem Schlüssel und Ablehnen ohne ihn.
+    #[test]
+    fn register_verschluesseln() {
+        use crate::verschluesselung::{self as vs, Schluessel, Zustand};
+        let tmp = tempfile::tempdir().unwrap();
+        let arbeit = tempfile::tempdir().unwrap();
+        let ordner = tmp.path();
+        let (a, b);
+        {
+            let mut r = Register::oeffnen(ordner).unwrap();
+            r.scheibe_grenze_setzen(15);
+            r.abgleichen(&durchlauf(&["A/Kontoauszug.pdf", "A/Rechnung.pdf"])).unwrap();
+            a = id(&r, "A/Kontoauszug.pdf");
+            b = id(&r, "A/Rechnung.pdf");
+            r.vorschauen_speichern(a, 1, 100, &Ok(vec![v(10)])).unwrap();
+            r.vorschauen_speichern(b, 1, 100, &Ok(vec![v(11)])).unwrap();
+            r.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).unwrap();
+            assert_eq!(r.scheiben_dateien().unwrap().len(), 2);
+        }
+        let vorher = vs::stand(ordner).unwrap();
+        assert_eq!((vorher.dateien, vorher.unverschluesselt, vorher.index), (3, 3, Some(Zustand::Unverschluesselt)));
+
+        // Ohne Schlüssel keine Umstellung
+        assert!(matches!(vs::umstellen(ordner, None, &AtomicBool::new(false), |_| {}), Err(crate::Fehler::SchluesselFehlt)));
+        let schluessel = Schluessel::aus_text(&"0123456789abcdef".repeat(4)).unwrap();
+        vs::hinterlegen(ordner, schluessel.clone());
+        assert_eq!(vs::schluessel_pruefen(ordner, &schluessel).unwrap(), None);
+
+        // Sofort angehalten: nichts geändert
+        let e = vs::umstellen(ordner, Some(arbeit.path()), &AtomicBool::new(true), |_| {}).unwrap();
+        assert!(e.abgebrochen);
+        assert_eq!(vs::stand(ordner).unwrap().unverschluesselt, 3);
+
+        let mut meldungen = Vec::new();
+        let e = vs::umstellen(ordner, Some(arbeit.path()), &AtomicBool::new(false), |f| meldungen.push(f.datei.clone())).unwrap();
+        assert_eq!((e.dateien, e.abgebrochen), (3, false));
+        assert_eq!(meldungen[..3], ["vorschau-0001.db", "vorschau-0002.db", "register.db"]);
+        let nachher = vs::stand(ordner).unwrap();
+        assert!(nachher.vollstaendig());
+        assert!(nachher.arbeitskopien.is_empty());
+        assert_eq!(std::fs::read_dir(arbeit.path()).unwrap().count(), 0);
+        for p in std::fs::read_dir(ordner).unwrap() {
+            let roh = std::fs::read(p.unwrap().path()).unwrap();
+            assert!(!roh.windows(11).any(|w| w == b"Kontoauszug"));
+        }
+        assert_eq!(vs::schluessel_pruefen(ordner, &schluessel).unwrap(), Some(true));
+        let falsch = Schluessel::aus_text(&"fedcba9876543210".repeat(4)).unwrap();
+        assert_eq!(vs::schluessel_pruefen(ordner, &falsch).unwrap(), Some(false));
+        // Ein zweiter Lauf hat nichts mehr zu tun
+        assert_eq!(vs::umstellen(ordner, None, &AtomicBool::new(false), |_| {}).unwrap().dateien, 0);
+
+        {
+            let r = Register::oeffnen_lesend(ordner).unwrap();
+            assert_eq!(r.vorschau(a, 1).unwrap().unwrap().len(), 10);
+            assert_eq!(r.vorschau(b, 1).unwrap().unwrap().len(), 11);
+            let anfrage = crate::Anfrage { text: "Kontoauszug".into(), ..Default::default() };
+            assert_eq!(r.suchen(&anfrage).unwrap().gesamt, 1);
+        }
+        {
+            // Neue Scheibe entsteht verschlüsselt
+            let mut r = Register::oeffnen(ordner).unwrap();
+            r.scheibe_grenze_setzen(15);
+            r.abgleichen(&durchlauf(&["A/Kontoauszug.pdf", "A/Rechnung.pdf", "A/Neu.pdf"])).unwrap();
+            let c = id(&r, "A/Neu.pdf");
+            r.vorschauen_speichern(c, 1, 100, &Ok(vec![v(12)])).unwrap();
+            assert_eq!(r.scheiben_dateien().unwrap().len(), 3);
+        }
+        assert_eq!(vs::zustand(&ordner.join(dateiname(3))).unwrap(), Zustand::Verschluesselt);
+        assert!(vs::stand(ordner).unwrap().vollstaendig());
+
+        vs::vergessen(ordner);
+        assert!(matches!(Register::oeffnen_lesend(ordner), Err(crate::Fehler::SchluesselFehlt)));
+        assert!(matches!(Register::oeffnen(ordner), Err(crate::Fehler::SchluesselFehlt)));
+        vs::hinterlegen(ordner, falsch);
+        assert!(matches!(Register::oeffnen_lesend(ordner), Err(crate::Fehler::SchluesselFalsch)));
+        vs::vergessen(ordner);
     }
 
     #[test]

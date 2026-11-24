@@ -111,8 +111,9 @@ die geladenen Dateien lokal.
 
 - **Anwendung:** Tauri (Rust) mit Web-Oberfläche, lauffähig auf macOS, Windows
   und Linux
-- **Register:** SQLite im klassischen Journal, Suchindex mit FTS5 und Trigrammen,
-  verschlüsselt (ab Stufe 3)
+- **Register:** SQLCipher (verschlüsseltes SQLite) im klassischen Journal,
+  Suchindex mit FTS5 und Trigrammen. Der Schlüssel (256 Bit) wird selbst erzeugt
+  und verwahrt und liegt je Gerät im Schlüsselbund
 - **PDF:** PDFium für Text und Rendering
 - **OCR:** Tesseract, nur für Seiten ohne Text
 - **Weitere Formate:** Text aus Word, Excel, PowerPoint (auch doc, xls, ppt bis
@@ -135,7 +136,8 @@ in der Entwicklungsdokumentation unter `docs/`:
 [v0.0.6](docs/v0.0.6%20Entwicklungsdokumentation.md),
 [v0.0.7](docs/v0.0.7%20Entwicklungsdokumentation.md),
 [v0.0.8](docs/v0.0.8%20Entwicklungsdokumentation.md),
-[v0.0.9](docs/v0.0.9%20Entwicklungsdokumentation.md).
+[v0.0.9](docs/v0.0.9%20Entwicklungsdokumentation.md),
+[v0.1.0](docs/v0.1.0%20Entwicklungsdokumentation.md).
 
 ## Aufbau des Repos
 
@@ -211,6 +213,13 @@ Ordner wählen. Dort liegen die Index-Datenbank `register.db`, die
 Vorschau-Scheiben `vorschau-0001.db` usw. (je rund 200 MB) und die
 Ordnerregeln `regeln.toml`. Größere Scheiben älterer Versionen teilt der Knopf
 „Scheiben aufteilen“ im Datenbank-Symbol.
+
+Seit v0.1.0 ist das Register verschlüsselt. Den Schlüssel (64 Hex-Zeichen, etwa
+aus `openssl rand -hex 32`) erzeugt man selbst und verwahrt ihn im Passwortsafe.
+Im Datenbank-Symbol wird er einmal je Gerät eingegeben und im Schlüsselbund
+abgelegt (unter macOS ohne iCloud). Ein unverschlüsseltes Register stellt der
+Kasten „Verschlüsselung“ dort um. Ohne Schlüssel ist das Register nicht
+lesbar, es lässt sich nur aus den Dateien neu aufbauen.
 
 Zugangsdaten, lokale Pfade und andere Interna gehören nicht in versionierte
 Dateien, sondern nach `docs/intern/` oder in eine `config.local`-Datei. Beides

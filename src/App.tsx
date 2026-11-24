@@ -1,4 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { SchluesselStand, schluesselStand } from "./api";
+import { SchluesselEingabe } from "./Verschluesselung";
 import logo from "../docs/icons/png-randlos/registerwerk_128.png";
 import Ordneransicht from "./ordner/Ordneransicht";
 import Registerinfo from "./Registerinfo";
@@ -21,6 +23,15 @@ export default function App() {
   const [bereich, setBereich] = useState<Bereich>("suche");
   const [anstehend, setAnstehend] = useState<Anstehend>({ etwas: false, aenderungen: false });
   const anstehendMelden = useCallback((a: Anstehend) => setAnstehend(a), []);
+  // Verschlüsseltes Register ohne Schlüssel auf diesem Gerät (v0.1.0): erst den Schlüssel eingeben
+  // `undefined`: noch nicht geprüft, dann bleibt der Inhalt leer, damit nichts vergeblich liest
+  // Schnell: liest nur die Dateiköpfe und eine Seite der Index-Datenbank
+  const [gesperrt, setGesperrt] = useState<SchluesselStand | null | undefined>(undefined);
+  useEffect(() => {
+    schluesselStand()
+      .then((s) => setGesperrt(s.schluessel_fehler ? s : null))
+      .catch(() => setGesperrt(null));
+  }, []);
 
   return (
     <div className="rahmen">
@@ -49,6 +60,13 @@ export default function App() {
         )}
         <Registerinfo />
       </nav>
+      {gesperrt === undefined ? (
+        <div className="rahmen__inhalt" />
+      ) : gesperrt ? (
+        <div className="rahmen__inhalt sperre">
+          <SchluesselEingabe stand={gesperrt} fertig={() => window.location.reload()} />
+        </div>
+      ) : (
       <div className="rahmen__inhalt">
         <Suche sichtbar={bereich === "suche"} />
         <Ordneransicht sichtbar={bereich === "ordner"} />
@@ -56,6 +74,7 @@ export default function App() {
           <Ablauf onAenderungen={anstehendMelden} />
         </div>
       </div>
+      )}
     </div>
   );
 }
