@@ -327,6 +327,21 @@ impl Register {
         online.sort_by(|a, b| a.1.cmp(&b.1));
         Ok((auswahl, online))
     }
+
+    /// Dateien, die Registerwerk auf dem Gerät `geraet` aus der Cloud
+    /// angefordert hat und die keinen Schritt mehr offen haben, nach Pfad
+    /// (v0.1.2). Unabhängig von der Auswahl des Laufs.
+    pub fn angefordert_fertig(&self, geraet: &str) -> Ergebnis<Vec<(i64, String)>> {
+        let offen = anstehend(&self.db)?;
+        let mut abfrage = self.db.prepare(
+            "SELECT d.id, d.pfad FROM angefordert a JOIN datei d ON d.id = a.datei
+             WHERE a.geraet = ?1 ORDER BY d.pfad",
+        )?;
+        let liste = abfrage
+            .query_map([geraet], |z| Ok((z.get::<_, i64>(0)?, z.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(liste.into_iter().filter(|(id, _)| !offen.contains_key(id)).collect())
+    }
 }
 
 /// Ergebnis des Ladens.
@@ -341,9 +356,6 @@ pub struct LadenErgebnis {
     /// Es wurde auf Wunsch nicht weiter gewartet.
     pub uebersprungen: bool,
     pub abgebrochen: bool,
-    /// Die geladenen Dateien (ID, Pfad im Register), zum späteren Auslagern.
-    #[serde(skip)]
-    pub geladene: Vec<(i64, String)>,
 }
 
 fn datei_stand(ort: &std::path::Path) -> Option<(u64, i64)> {
@@ -380,6 +392,10 @@ fn anfordern(ort: &std::path::Path) {
 /// ankam, mit `weiter` (nicht weiter warten) oder mit `abbrechen`. Was nicht
 /// ankam, bleibt offen für den nächsten Lauf.
 ///
+/// Jede angeforderte Datei wird im Register vermerkt (v0.1.2). So stellt
+/// [`auszulagern`] sie auch dann wieder auf "nur online", wenn sie erst nach
+/// dem Warten ankommt oder der Lauf vor dem Auslagern endet.
+///
 /// `fortschritt` meldet angekommene von allen Dateien, als Datei die erste,
 /// auf die noch gewartet wird.
 pub fn laden(
@@ -396,6 +412,8 @@ pub fn laden(
     if liste.is_empty() {
         return Ok(e);
     }
+    let ids: Vec<i64> = liste.iter().map(|(id, _)| *id).collect();
+    register.angefordert_eintragen(&ids, &konfig.geraet)?;
     let orte: Vec<_> = liste.iter().map(|(_, p)| konfig.ort_oder_nichts(p)).collect();
     fortschritt(&Fortschritt { erledigt: 0, gesamt, datei: liste[0].1.clone() });
     // Anfordern im Hintergrund: Die Dateikoordination wartet je Datei, bis
@@ -425,7 +443,6 @@ pub fn laden(
                 Some((groesse, geaendert)) => {
                     register.geladen_eintragen(liste[i].0, groesse, geaendert)?;
                     e.geladen += 1;
-                    e.geladene.push(liste[i].clone());
                     angekommen = true;
                 }
                 None => noch.push(i),
@@ -509,8 +526,26 @@ fn ausgelagerte_pfade(ausgabe: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Stellt die Dateien, die dieser Lauf aus der Dropbox geladen hat, wieder
-/// auf "nur online" (v0.0.8). Nutzt das Werkzeug `onlineonly` (MIT,
+/// Was wieder auf "nur online" soll (v0.1.2): alle Dateien, die Registerwerk
+/// auf diesem Gerät angefordert hat, die jetzt lokal liegen und keinen Schritt
+/// mehr offen haben, auch aus früheren Läufen. Liegt eine schon wieder nur
+/// online (etwa von Hand zurückgestellt), fällt ihr Vermerk weg. Fehlt die
+/// Datei, bleibt der Vermerk, bis der Abgleich den Eintrag entfernt.
+pub fn auszulagern(konfig: &Konfiguration, register: &mut Register) -> Ergebnis<Vec<(i64, String)>> {
+    let mut liste = Vec::new();
+    for (id, pfad) in register.angefordert_fertig(&konfig.geraet)? {
+        let ort = konfig.ort_oder_nichts(&pfad);
+        match std::fs::metadata(&ort) {
+            Ok(m) if crate::dateibaum::platzhalter(&ort, &m) => register.angefordert_loeschen(id, &konfig.geraet)?,
+            Ok(_) => liste.push((id, pfad)),
+            Err(_) => {}
+        }
+    }
+    Ok(liste)
+}
+
+/// Stellt die Dateien aus `liste` ([`auszulagern`]) wieder auf "nur online"
+/// (v0.0.8) und löscht ihren Vermerk "angefordert" (v0.1.2). Nutzt das Werkzeug `onlineonly` (MIT,
 /// inoffiziell), das mit der Dropbox-App über die Schnittstelle ihres
 /// Finder-Menüs spricht. Nur für die klassische Dropbox unter `~/Dropbox`.
 /// Fehlt das Werkzeug, bleiben die Dateien lokal.
@@ -558,6 +593,7 @@ pub fn auslagern(
         for ((id, pfad), ort) in teil.iter().zip(&orte) {
             if fertig.contains(ort.to_string_lossy().as_ref()) {
                 register.ausgelagert_eintragen(*id)?;
+                register.angefordert_loeschen(*id, &konfig.geraet)?;
                 e.ausgelagert += 1;
             } else {
                 e.nicht_anzahl += 1;
@@ -829,6 +865,117 @@ mod tests {
         // Die geladene Datei steht jetzt lokal zum Lesen an, die leere weiter nur online
         let offen: Vec<_> = r.ausstehend().unwrap().into_iter().map(|a| (a.pfad, a.nur_online)).collect();
         assert_eq!(offen, vec![("A/da.pdf".to_string(), false), ("A/leer.pdf".to_string(), true)]);
+    }
+
+    /// Markiert eine Datei als fertig verarbeitet (Inhalt und Vorschau zum aktuellen Stand).
+    fn fertig_setzen(r: &Register, pfad: &str) {
+        r.db.execute(
+            "UPDATE datei SET inhalt_geaendert = geaendert, inhalt_groesse = groesse, inhalt_verfahren = 99,
+                              vorschau_geaendert = geaendert, vorschau_groesse = groesse, vorschau_verfahren = 99
+             WHERE pfad = ?1",
+            [pfad],
+        )
+        .unwrap();
+    }
+
+    fn vermerke(r: &Register) -> Vec<(String, String)> {
+        let mut a = r
+            .db
+            .prepare("SELECT d.pfad, a.geraet FROM angefordert a JOIN datei d ON d.id = a.datei ORDER BY d.pfad, a.geraet")
+            .unwrap();
+        a.query_map([], |z| Ok((z.get(0)?, z.get(1)?))).unwrap().map(Result::unwrap).collect()
+    }
+
+    fn pfade(liste: Vec<(i64, String)>) -> Vec<String> {
+        liste.into_iter().map(|(_, p)| p).collect()
+    }
+
+    /// Fehler bis v0.1.1: Welche Dateien geladen wurden, stand nur im Lauf.
+    /// Kam eine Datei erst nach dem Warten an oder endete der Lauf vor dem
+    /// Auslagern, blieb sie lokal (v0.1.2).
+    #[test]
+    fn angeforderte_dateien_werden_auch_spaeter_ausgelagert() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("A")).unwrap();
+        std::fs::write(tmp.path().join("A/da.pdf"), b"%PDF-1.4 inhalt").unwrap();
+        crate::dateibaum::platzhalter_anlegen(&tmp.path().join("A/spaet.pdf"));
+        std::fs::write(tmp.path().join("A/lokal.pdf"), b"%PDF-1.4 lokal").unwrap();
+        let mut konfig = Konfiguration::default();
+        konfig.geraet = "Notebook".into();
+        konfig.aeste.insert("A".into(), tmp.path().join("A"));
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![
+            eintrag("A/da.pdf", 0, 1),
+            eintrag("A/spaet.pdf", 0, 1),
+            eintrag("A/lokal.pdf", 14, 1),
+        ]))
+        .unwrap();
+        let (_, online) = r.auswahl_bilden(&[], false, None).unwrap();
+        assert_eq!(online.len(), 2);
+
+        // Laden: da.pdf kommt an, spaet.pdf nicht. Beide sind vermerkt, lokal.pdf nicht.
+        let nein = AtomicBool::new(false);
+        let e = laden(&konfig, &mut r, &online, Duration::from_millis(50), |_| {}, &nein, &nein).unwrap();
+        assert_eq!((e.geladen, e.nicht_geladen_anzahl), (1, 1));
+        let notebook = |p: &str| (p.to_string(), "Notebook".to_string());
+        assert_eq!(vermerke(&r), vec![notebook("A/da.pdf"), notebook("A/spaet.pdf")]);
+
+        // Solange ein Schritt offen ist, bleibt die Datei lokal
+        assert!(auszulagern(&konfig, &mut r).unwrap().is_empty());
+        fertig_setzen(&r, "A/da.pdf");
+        fertig_setzen(&r, "A/lokal.pdf");
+        assert_eq!(pfade(auszulagern(&konfig, &mut r).unwrap()), vec!["A/da.pdf"]);
+
+        // Der Lauf endet hier, ohne auszulagern. spaet.pdf kommt danach an.
+        // Der nächste Lauf nimmt sie auf, verarbeitet sie und stellt beide zurück.
+        std::fs::write(tmp.path().join("A/spaet.pdf"), b"%PDF-1.4 spaet").unwrap();
+        let m = std::fs::metadata(tmp.path().join("A/spaet.pdf")).unwrap();
+        // da.pdf mit Größe und Datum, die das Laden eingetragen hat: unverändert
+        let da = std::fs::metadata(tmp.path().join("A/da.pdf")).unwrap();
+        r.abgleichen(&durchlauf(vec![
+            eintrag("A/da.pdf", da.len(), sekunden(&da)),
+            eintrag("A/spaet.pdf", m.len(), 1),
+            eintrag("A/lokal.pdf", 14, 1),
+        ]))
+        .unwrap();
+        assert_eq!(pfade(auszulagern(&konfig, &mut r).unwrap()), vec!["A/da.pdf"]);
+        fertig_setzen(&r, "A/spaet.pdf");
+        assert_eq!(pfade(auszulagern(&konfig, &mut r).unwrap()), vec!["A/da.pdf", "A/spaet.pdf"]);
+
+        // Ein anderes Gerät stellt nichts zurück: "lokal" gilt je Gerät
+        let mut mini = konfig.clone();
+        mini.geraet = "Mac mini".into();
+        assert!(auszulagern(&mini, &mut r).unwrap().is_empty());
+
+        // Steht eine Datei schon wieder auf "nur online" (von Hand), fällt der Vermerk weg
+        crate::dateibaum::platzhalter_anlegen(&tmp.path().join("A/da.pdf"));
+        assert_eq!(pfade(auszulagern(&konfig, &mut r).unwrap()), vec!["A/spaet.pdf"]);
+        assert_eq!(vermerke(&r), vec![notebook("A/spaet.pdf")]);
+
+        // Nach dem Auslagern ist der Vermerk weg
+        let id: i64 = zahl(&r, "SELECT id FROM datei WHERE pfad = 'A/spaet.pdf'");
+        r.angefordert_loeschen(id, "Notebook").unwrap();
+        assert!(vermerke(&r).is_empty());
+    }
+
+    #[test]
+    fn vermerk_faellt_mit_dem_eintrag_weg() {
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![eintrag("A/weg.pdf", 0, 1), eintrag("A/bleibt.pdf", 0, 1)])).unwrap();
+        let ids: Vec<i64> = vec![
+            zahl(&r, "SELECT id FROM datei WHERE pfad = 'A/weg.pdf'"),
+            zahl(&r, "SELECT id FROM datei WHERE pfad = 'A/bleibt.pdf'"),
+        ];
+        r.angefordert_eintragen(&ids, "Notebook").unwrap();
+        // doppelt eintragen schadet nicht
+        r.angefordert_eintragen(&ids, "Notebook").unwrap();
+        r.angefordert_eintragen(&[], "Notebook").unwrap();
+        assert_eq!(zahl(&r, "SELECT count(*) FROM angefordert"), 2);
+        // Die Probe ändert nichts
+        r.delta_pruefen(&durchlauf(vec![eintrag("A/bleibt.pdf", 0, 1)])).unwrap();
+        assert_eq!(zahl(&r, "SELECT count(*) FROM angefordert"), 2);
+        r.abgleichen(&durchlauf(vec![eintrag("A/bleibt.pdf", 0, 1)])).unwrap();
+        assert_eq!(vermerke(&r), vec![("A/bleibt.pdf".to_string(), "Notebook".to_string())]);
     }
 
     #[test]

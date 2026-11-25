@@ -921,6 +921,7 @@ mod tests {
                  DROP TABLE ordner_gesehen;
                  DROP TABLE geraet;
                  DROP TABLE merkmal;
+                 DROP TABLE angefordert;
                  PRAGMA user_version = 6;",
             )
             .unwrap();
@@ -931,7 +932,7 @@ mod tests {
             .db
             .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'suche_text'", [], |z| z.get(0))
             .unwrap();
-        assert_eq!((version, tabellen), (10, 0));
+        assert_eq!((version, tabellen), (crate::register::SCHEMA_VERSION, 0));
     }
 
     #[test]

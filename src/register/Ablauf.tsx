@@ -910,6 +910,7 @@ function Schritte({
           (e.aufgenommen.behalten > 0 ? `, ${alsZahl(e.aufgenommen.behalten)} behalten` : "")
         );
       case "laden":
+        if (e.laden.geladen === 0 && e.laden.nicht_geladen_anzahl === 0) return "nichts zu laden";
         return `${alsZahl(e.laden.geladen)} geladen` + (e.laden.nicht_geladen_anzahl ? `, ${alsZahl(e.laden.nicht_geladen_anzahl)} nicht` : "");
       case "inhalte":
         return `${alsZahl(e.inhalte.gelesen)} gelesen` + (e.inhalte.fehler ? `, ${alsZahl(e.inhalte.fehler)} Fehler` : "");
@@ -945,7 +946,7 @@ function Schritte({
                   <span style={{ width: `${anteil}%` }} />
                 </span>
                 <span className="leise">
-                  {s === "laden"
+                  {s === "laden" && meldung.gesamt > 0
                     ? `${alsZahl(meldung.erledigt)} von ${alsZahl(meldung.gesamt)} da`
                     : meldung.gesamt > 1
                       ? `${alsZahl(meldung.erledigt)} von ${alsZahl(meldung.gesamt)}`
@@ -957,7 +958,7 @@ function Schritte({
                     {name(meldung.datei)}
                   </span>
                 )}
-                {s === "laden" && <NichtWarten />}
+                {s === "laden" && meldung.gesamt > 0 && <NichtWarten />}
               </span>
             ) : (
               <span className="leise">{zahl(s)}</span>

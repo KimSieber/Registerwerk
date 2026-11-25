@@ -18,6 +18,9 @@
 //! - 7 (v0.0.6): ohne Index über den Text mit Leerraum
 //! - 8 (v0.0.7): Stufe der Ordnerregel in `datei`
 //! - 9 (v0.0.7): Geräte, je Gerät gesehene Ordner, Merkmale des Registers
+//! - 10 (v0.0.9): Hinweis zum gelesenen Inhalt in `datei`
+//! - 11 (v0.1.2): Tabelle `angefordert`, je Gerät die aus der Cloud
+//!   angeforderten Dateien, bis sie wieder "nur online" liegen
 //!
 //! Die Vorschauen selbst liegen nicht in dieser Datei, sondern in Scheiben
 //! (`vorschau-0001.db`, …) im selben Ordner, je etwa [`SCHEIBE_GRENZE`] groß.
@@ -42,7 +45,7 @@ use crate::pdf;
 use crate::{datum, Ergebnis};
 
 pub const DATEINAME: &str = "register.db";
-const SCHEMA_VERSION: i64 = 10;
+pub(crate) const SCHEMA_VERSION: i64 = 11;
 
 /// Größe, ab der keine neuen Vorschauen mehr in eine Scheibe kommen.
 /// Bis v0.0.7 waren es 1,5 GB. Liegt das Register in einem Cloud-Ordner, wird
@@ -501,6 +504,22 @@ impl Register {
             tx.execute_batch(
                 "ALTER TABLE datei ADD COLUMN inhalt_hinweis TEXT;
                  PRAGMA user_version = 10;",
+            )?;
+        }
+        if version < 11 {
+            // Welche Dateien Registerwerk auf welchem Gerät aus der Cloud
+            // angefordert hat (v0.1.2). Bis v0.1.1 stand das nur im
+            // Arbeitsspeicher eines Laufs. Endete der Lauf vor dem Auslagern
+            // oder kam eine Datei erst nach dem Warten, blieb sie lokal.
+            // Der Zustand "lokal" gilt je Gerät, deshalb der Gerätename.
+            tx.execute_batch(
+                "CREATE TABLE angefordert (
+                     datei   INTEGER NOT NULL REFERENCES datei(id) ON DELETE CASCADE,
+                     geraet  TEXT NOT NULL,
+                     zeit    INTEGER NOT NULL,
+                     PRIMARY KEY (datei, geraet)
+                 ) WITHOUT ROWID;
+                 PRAGMA user_version = 11;",
             )?;
         }
         // v0.0.7 liest Fax-TIFFs. Ein festgehaltener Fehler gilt sonst, bis
@@ -1133,6 +1152,32 @@ impl Register {
     /// bleiben: Die Datei ist inhaltlich unverändert.
     pub fn ausgelagert_eintragen(&mut self, id: i64) -> Ergebnis<()> {
         self.db.execute("UPDATE datei SET nur_online = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Vermerkt, dass Registerwerk diese Dateien auf dem Gerät `geraet` aus
+    /// der Cloud angefordert hat (v0.1.2). Der Vermerk bleibt, bis die Datei
+    /// wieder "nur online" liegt, auch über das Ende des Laufs hinaus.
+    pub fn angefordert_eintragen(&mut self, ids: &[i64], geraet: &str) -> Ergebnis<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let tx = self.db.transaction()?;
+        {
+            let mut eintragen =
+                tx.prepare("INSERT OR IGNORE INTO angefordert (datei, geraet, zeit) VALUES (?1, ?2, ?3)")?;
+            let zeit = jetzt();
+            for id in ids {
+                eintragen.execute(params![id, geraet, zeit])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Löscht den Vermerk "angefordert" einer Datei auf dem Gerät `geraet`.
+    pub fn angefordert_loeschen(&mut self, id: i64, geraet: &str) -> Ergebnis<()> {
+        self.db.execute("DELETE FROM angefordert WHERE datei = ?1 AND geraet = ?2", params![id, geraet])?;
         Ok(())
     }
 

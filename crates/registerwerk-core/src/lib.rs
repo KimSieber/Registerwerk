@@ -166,7 +166,9 @@ pub const LADEN_WARTEN: std::time::Duration = std::time::Duration::from_secs(120
 /// Delta-Lauf (v0.0.8): nimmt neue und geänderte Dateien auf, entfernt mit
 /// `entfernen` alles Wegfallende außer `ausgeschlossen` (v0.1.1, vorher ein
 /// eigener Schritt), lädt die "nur online"-Dateien der Auswahl und führt die
-/// Auswahl durch Inhalte, Vorschauen, Texterkennung und Textebene. Die
+/// Auswahl durch Inhalte, Vorschauen, Texterkennung und Textebene. Zuletzt
+/// stellt er alles, was Registerwerk auf diesem Gerät angefordert hat und
+/// fertig ist, wieder auf "nur online" (v0.1.2: auch aus früheren Läufen). Die
 /// Auswahl sind alle Dateien mit anstehendem Schritt außer `ausgeschlossen`
 /// (Dateien und Ordner als Pfad im Register), mit `ohne_online` auch ohne
 /// die "nur online"-Dateien. Mit `weiter` wird nicht länger auf die Cloud
@@ -211,36 +213,46 @@ pub fn verarbeiten(
     let (auswahl, online) = register.auswahl_bilden(ausgeschlossen, ohne_online, Some(&gesehen))?;
     e.ausgewaehlt = auswahl.len() as u64;
     register.auswahl_setzen(Some(auswahl));
+    // Jeder Schritt meldet seinen Beginn, auch ohne Dateien. Sonst bekommt er
+    // in der Oberfläche keinen Haken (v0.1.2).
+    let beginnt = |schritt: S| Meldung { schritt, erledigt: 0, gesamt: 0, datei: String::new() };
     let lauf = (|| -> Ergebnis<()> {
+        melden(&beginnt(S::Laden));
         let m = als_meldung(S::Laden);
         e.laden = ablauf::laden(konfig, register, &online, LADEN_WARTEN, |f| melden(&m(f)), weiter, abbrechen)?;
         if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
         }
+        melden(&beginnt(S::Inhalte));
         let m = als_meldung(S::Inhalte);
         e.inhalte = inhalte_lesen(konfig, register, pdfium_ordner, |f| melden(&m(f)), abbrechen)?;
         if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
         }
+        melden(&beginnt(S::Vorschauen));
         let m = als_meldung(S::Vorschauen);
         e.vorschauen = vorschauen_erzeugen(konfig, register, pdfium_ordner, |f| melden(&m(f)), abbrechen)?;
         if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
         }
+        melden(&beginnt(S::Erkennen));
         let m = als_meldung(S::Erkennen);
         e.ocr = ocr_ausfuehren(konfig, register, pdfium_ordner, tessdata, |f| melden(&m(f)), abbrechen)?;
         if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
         }
+        melden(&beginnt(S::Textebene));
         let m = als_meldung(S::Textebene);
         e.textebene = textebene_schreiben(konfig, register, pdfium_ordner, None, None, |f| melden(&m(f)), abbrechen)?;
         if abbrechen.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
         }
-        // Was dieser Lauf aus der Cloud geholt hat, wieder auf "nur online"
+        // Was Registerwerk auf diesem Gerät aus der Cloud geholt hat und
+        // fertig ist, wieder auf "nur online", auch aus früheren Läufen (v0.1.2)
+        melden(&beginnt(S::Auslagern));
         let m = als_meldung(S::Auslagern);
-        let geladene = std::mem::take(&mut e.laden.geladene);
-        e.auslagern = ablauf::auslagern(konfig, register, &geladene, |f| melden(&m(f)), abbrechen)?;
+        let liste = ablauf::auszulagern(konfig, register)?;
+        e.auslagern = ablauf::auslagern(konfig, register, &liste, |f| melden(&m(f)), abbrechen)?;
         Ok(())
     })();
     // Die Auswahl gilt nur für diesen Lauf, auch nach einem Fehler
