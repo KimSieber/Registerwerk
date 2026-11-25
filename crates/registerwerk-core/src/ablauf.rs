@@ -10,7 +10,8 @@
 //!    entfernen), "nur online"-Dateien der Auswahl laden, dann Inhalte,
 //!    Vorschauen, Texterkennung und Textebene, jeweils nur für die Auswahl.
 //!
-//! Entfernen bleibt ein eigener Schritt mit Rückfrage (Konzept, Abschnitt 5).
+//! Seit v0.1.1 entfernt der Lauf auch, was wegfällt, außer dem Abgewählten
+//! (Konzept, Abschnitt 5).
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
@@ -42,6 +43,8 @@ pub enum Art {
     /// Unverändert, aber ein Schritt ist noch offen (abgebrochen, nur
     /// online, neues Verfahren).
     Offen,
+    /// Fällt aus dem Register oder wird auf den Namen gekürzt (v0.1.1).
+    Entfernen,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -53,6 +56,9 @@ pub struct DeltaDatei {
     /// Texterkennung und Textebene einer neuen Datei zeigen sich erst, wenn
     /// ihr Inhalt gelesen ist.
     pub schritte: u8,
+    /// Bei [`Art::Entfernen`] der Grund (v0.1.1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grund: Option<crate::register::Grund>,
 }
 
 /// Ergebnis der Prüfung.
@@ -67,6 +73,10 @@ pub struct Delta {
     pub nur_namen: u64,
     /// Diese Dateien, nach Pfad, zum Ansehen.
     pub nur_namen_dateien: Vec<DeltaDatei>,
+    /// Was „Verarbeiten“ entfernt oder auf den Namen kürzt, nach Pfad
+    /// (v0.1.1). Höchstens [`crate::register::BETROFFEN_MAX`], die Zahl steht in
+    /// `lauf.entfernt` und `lauf.reduziert`.
+    pub entfernen_dateien: Vec<DeltaDatei>,
 }
 
 /// Welche Dateien eine Liste zeigt.
@@ -80,6 +90,8 @@ pub enum Filter {
     Online,
     /// Neue Dateien nur mit Namen
     Namen,
+    /// Was entfernt würde (v0.1.1)
+    Entfernen,
 }
 
 /// Höchstens so viele Dateien liefert [`Delta::liste`].
@@ -93,6 +105,11 @@ pub struct OrdnerZahl {
     pub neu: u64,
     pub geaendert: u64,
     pub nur_online: u64,
+    /// Neue Dateien nur mit Namen darin samt Unterordnern (v0.1.1). Sie
+    /// zählen nicht zu `dateien`, weil für sie kein Schritt ansteht.
+    pub nur_namen: u64,
+    /// Zu entfernende Dateien darin samt Unterordnern (v0.1.1)
+    pub entfernen: u64,
 }
 
 /// Zahlen des Deltas für die Oberfläche, ohne die einzelnen Dateien.
@@ -122,6 +139,7 @@ impl Delta {
                 Art::Neu => u.neu += 1,
                 Art::Geaendert => u.geaendert += 1,
                 Art::Offen => u.offen += 1,
+                Art::Entfernen => {}
             }
             u.nur_online += d.nur_online as u64;
             for (i, bit) in [INHALT, VORSCHAU, OCR, TEXTEBENE].iter().enumerate() {
@@ -137,6 +155,23 @@ impl Delta {
                 o = eltern(o);
             }
         }
+        // Neue Dateien nur mit Namen stehen auch im Baum (v0.1.1, Kim: sehen, was ins Register kommt)
+        for d in &self.nur_namen_dateien {
+            let mut o = eltern(&d.pfad);
+            while !o.is_empty() {
+                let z = ordner.entry(o).or_insert_with(|| OrdnerZahl { pfad: o.to_string(), ..Default::default() });
+                z.nur_namen += 1;
+                o = eltern(o);
+            }
+        }
+        for d in &self.entfernen_dateien {
+            let mut o = eltern(&d.pfad);
+            while !o.is_empty() {
+                let z = ordner.entry(o).or_insert_with(|| OrdnerZahl { pfad: o.to_string(), ..Default::default() });
+                z.entfernen += 1;
+                o = eltern(o);
+            }
+        }
         u.ordner = ordner.into_values().collect();
         u
     }
@@ -144,12 +179,16 @@ impl Delta {
     /// Dateien nach `filter`, mit `ordner` nur darin samt Unterordnern.
     /// Höchstens [`LISTE_MAX`], dazu die Gesamtzahl.
     pub fn liste(&self, filter: Filter, ordner: Option<&str>) -> (Vec<DeltaDatei>, u64) {
-        let quelle = if filter == Filter::Namen { &self.nur_namen_dateien } else { &self.dateien };
+        let quelle = match filter {
+            Filter::Namen => &self.nur_namen_dateien,
+            Filter::Entfernen => &self.entfernen_dateien,
+            _ => &self.dateien,
+        };
         let mut gesamt = 0u64;
         let mut liste = Vec::new();
         for d in quelle.iter().filter(|d| {
             let passt = match filter {
-                Filter::Alle | Filter::Namen => true,
+                Filter::Alle | Filter::Namen | Filter::Entfernen => true,
                 Filter::Neu => d.art == Art::Neu,
                 Filter::Geaendert => d.art == Art::Geaendert,
                 Filter::Offen => d.art == Art::Offen,
@@ -165,9 +204,19 @@ impl Delta {
         (liste, gesamt)
     }
 
-    /// Die Dateien direkt in `ordner`, ohne Unterordner.
+    /// Die Dateien direkt in `ordner`, ohne Unterordner, nach Pfad. Neue
+    /// Dateien nur mit Namen sind dabei, erkennbar an `schritte == 0` (v0.1.1).
     pub fn dateien_in(&self, ordner: &str) -> Vec<DeltaDatei> {
-        self.dateien.iter().filter(|d| eltern(&d.pfad) == ordner).cloned().collect()
+        let mut liste: Vec<DeltaDatei> = self
+            .dateien
+            .iter()
+            .chain(self.nur_namen_dateien.iter())
+            .chain(self.entfernen_dateien.iter())
+            .filter(|d| eltern(&d.pfad) == ordner)
+            .cloned()
+            .collect();
+        liste.sort_by(|a, b| a.pfad.cmp(&b.pfad));
+        liste
     }
 }
 
@@ -225,7 +274,7 @@ pub(crate) fn delta_lesen(
     let mut nur_namen = Vec::new();
     for id in neu.iter().filter(|id| !offen.contains_key(id)) {
         let (pfad, nur_online): (String, bool) = lesen.query_row([id], |z| Ok((z.get(0)?, z.get(1)?)))?;
-        nur_namen.push(DeltaDatei { pfad, art: Art::Neu, nur_online, schritte: 0 });
+        nur_namen.push(DeltaDatei { pfad, art: Art::Neu, nur_online, schritte: 0, grund: None });
     }
     nur_namen.sort_by(|a, b| a.pfad.cmp(&b.pfad));
     let mut dateien = Vec::with_capacity(offen.len());
@@ -238,7 +287,7 @@ pub(crate) fn delta_lesen(
         } else {
             Art::Offen
         };
-        dateien.push(DeltaDatei { pfad, art, nur_online, schritte });
+        dateien.push(DeltaDatei { pfad, art, nur_online, schritte, grund: None });
     }
     dateien.sort_by(|a, b| a.pfad.cmp(&b.pfad));
     Ok((dateien, nur_namen))
@@ -638,8 +687,9 @@ mod tests {
         let u = d.uebersicht();
         assert_eq!((u.dateien, u.neu, u.geaendert, u.offen, u.nur_online), (3, 1, 1, 1, 1));
         assert_eq!(u.schritte, [3, 3, 0, 0]);
-        let ordner: Vec<_> = u.ordner.iter().map(|o| (o.pfad.as_str(), o.dateien, o.neu, o.nur_online)).collect();
-        assert_eq!(ordner, vec![("A", 3, 1, 1), ("A/B", 1, 1, 1)]);
+        let ordner: Vec<_> =
+            u.ordner.iter().map(|o| (o.pfad.as_str(), o.dateien, o.neu, o.nur_online, o.nur_namen)).collect();
+        assert_eq!(ordner, vec![("A", 3, 1, 1, 1), ("A/B", 1, 1, 1, 1)]);
         assert_eq!(d.dateien_in("A").len(), 2);
         assert_eq!(d.nur_namen_dateien[0].pfad, "A/B/musik.mp3");
         let pfade = |(l, n): (Vec<DeltaDatei>, u64)| (l.into_iter().map(|x| x.pfad).collect::<Vec<_>>(), n);
@@ -648,7 +698,49 @@ mod tests {
         assert_eq!(pfade(d.liste(Filter::Alle, Some("A/B"))), (vec!["A/B/neu.pdf".to_string()], 1));
         assert_eq!(d.liste(Filter::Alle, Some("A/")).1, 0);
         assert_eq!(pfade(d.liste(Filter::Namen, None)), (vec!["A/B/musik.mp3".to_string()], 1));
-        assert_eq!(d.dateien_in("A/B")[0].pfad, "A/B/neu.pdf");
+        // Im Ordner stehen auch die Dateien nur mit Namen, ohne Schritte (v0.1.1)
+        let in_b: Vec<_> = d.dateien_in("A/B").into_iter().map(|x| (x.pfad, x.schritte)).collect();
+        assert_eq!(in_b, vec![("A/B/musik.mp3".to_string(), 0), ("A/B/neu.pdf".to_string(), INHALT | VORSCHAU)]);
+    }
+
+    #[test]
+    fn abgewaehltes_bleibt_beim_entfernen() {
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![
+            eintrag("A/x/eins.pdf", 10, 1),
+            eintrag("A/x/zwei.pdf", 10, 1),
+            eintrag("A/y/drei.pdf", 10, 1),
+            eintrag("A/y/bleibt.pdf", 10, 1),
+        ]))
+        .unwrap();
+        // Im Delta steht, was wegfiele, mit Grund und Zahl je Ordner
+        let nur_bleibt = || durchlauf(vec![eintrag("A/y/bleibt.pdf", 10, 1), eintrag("A/x/neu.pdf", 10, 2)]);
+        let d = r.delta_pruefen(&nur_bleibt()).unwrap();
+        let weg: Vec<_> = d.entfernen_dateien.iter().map(|x| (x.pfad.as_str(), x.art)).collect();
+        assert_eq!(
+            weg,
+            vec![("A/x/eins.pdf", Art::Entfernen), ("A/x/zwei.pdf", Art::Entfernen), ("A/y/drei.pdf", Art::Entfernen)]
+        );
+        // Ohne Regeln im Test ist der Grund „ohne Regel“
+        assert!(d.entfernen_dateien.iter().all(|x| x.grund == Some(crate::register::Grund::OhneRegel)));
+        let u = d.uebersicht();
+        let ordner: Vec<_> = u.ordner.iter().map(|o| (o.pfad.as_str(), o.dateien, o.entfernen)).collect();
+        // bleibt.pdf ist noch nicht gelesen und steht deshalb als offen in `dateien`
+        assert_eq!(ordner, vec![("A", 2, 3), ("A/x", 1, 2), ("A/y", 1, 1)]);
+        assert_eq!(d.liste(Filter::Entfernen, Some("A/x")).1, 2);
+        assert!(d.dateien_in("A/y").iter().any(|x| x.art == Art::Entfernen));
+
+        // A/x ist abgewählt: Seine beiden Dateien bleiben, A/y/drei.pdf fällt weg
+        let e = r.abgleichen_behalten(&nur_bleibt(), &["A/x".to_string()]).unwrap();
+        assert_eq!((e.neu, e.entfernt, e.behalten), (1, 1, 2));
+        assert_eq!(zahl(&r, "SELECT count(*) FROM datei WHERE pfad LIKE 'A/x/%'"), 3);
+        assert_eq!(zahl(&r, "SELECT count(*) FROM datei WHERE pfad = 'A/y/drei.pdf'"), 0);
+        // Bei der nächsten Prüfung stehen die behaltenen wieder an
+        let d = r.delta_pruefen(&nur_bleibt()).unwrap();
+        assert_eq!(d.entfernen_dateien.len(), 2);
+        // Ohne Abwahl wird alles entfernt
+        let e = r.abgleichen_behalten(&nur_bleibt(), &[]).unwrap();
+        assert_eq!((e.entfernt, e.behalten), (2, 0));
     }
 
     #[test]

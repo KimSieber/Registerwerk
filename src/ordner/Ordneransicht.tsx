@@ -15,7 +15,7 @@ import {
   regelnLesen,
   regelnSpeichern,
 } from "../api";
-import { LaufMeldung, useEinlesen } from "../Einlesen";
+import type { Anstehend } from "../register/Ablauf";
 import { alsZahl } from "../format";
 import Pruefung from "./Pruefung";
 import { ERKLAERUNG, NAMEN, alsZeilen, ausZeilen, gleich, hatRegelnUnter, oberordner, setzen, wirksam } from "./stufen";
@@ -27,7 +27,16 @@ const STUFEN: Stufe[] = ["voll", "metadaten", "ausgeschlossen"];
  * dieses Geräts, aufgenommen über „Ordner hinzufügen“. Ohne Regel wird ein Ordner nicht gelesen. Eine Regel gilt auch für die Unterordner, dort lässt sie sich wieder ändern.
  * Rechts die Prüfung des gewählten Ordners: wie viele Dateien welchen Typs darin liegen.
  */
-export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
+export default function Ordneransicht({
+  sichtbar,
+  stand,
+  zumRegister,
+}: {
+  sichtbar: boolean;
+  /** Ergebnis der Prüfung im Reiter „Register“ (v0.1.1) */
+  stand: Anstehend;
+  zumRegister: () => void;
+}) {
   const [geraet, setGeraet] = useState<string | null>(null);
   /** Der Name eines neuen Astes ist schon vergeben: nach einem anderen fragen */
   const [nameFrage, setNameFrage] = useState<{ ort: string; name: string; hinweis: string } | null>(null);
@@ -43,9 +52,11 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
   /** Fehler beim Laden des Baums. Verschwindet, sobald eine Ebene wieder geladen ist (v0.0.9). */
   const [baumFehler, setBaumFehler] = useState<string | null>(null);
   const [speichert, setSpeichert] = useState(false);
-  /** Nach dem Speichern: Die Regeln wirken erst beim Einlesen */
+  /**
+   * Nach dem Speichern (v0.1.1): Die Regeln wirken erst beim Verarbeiten im Reiter „Register“.
+   * Das eigene „Dateibaum einlesen“ ist entfallen, das Speichern stößt die Prüfung an.
+   */
   const [offenesEinlesen, setOffenesEinlesen] = useState(false);
-  const { laeuft, lauf, fehler: einlesenFehler, einlesen, rueckfrage } = useEinlesen();
   const geladen = useRef(false);
   const zeilenRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const kinderRef = useRef(kinder);
@@ -203,11 +214,6 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
     }
   }
 
-  // Ein Einlesen wendet die Regeln an
-  useEffect(() => {
-    if (lauf) setOffenesEinlesen(false);
-  }, [lauf]);
-
   const regelListe = useMemo(() => alsZeilen(entwurf), [entwurf]);
 
   const zeilen = (ordner: string, tiefe: number): JSX.Element[] =>
@@ -338,22 +344,49 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
                 Speichern
               </button>
             </>
-          ) : (
-            <>
-              {offenesEinlesen && <span className="achtung">Gespeichert. Die Regeln wirken beim Einlesen.</span>}
-              <button className={`knopf ${offenesEinlesen ? "" : "knopf--leise"}`} onClick={einlesen} disabled={laeuft}>
-                {laeuft ? "Liest ein …" : "Dateibaum einlesen"}
-              </button>
-            </>
-          )}
+          ) : null}
         </div>
       </header>
 
-      {(fehler || einlesenFehler || baumFehler) && (
+      {offenesEinlesen && (
+        <section className="regel__meldung regel__wirkung">
+          <div>
+            <strong>Regeln gespeichert. Jetzt im Register verarbeiten.</strong>
+            {stand.prueft ? (
+              <p className="arbeitet">
+                <span className="kreisel" /> Prüft, was die Regeln am Register ändern …
+              </p>
+            ) : stand.etwas ? (
+              <p>
+                Im Register steht an: <b>{wirkung(stand)}</b>. Übernommen wird das erst mit „Verarbeiten“ im Reiter
+                „Register“.
+              </p>
+            ) : (
+              <p>Im Register steht nichts an. Die Regeln ändern am Register nichts.</p>
+            )}
+          </div>
+          {stand.etwas || stand.prueft ? (
+            <button
+              className="knopf regel__wirkung-knopf"
+              onClick={() => {
+                setOffenesEinlesen(false);
+                zumRegister();
+              }}
+            >
+              Im Register verarbeiten →
+            </button>
+          ) : (
+            <button className="knopf knopf--leise" onClick={() => setOffenesEinlesen(false)}>
+              Schließen
+            </button>
+          )}
+        </section>
+      )}
+      {(fehler || baumFehler) && (
         <section className="hinweis fehler regel__meldung regel__fehler">
           <div>
             <strong>Fehler</strong>
-            <p>{fehler ?? einlesenFehler ?? baumFehler}</p>
+            <p>{fehler ?? baumFehler}</p>
           </div>
           {fehler && (
             <button className="regel__fehler-zu" onClick={() => setFehler(null)} aria-label="Meldung schließen" title="Schließen">
@@ -387,11 +420,6 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
               Abbrechen
             </button>
           </form>
-        </section>
-      )}
-      {lauf && (
-        <section className="regel__meldung regel__lauf">
-          <LaufMeldung lauf={lauf} />
         </section>
       )}
 
@@ -476,7 +504,6 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
           )}
         </aside>
       </div>
-      {rueckfrage}
     </div>
   );
 
@@ -484,4 +511,18 @@ export default function Ordneransicht({ sichtbar }: { sichtbar: boolean }) {
     await wegOeffnen(pfad);
     setGewaehlt(pfad);
   }
+}
+
+/** Zahlen der Prüfung als kurzer Text, nur was nicht null ist (v0.1.1). */
+function wirkung(s: Anstehend): string {
+  return [
+    [s.neu, "neu"],
+    [s.geaendert, "geändert"],
+    [s.offen, "noch offen"],
+    [s.nurNamen, "neu nur mit Namen"],
+    [s.entfernen, "zu entfernen"],
+  ]
+    .filter(([n]) => (n as number) > 0)
+    .map(([n, t]) => `${alsZahl(n as number)} ${t}`)
+    .join(" · ");
 }

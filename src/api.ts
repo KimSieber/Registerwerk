@@ -42,6 +42,8 @@ export interface LaufErgebnis {
   uebergangene_ordner: number;
   /** Nur geprüft, das Register ist unverändert. Die Oberfläche fragt nach. */
   probe: boolean;
+  /** Zu entfernen, aber abgewählt und behalten (v0.1.1) */
+  behalten: number;
   /** Die Dateien hinter entfernt und reduziert, nach Pfad, höchstens 5000 */
   betroffen: Betroffen[];
   /** Ordner, die dieses Gerät früher gesehen hat und jetzt nicht findet. Ihr Bestand bleibt. */
@@ -605,7 +607,7 @@ export function sucheAufbauen(beiFortschritt: (f: Fortschritt) => void) {
 
 /* ---------- Delta-Lauf (v0.0.8) ---------- */
 
-export type DeltaArt = "neu" | "geaendert" | "offen";
+export type DeltaArt = "neu" | "geaendert" | "offen" | "entfernen";
 
 /** Bits der anstehenden Schritte */
 export const SCHRITT_INHALT = 1;
@@ -618,6 +620,8 @@ export interface DeltaDatei {
   art: DeltaArt;
   nur_online: boolean;
   schritte: number;
+  /** Bei „entfernen“ der Grund (v0.1.1) */
+  grund?: Grund;
 }
 
 export interface OrdnerZahl {
@@ -626,6 +630,10 @@ export interface OrdnerZahl {
   neu: number;
   geaendert: number;
   nur_online: number;
+  /** Neue Dateien nur mit Namen samt Unterordnern, nicht in `dateien` (v0.1.1) */
+  nur_namen: number;
+  /** Zu entfernende Dateien samt Unterordnern (v0.1.1) */
+  entfernen: number;
 }
 
 export interface DeltaUebersicht {
@@ -705,16 +713,22 @@ export const deltaDateien = (ordner: string) => invoke<DeltaDatei[]>("delta_date
  * Nimmt auf, lädt und verarbeitet alles außer `ausgeschlossen` (Pfade von Ordnern oder Dateien), mit
  * `ohneOnline` auch ohne die „nur online“-Dateien. Entfernt nichts.
  */
-export function verarbeiten(ausgeschlossen: string[], ohneOnline: boolean, beiMeldung: (m: Meldung) => void) {
+/** `entfernen`: Wegfallendes außer dem Abgewählten mit entfernen (v0.1.1) */
+export function verarbeiten(
+  ausgeschlossen: string[],
+  ohneOnline: boolean,
+  entfernen: boolean,
+  beiMeldung: (m: Meldung) => void,
+) {
   const kanal = new Channel<Meldung>();
   kanal.onmessage = beiMeldung;
-  return invoke<AblaufErgebnis>("verarbeiten", { ausgeschlossen, ohneOnline, kanal });
+  return invoke<AblaufErgebnis>("verarbeiten", { ausgeschlossen, ohneOnline, entfernen, kanal });
 }
 
 /** Nicht weiter auf Dateien aus der Cloud warten, mit den vorhandenen weitermachen. */
 export const ladenUeberspringen = () => invoke<void>("laden_ueberspringen");
 
-export type DeltaFilter = "alle" | "neu" | "geaendert" | "offen" | "online" | "namen";
+export type DeltaFilter = "alle" | "neu" | "geaendert" | "offen" | "online" | "namen" | "entfernen";
 /** Dateien der letzten Prüfung nach Art, wahlweise in einem Ordner. Höchstens 2.000, dazu die Gesamtzahl. */
 export const deltaListe = (filter: DeltaFilter, ordner: string | null) =>
   invoke<[DeltaDatei[], number]>("delta_liste", { filter, ordner });

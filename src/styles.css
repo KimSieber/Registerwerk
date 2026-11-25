@@ -592,3 +592,8 @@ code {
 .kasten.schluessel h3, .kasten.schluessel p { margin: 0; }
 .rahmen__inhalt.sperre > .kasten { margin: 40px auto 0; align-self: flex-start; }
 .verschluesselung__schritt { margin: 6px 0 0; font-size: 14px; font-weight: 600; color: var(--text); }
+
+/* Kreisel am Reiter „Register“ bei Hintergrundtätigkeit (v0.1.1) */
+.umschalter--text button.reiter__register { display: inline-flex; align-items: center; gap: 7px; padding: 0 12px 0 14px; }
+.reiter__kreisel { flex: none; width: 10px; height: 10px; border-width: 2px; }
+.reiter__kreisel--ruhe { visibility: hidden; animation: none; }

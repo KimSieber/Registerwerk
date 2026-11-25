@@ -11,6 +11,7 @@ import {
   ordnerWaehlen,
 } from "./api";
 import { alsDauer, alsZahl, alsZeitpunkt } from "./format";
+import { useTaetigkeit } from "./taetigkeit";
 
 /**
  * Dateibaum einlesen, mit Rückfrage (v0.0.7): Würde der Abgleich Einträge entfernen, ändert der
@@ -22,6 +23,7 @@ export function useEinlesen() {
   const [lauf, setLauf] = useState<LaufErgebnis | null>(null);
   const [frage, setFrage] = useState<LaufErgebnis | null>(null);
   const [fehler, setFehler] = useState<string | null>(null);
+  useTaetigkeit(laeuft ? "Liest den Dateibaum ein" : null);
 
   const starten = useCallback(async (bestaetigt: boolean) => {
     setLaeuft(true);
@@ -205,7 +207,7 @@ export function VermisstListe({ ordner }: { ordner: OrdnerBestand[] }) {
   );
 }
 
-const GRUENDE: { grund: Grund; titel: string }[] = [
+export const GRUENDE: { grund: Grund; titel: string }[] = [
   { grund: "fehlt", titel: "Datei gibt es nicht mehr (gelöscht, verschoben oder umbenannt)" },
   { grund: "typ", titel: "Dateityp wird ignoriert (kein Dokument, kein Bild)" },
   { grund: "bibliothek", titel: "Ordner fremder Bibliotheken" },

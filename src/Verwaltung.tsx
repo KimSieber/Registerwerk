@@ -24,6 +24,7 @@ import {
 import { LaufMeldung, useEinlesen } from "./Einlesen";
 import { NAMEN } from "./ordner/stufen";
 import VorschauPruefen from "./VorschauPruefen";
+import { useTaetigkeit } from "./taetigkeit";
 import { alsAnteil, alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
 
 /** `eingebettet`: unter „Einzelheiten“ im Reiter „Register“ (v0.0.8), ohne eigenen Kopf. */
@@ -35,6 +36,17 @@ export default function Verwaltung({ eingebettet = false }: { eingebettet?: bool
   // Laufender Vorgang, der ins Register schreibt. Es läuft höchstens einer.
   const [vorgang, setVorgang] = useState<"inhalte" | "vorschauen" | "ocr" | "probelauf" | "textebene" | null>(
     null,
+  );
+  useTaetigkeit(
+    vorgang === "inhalte"
+      ? "Liest Inhalte"
+      : vorgang === "vorschauen"
+        ? "Erzeugt Vorschauen"
+        : vorgang === "ocr"
+          ? "Erkennt Text"
+          : vorgang === "probelauf" || vorgang === "textebene"
+            ? "Schreibt in PDFs"
+            : null,
   );
   const [fortschritt, setFortschritt] = useState<Fortschritt | null>(null);
   const [inhaltLauf, setInhaltLauf] = useState<InhaltErgebnis | null>(null);

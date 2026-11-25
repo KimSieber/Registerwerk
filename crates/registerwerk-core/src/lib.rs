@@ -163,8 +163,9 @@ pub fn delta_pruefen_abbrechbar(
 /// Cloud ankommt. Danach geht es mit den vorhandenen weiter.
 pub const LADEN_WARTEN: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Delta-Lauf (v0.0.8): nimmt neue und geänderte Dateien auf, ohne etwas zu
-/// entfernen, lädt die "nur online"-Dateien der Auswahl und führt die
+/// Delta-Lauf (v0.0.8): nimmt neue und geänderte Dateien auf, entfernt mit
+/// `entfernen` alles Wegfallende außer `ausgeschlossen` (v0.1.1, vorher ein
+/// eigener Schritt), lädt die "nur online"-Dateien der Auswahl und führt die
 /// Auswahl durch Inhalte, Vorschauen, Texterkennung und Textebene. Die
 /// Auswahl sind alle Dateien mit anstehendem Schritt außer `ausgeschlossen`
 /// (Dateien und Ordner als Pfad im Register), mit `ohne_online` auch ohne
@@ -179,6 +180,7 @@ pub fn verarbeiten(
     tessdata: &Path,
     ausgeschlossen: &[String],
     ohne_online: bool,
+    entfernen: bool,
     mut melden: impl FnMut(&Meldung),
     weiter: &AtomicBool,
     abbrechen: &AtomicBool,
@@ -192,7 +194,17 @@ pub fn verarbeiten(
 
     melden(&Meldung { schritt: S::Aufnehmen, erledigt: 0, gesamt: 1, datei: String::new() });
     let durchlauf = dateibaum::durchlaufen(konfig, regeln);
-    e.aufgenommen = register.aufnehmen(&durchlauf)?;
+    // Entfernen ist seit v0.1.1 Teil des Laufs: außer dem Abgewählten, oder
+    // gar nichts mit `entfernen == false`
+    e.aufgenommen = if entfernen {
+        register.abgleichen_behalten(&durchlauf, ausgeschlossen)?
+    } else {
+        // `aufnehmen` zählt in `entfernt`, was wegfiele. Hier bleibt es alles.
+        let mut r = register.aufnehmen(&durchlauf)?;
+        r.behalten = r.entfernt;
+        r.entfernt = 0;
+        r
+    };
     melden(&Meldung { schritt: S::Aufnehmen, erledigt: 1, gesamt: 1, datei: String::new() });
 
     let gesehen: std::collections::HashSet<&str> = durchlauf.dateien.iter().map(|d| d.pfad.as_str()).collect();

@@ -358,3 +358,19 @@ button.stufenwahl__knopf--eigene:hover { color: #fff; }
 .registerinfo__knoepfe { display: flex; justify-content: flex-end; gap: 8px; }
 .registerinfo__frage { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--bg); }
 .registerinfo__hinweis { font-size: 12px; }
+
+/* Kasten nach dem Speichern der Regeln (v0.1.1): deutlich, damit klar ist, dass noch zu verarbeiten ist */
+.regel__wirkung {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 18px;
+  border: 2px solid var(--akzent);
+  border-radius: 10px;
+  background: var(--warn-grund);
+  font-size: 13px;
+}
+.regel__wirkung strong { display: block; font-size: 15px; margin-bottom: 4px; }
+.regel__wirkung p { margin: 0; }
+.regel__wirkung-knopf { flex: none; font-size: 14px; padding: 9px 18px; }

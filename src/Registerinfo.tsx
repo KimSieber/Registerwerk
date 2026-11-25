@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { alsDauer, alsGroesse, alsZahl, alsZeitpunkt } from "./format";
 import Verschluesselung from "./Verschluesselung";
+import { useTaetigkeit } from "./taetigkeit";
 
 /**
  * Datenbank-Symbol rechts oben (v0.0.7), wie in Bilderwerk: zeigt, wo das Register liegt und wie groß
@@ -33,6 +34,7 @@ export default function Registerinfo() {
   // Verschlüsseln (v0.1.0): Feld bleibt offen, solange es läuft
   const [verschluesselt, setVerschluesselt] = useState(false);
   const feld = useRef<HTMLDivElement>(null);
+  useTaetigkeit(teilt ? "Teilt Scheiben auf" : verschluesselt ? "Verschlüsselt das Register" : null);
 
   const laden = useCallback(() => {
     registerInfo()

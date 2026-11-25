@@ -16,16 +16,18 @@ import {
   inhalteAbbrechen,
   ladenUeberspringen,
   verarbeiten,
+  Grund,
 } from "../api";
-import { BetroffenListe, VermisstListe, useEinlesen } from "../Einlesen";
+import { GRUENDE, VermisstListe } from "../Einlesen";
 import { alsDauer, alsZahl, alsZeitpunkt } from "../format";
 import Verwaltung from "../Verwaltung";
+import { useTaetigkeit } from "../taetigkeit";
 
 /**
  * Reiter „Register“ (v0.0.8): ein klarer Ablauf. Beim Öffnen der Anwendung prüft Registerwerk im
  * Hintergrund, was ansteht, ohne etwas zu ändern, und meldet Änderungen an den Rahmen (v0.0.9). Der Baum zeigt die Dateien nach Ordnern, alles ist angehakt.
  * „Verarbeiten“ nimmt auf, lädt „nur online“-Dateien und führt die Auswahl durch alle Schritte.
- * Entfernen bleibt ein eigener Schritt mit Rückfrage. Die bisherige Ansicht steht unter „Einzelheiten“.
+ * Seit v0.1.1 entfernt „Verarbeiten“ auch, was wegfällt, außer dem Abgewählten. Die bisherige Ansicht steht unter „Einzelheiten“.
  */
 /** Stand der letzten Prüfung für den Knopf neben den Reitern (v0.0.9). */
 export interface Anstehend {
@@ -33,13 +35,32 @@ export interface Anstehend {
   etwas: boolean;
   /** Darunter neue, geänderte oder zu entfernende Dateien oder vermisste Ordner */
   aenderungen: boolean;
+  /** Die Prüfung läuft gerade (v0.1.1, für den Kasten im Reiter „Ordner“) */
+  prueft: boolean;
+  /** Zahlen der letzten Prüfung (v0.1.1) */
+  neu: number;
+  geaendert: number;
+  offen: number;
+  nurNamen: number;
+  entfernen: number;
 }
+
+export const NICHTS_ANSTEHEND: Anstehend = {
+  etwas: false,
+  aenderungen: false,
+  prueft: false,
+  neu: 0,
+  geaendert: 0,
+  offen: 0,
+  nurNamen: 0,
+  entfernen: 0,
+};
 
 export default function Ablauf({
   onAenderungen,
 }: {
   /** Ergebnis der letzten Prüfung: Gibt es etwas zu tun, und sind Änderungen dabei (neu, geändert, zu entfernen)? */
-  onAenderungen: (stand: Anstehend) => void;
+  onAenderungen: (stand: Partial<Anstehend>) => void;
 }) {
   const [delta, setDelta] = useState<DeltaAntwort | null>(null);
   const [prueft, setPrueft] = useState(false);
@@ -54,16 +75,27 @@ export default function Ablauf({
   const [meldung, setMeldung] = useState<Meldung | null>(null);
   const [fertig, setFertig] = useState<Set<Schritt>>(new Set());
   const [ergebnis, setErgebnis] = useState<AblaufErgebnis | null>(null);
-  const { laeuft: entfernt, fehler: einlesenFehler, einlesen, rueckfrage } = useEinlesen();
+  /** Diesmal nichts aus dem Register entfernen (v0.1.1) */
+  const [ohneEntfernen, setOhneEntfernen] = useState(false);
+  /** Rückfrage vor dem Entfernen vieler Einträge (v0.1.1) */
+  const [entfernenFrage, setEntfernenFrage] = useState(false);
   /** Fenster mit Dateinamen: Art und wahlweise Ordner */
   const [liste, setListe] = useState<{ filter: DeltaFilter; ordner: string | null; titel: string } | null>(null);
   // Eine Prüfung zur selben Zeit. Beim Start fragt React im Entwicklungsmodus doppelt.
   const pruefLauf = useRef(false);
+  // Kommt während einer Prüfung ein neuer Anlass (etwa gespeicherte Regeln), wird danach noch
+  // einmal geprüft. Sonst gälte das Ergebnis der alten Regeln (v0.1.1).
+  const nochmal = useRef(false);
+  const pruefenRef = useRef<() => Promise<void>>(async () => {});
 
   const pruefen = useCallback(async () => {
-    if (pruefLauf.current) return;
+    if (pruefLauf.current) {
+      nochmal.current = true;
+      return;
+    }
     pruefLauf.current = true;
     setPrueft(true);
+    onAenderungen({ prueft: true });
     setFehler(null);
     try {
       const d = await deltaPruefen();
@@ -78,7 +110,15 @@ export default function Ablauf({
           d.lauf.reduziert +
           d.lauf.vermisst.filter((o) => o.dateien > 0).length >
         0;
-      onAenderungen({ etwas: aenderungen || d.uebersicht.dateien > 0, aenderungen });
+      onAenderungen({
+        etwas: aenderungen || d.uebersicht.dateien > 0,
+        aenderungen,
+        neu: d.uebersicht.neu,
+        geaendert: d.uebersicht.geaendert,
+        offen: d.uebersicht.offen,
+        nurNamen: d.nur_namen,
+        entfernen: d.lauf.entfernt + d.lauf.reduziert,
+      });
     } catch (e) {
       // Läuft gerade ein Vorgang (etwa unter „Einzelheiten“), bleibt der letzte Stand stehen
       const text = String(e);
@@ -92,8 +132,14 @@ export default function Ablauf({
     } finally {
       pruefLauf.current = false;
       setPrueft(false);
+      onAenderungen({ prueft: false });
+      if (nochmal.current) {
+        nochmal.current = false;
+        setTimeout(() => void pruefenRef.current(), 0);
+      }
     }
   }, [onAenderungen]);
+  pruefenRef.current = pruefen;
 
   // Beim Start der Anwendung
   useEffect(() => {
@@ -120,7 +166,7 @@ export default function Ablauf({
 
   // Gewählte Dateien: alle außer den ausgeschlossenen (Einträge in `aus` überschneiden sich nicht)
   const gewaehlt = useMemo(() => {
-    if (!delta) return { dateien: 0, online: 0 };
+    if (!delta) return { dateien: 0, online: 0, entfernen: 0 };
     let dateien = delta.uebersicht.dateien;
     let online = delta.uebersicht.nur_online;
     aus.forEach((p) => {
@@ -137,8 +183,16 @@ export default function Ablauf({
       dateien -= online;
       online = 0;
     }
-    return { dateien, online };
-  }, [delta, aus, ordner, ohneOnline]);
+    // Zu entfernen: alle außer den abgewählten (v0.1.1). Abgewählte Ordner zählen mit ihrem Bestand.
+    let entfernen = delta.lauf.entfernt + delta.lauf.reduziert;
+    aus.forEach((p) => {
+      const o = ordner.get(p);
+      if (o) entfernen -= o.entfernen;
+      else if (dateienCache.current.get(p)?.art === "entfernen") entfernen -= 1;
+    });
+    if (ohneEntfernen) entfernen = 0;
+    return { dateien, online, entfernen };
+  }, [delta, aus, ordner, ohneOnline, ohneEntfernen]);
 
   const starten = async () => {
     setLaeuft(true);
@@ -149,7 +203,7 @@ export default function Ablauf({
     setFertig(new Set());
     let vorher: Schritt | null = null;
     try {
-      const e = await verarbeiten([...aus], ohneOnline, (m) => {
+      const e = await verarbeiten([...aus], ohneOnline, !ohneEntfernen, (m) => {
         if (vorher && vorher !== m.schritt) {
           const v = vorher;
           setFertig((f) => new Set(f).add(v));
@@ -171,11 +225,30 @@ export default function Ablauf({
   const u = delta?.uebersicht;
   const lauf = delta?.lauf;
   const zuEntfernen = lauf ? lauf.entfernt + lauf.reduziert : 0;
-  const nichtsZuTun = u && u.dateien === 0 && (delta?.nur_namen ?? 0) === 0;
+  useTaetigkeit(prueft ? "Prüft den Dateibaum" : laeuft ? "Verarbeitet" : null);
+  const nichtsZuTun = u && u.dateien === 0 && (delta?.nur_namen ?? 0) === 0 && zuEntfernen === 0;
+  const etwasGewaehlt = gewaehlt.dateien > 0 || (delta?.nur_namen ?? 0) > 0 || gewaehlt.entfernen > 0;
+  // Viele Einträge auf einmal: einmal nachfragen. Ein versehentlich auf „Aus“ gestellter Ordner
+  // würde sonst mit einem Klick Text und Vorschauen entfernen (Kim, v0.1.1).
+  const ENTFERNEN_FRAGEN_AB = 100;
+  const verarbeitenKlick = () => {
+    if (gewaehlt.entfernen > ENTFERNEN_FRAGEN_AB) setEntfernenFrage(true);
+    else void starten();
+  };
 
   return (
     <div className="seite ablauf">
-      {rueckfrage}
+      {entfernenFrage && (
+        <EntfernenFrage
+          anzahl={gewaehlt.entfernen}
+          zeigen={() => setListe({ filter: "entfernen", ordner: null, titel: "Zu entfernen" })}
+          onAbbrechen={() => setEntfernenFrage(false)}
+          onBestaetigen={() => {
+            setEntfernenFrage(false);
+            void starten();
+          }}
+        />
+      )}
       {liste && <DateiFenster {...liste} onSchliessen={() => setListe(null)} />}
 
       <section className="karte">
@@ -201,7 +274,7 @@ export default function Ablauf({
           )}
         </div>
 
-        {(fehler || einlesenFehler) && <p className="achtung">{fehler ?? einlesenFehler}</p>}
+        {fehler && <p className="achtung">{fehler}</p>}
 
         {u && (u.dateien > 0 || zuEntfernen > 0 || laeuft) && (
           <div className="ablauf__zahlen">
@@ -230,13 +303,20 @@ export default function Ablauf({
                 zeigen={() => setListe({ filter: "namen", ordner: null, titel: "Neu, nur mit Namen" })}
               />
             )}
-            {zuEntfernen > 0 && <Zahl wert={zuEntfernen} titel="zu entfernen" warnung />}
+            {zuEntfernen > 0 && (
+              <Zahl
+                wert={zuEntfernen}
+                titel="zu entfernen"
+                warnung
+                zeigen={() => setListe({ filter: "entfernen", ordner: null, titel: "Zu entfernen" })}
+              />
+            )}
           </div>
         )}
 
         {nichtsZuTun && !laeuft && <p className="ablauf__ruhe">✓ Das Register ist aktuell.</p>}
 
-        {u && u.dateien > 0 && !laeuft && (
+        {u && (u.dateien > 0 || delta!.nur_namen > 0 || zuEntfernen > 0) && !laeuft && (
           <>
             {u.nur_online > 0 && (
               <div className="ablauf__online">
@@ -253,8 +333,25 @@ export default function Ablauf({
                 </span>
               </div>
             )}
+            {zuEntfernen > 0 && (
+              <div className="ablauf__online ablauf__entfernen">
+                <span>
+                  {alsZahl(zuEntfernen)} {zuEntfernen === 1 ? "Eintrag fällt" : "Einträge fallen"} aus dem Register
+                  oder verlieren Text und Vorschau. Die Originale bleiben unberührt.
+                </span>
+                <span className="umschalter umschalter--text">
+                  <button className={!ohneEntfernen ? "aktiv" : ""} onClick={() => setOhneEntfernen(false)}>
+                    Entfernen
+                  </button>
+                  <button className={ohneEntfernen ? "aktiv" : ""} onClick={() => setOhneEntfernen(true)}>
+                    Diesmal behalten
+                  </button>
+                </span>
+              </div>
+            )}
             <Baum
               ohneOnline={ohneOnline}
+              ohneEntfernen={ohneEntfernen}
               ordner={delta!.uebersicht.ordner}
               aus={aus}
               setAus={setAus}
@@ -266,22 +363,14 @@ export default function Ablauf({
                 {alsZahl(gewaehlt.dateien)} von {alsZahl(u.dateien)} Dateien gewählt
                 {gewaehlt.online > 0 && <>, {alsZahl(gewaehlt.online)} werden aus der Cloud geladen</>}
                 {delta!.nur_namen > 0 && <> · dazu {alsZahl(delta!.nur_namen)} neue nur mit Namen</>}
+                {gewaehlt.entfernen > 0 && <> · {alsZahl(gewaehlt.entfernen)} werden entfernt</>}
                 {" · Zahlen anklicken zeigt die Dateien"}
               </span>
-              <button className="knopf" onClick={() => void starten()} disabled={gewaehlt.dateien === 0 || prueft}>
-                Verarbeiten
+              <button className="knopf" onClick={verarbeitenKlick} disabled={!etwasGewaehlt || prueft}>
+                {gewaehlt.entfernen > 0 ? `Verarbeiten und ${alsZahl(gewaehlt.entfernen)} entfernen` : "Verarbeiten"}
               </button>
             </div>
           </>
-        )}
-
-        {u && u.dateien === 0 && (delta?.nur_namen ?? 0) > 0 && !laeuft && (
-          <div className="ablauf__fuss">
-            <span className="leise">{alsZahl(delta!.nur_namen)} neue Dateien nur mit Namen</span>
-            <button className="knopf" onClick={() => void starten()} disabled={prueft}>
-              Aufnehmen
-            </button>
-          </div>
         )}
 
         {(laeuft || ergebnis) && u && (
@@ -304,24 +393,6 @@ export default function Ablauf({
         )}
         {ergebnis && !laeuft && <ErgebnisZeile e={ergebnis} />}
       </section>
-
-      {lauf && zuEntfernen > 0 && !laeuft && (
-        <section className="karte">
-          <div className="karte-kopf">
-            <div>
-              <h2>Zu entfernen</h2>
-              <p className="unterzeile">
-                {alsZahl(zuEntfernen)} Einträge gibt es nicht mehr oder sie fallen nach den Ordner-Regeln weg.
-                Verarbeiten lässt sie stehen. Die Originale bleiben in jedem Fall unberührt.
-              </p>
-            </div>
-            <button className="knopf knopf--leise" onClick={einlesen} disabled={entfernt || prueft}>
-              Entfernen …
-            </button>
-          </div>
-          <BetroffenListe dateien={lauf.betroffen} gesamt={zuEntfernen} />
-        </section>
-      )}
 
       {lauf && lauf.vermisst.length > 0 && !laeuft && (
         <section className="karte">
@@ -426,6 +497,7 @@ function DateiFenster({
                     {filter !== "namen" && d.art === "neu" && <span className="baum__marke baum__marke--neu">neu</span>}
                     {d.art === "geaendert" && <span className="baum__marke">geändert</span>}
                     {d.art === "offen" && <span className="baum__marke baum__marke--leise">offen</span>}
+                    {d.art === "entfernen" && <EntfernenMarke grund={d.grund} />}
                     {d.nur_online && <span className="baum__marke baum__marke--online">☁ nur online</span>}
                   </span>
                 </div>
@@ -464,11 +536,12 @@ type BaumProps = {
   cache: Map<string, DeltaDatei>;
   zeigen: Zeigen;
   ohneOnline: boolean;
+  ohneEntfernen: boolean;
 };
 
 type Zeigen = (filter: DeltaFilter, ordner: string | null, titel: string) => void;
 
-function Baum({ ordner, aus, setAus, cache, zeigen, ohneOnline }: BaumProps) {
+function Baum({ ordner, aus, setAus, cache, zeigen, ohneOnline, ohneEntfernen }: BaumProps) {
   const kinder = useMemo(() => {
     const m = new Map<string, OrdnerZahl[]>();
     ordner.forEach((o) => {
@@ -516,6 +589,7 @@ function Baum({ ordner, aus, setAus, cache, zeigen, ohneOnline }: BaumProps) {
           cache={cache}
           zeigen={zeigen}
           ohneOnline={ohneOnline}
+          ohneEntfernen={ohneEntfernen}
         />
       ))}
     </div>
@@ -534,6 +608,7 @@ type KnotenProps = {
   cache: Map<string, DeltaDatei>;
   zeigen: Zeigen;
   ohneOnline: boolean;
+  ohneEntfernen: boolean;
 };
 
 function Knoten({
@@ -548,11 +623,14 @@ function Knoten({
   cache,
   zeigen,
   ohneOnline,
+  ohneEntfernen,
 }: KnotenProps) {
   const auf = offen.has(o.pfad);
   const [dateien, setDateien] = useState<DeltaDatei[] | null>(null);
   const selbstAus = aus.has(o.pfad);
   const gewaehlt = !vorfahrAus && !selbstAus;
+  // Ordner nur mit Dateien nur mit Namen: kommen immer ins Register, nichts zu wählen (v0.1.1)
+  const nurName = o.dateien === 0 && o.entfernen === 0;
   // Ohne „nur online“ ist ein Ordner nur zum Teil gewählt, ganz aus nur online gar nicht
   const alleOnline = ohneOnline && o.nur_online === o.dateien;
   const teils =
@@ -582,7 +660,11 @@ function Knoten({
         <button className="baum__pfeil" onClick={klappen} aria-label={auf ? "Zuklappen" : "Aufklappen"}>
           {auf ? "▾" : "▸"}
         </button>
-        <Haken an={gewaehlt && !alleOnline} teils={teils} gesperrt={vorfahrAus} onClick={() => umschalten(o.pfad)} />
+        {nurName ? (
+          <Haken an fest onClick={() => {}} />
+        ) : (
+          <Haken an={gewaehlt && !alleOnline} teils={teils} gesperrt={vorfahrAus} onClick={() => umschalten(o.pfad)} />
+        )}
         <span className="baum__name" onClick={klappen}>
           {name(o.pfad)}
         </span>
@@ -606,8 +688,26 @@ function Knoten({
               ☁ {alsZahl(o.nur_online)}
             </button>
           )}
+          {o.entfernen > 0 && (
+            <button
+              className="baum__marke baum__marke--entfernen"
+              onClick={() => zeigen("entfernen", o.pfad, "Zu entfernen")}
+              title="Fallen aus dem Register oder verlieren Text und Vorschau. Die Originale bleiben."
+            >
+              {alsZahl(o.entfernen)} entfernen
+            </button>
+          )}
+          {o.nur_namen > 0 && (
+            <button
+              className="baum__marke baum__marke--name"
+              onClick={() => zeigen("namen", o.pfad, "Neu, nur mit Namen")}
+              title="Kommen nur mit Name, Größe und Datum ins Register, ohne Inhalt"
+            >
+              {alsZahl(o.nur_namen)} nur Name
+            </button>
+          )}
           <button className="baum__anzahl" onClick={() => zeigen("alle", o.pfad, "Alle Dateien")} title="Dateien zeigen">
-            {alsZahl(o.dateien)}
+            {o.dateien > 0 ? alsZahl(o.dateien) : ""}
           </button>
         </span>
       </div>
@@ -627,6 +727,7 @@ function Knoten({
               cache={cache}
               zeigen={zeigen}
               ohneOnline={ohneOnline}
+              ohneEntfernen={ohneEntfernen}
             />
           ))}
           {dateien === null && (
@@ -636,19 +737,44 @@ function Knoten({
           )}
           {dateien?.map((d) => (
             <div key={d.pfad} className="baum__zeile baum__datei" style={{ paddingLeft: 26 + (tiefe + 1) * 20 }}>
-              <Haken
-                an={gewaehlt && !aus.has(d.pfad) && !(ohneOnline && d.nur_online)}
-                gesperrt={!gewaehlt || (ohneOnline && d.nur_online)}
-                onClick={() => umschalten(d.pfad)}
-              />
+              {d.art === "entfernen" ? (
+                // Zu entfernen (v0.1.1): angehakt wird entfernt, abgewählt bleibt im Register
+                <Haken
+                  an={gewaehlt && !aus.has(d.pfad) && !ohneEntfernen}
+                  gesperrt={!gewaehlt || ohneEntfernen}
+                  onClick={() => umschalten(d.pfad)}
+                />
+              ) : d.schritte === 0 ? (
+                // Nur mit Namen (v0.1.1): kommt immer ins Register, fester grauer Haken
+                <Haken an fest onClick={() => {}} />
+              ) : (
+                <Haken
+                  an={gewaehlt && !aus.has(d.pfad) && !(ohneOnline && d.nur_online)}
+                  gesperrt={!gewaehlt || (ohneOnline && d.nur_online)}
+                  onClick={() => umschalten(d.pfad)}
+                />
+              )}
               <span className="baum__name" title={d.pfad}>
                 {name(d.pfad)}
               </span>
               <span className="baum__zahlen">
-                {d.art === "neu" && <span className="baum__marke baum__marke--neu">neu</span>}
+                {d.art === "entfernen" ? (
+                  <EntfernenMarke grund={d.grund} />
+                ) : d.schritte === 0 ? (
+                  <span
+                    className="baum__marke baum__marke--name"
+                    title="Kommt nur mit Name, Größe und Datum ins Register, ohne Inhalt"
+                  >
+                    neu · nur Name
+                  </span>
+                ) : (
+                  d.art === "neu" && <span className="baum__marke baum__marke--neu">neu</span>
+                )}
                 {d.art === "geaendert" && <span className="baum__marke">geändert</span>}
                 {d.art === "offen" && <span className="baum__marke baum__marke--leise">offen</span>}
-                {d.nur_online && <span className="baum__marke baum__marke--online">☁ nur online</span>}
+                {d.nur_online && d.schritte > 0 && (
+                  <span className="baum__marke baum__marke--online">☁ nur online</span>
+                )}
               </span>
             </div>
           ))}
@@ -658,18 +784,98 @@ function Knoten({
   );
 }
 
-function Haken({ an, teils, gesperrt, onClick }: { an: boolean; teils?: boolean; gesperrt?: boolean; onClick: () => void }) {
+function Haken({
+  an,
+  teils,
+  gesperrt,
+  fest,
+  onClick,
+}: {
+  an: boolean;
+  teils?: boolean;
+  gesperrt?: boolean;
+  /** Fester grauer Haken: kommt ins Register, nicht abwählbar (v0.1.1) */
+  fest?: boolean;
+  onClick: () => void;
+}) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (ref.current) ref.current.indeterminate = !!teils;
   }, [teils]);
-  return <input ref={ref} type="checkbox" className="baum__haken" checked={an} disabled={gesperrt} onChange={onClick} />;
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      className={`baum__haken${fest ? " baum__haken--fest" : ""}`}
+      checked={an}
+      disabled={gesperrt || fest}
+      onChange={onClick}
+      title={fest ? "Kommt nur mit Namen ins Register. Nichts zu wählen." : undefined}
+    />
+  );
+}
+
+/** Kurzer Grund für die Marke im Baum (v0.1.1), der lange steht im Tooltip. */
+const KURZ: Record<Grund, string> = {
+  fehlt: "gibt es nicht mehr",
+  typ: "Typ ignoriert",
+  bibliothek: "Bibliothek",
+  ausgeschlossen: "Ordner aus",
+  ohne_regel: "ohne Regel",
+  nur_metadaten: "nur noch Name",
+};
+
+function EntfernenMarke({ grund }: { grund?: Grund }) {
+  const lang = GRUENDE.find((g) => g.grund === grund)?.titel;
+  return (
+    <span className="baum__marke baum__marke--entfernen" title={lang}>
+      entfernen{grund ? ` · ${KURZ[grund]}` : ""}
+    </span>
+  );
+}
+
+/** Rückfrage vor dem Entfernen vieler Einträge (v0.1.1). */
+function EntfernenFrage({
+  anzahl,
+  zeigen,
+  onAbbrechen,
+  onBestaetigen,
+}: {
+  anzahl: number;
+  zeigen: () => void;
+  onAbbrechen: () => void;
+  onBestaetigen: () => void;
+}) {
+  return (
+    <div className="dialog__grund" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onAbbrechen()}>
+      <div className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="entfernen-frage-titel">
+        <h2 id="entfernen-frage-titel">{alsZahl(anzahl)} Einträge aus dem Register entfernen?</h2>
+        <p>
+          Sie fallen aus dem Register oder verlieren Text und Vorschau. Die Originale bleiben unberührt. Ein
+          Neuaufbau dauert bei vielen Dateien lange.
+        </p>
+        <p>
+          <button className="knopf knopf--leise" onClick={zeigen}>
+            Dateien zeigen
+          </button>
+        </p>
+        <div className="dialog__knoepfe">
+          <button className="knopf knopf--leise" onClick={onAbbrechen} autoFocus>
+            Abbrechen
+          </button>
+          <button className="knopf knopf--gefahr" onClick={onBestaetigen}>
+            Verarbeiten und {alsZahl(anzahl)} entfernen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ---------- Schritte ---------- */
 
 const SCHRITTE: { s: Schritt; titel: string }[] = [
-  { s: "aufnehmen", titel: "Dateibaum aufnehmen" },
+  { s: "aufnehmen", titel: "Dateibaum aufnehmen und entfernen" },
   { s: "laden", titel: "Aus der Cloud laden" },
   { s: "inhalte", titel: "Inhalte lesen" },
   { s: "vorschauen", titel: "Vorschauen erzeugen" },
@@ -696,7 +902,13 @@ function Schritte({
     const e = ergebnis;
     switch (s) {
       case "aufnehmen":
-        return `${alsZahl(e.aufgenommen.neu)} neu, ${alsZahl(e.aufgenommen.geaendert)} geändert`;
+        return (
+          `${alsZahl(e.aufgenommen.neu)} neu, ${alsZahl(e.aufgenommen.geaendert)} geändert` +
+          (e.aufgenommen.entfernt + e.aufgenommen.reduziert > 0
+            ? `, ${alsZahl(e.aufgenommen.entfernt + e.aufgenommen.reduziert)} entfernt`
+            : "") +
+          (e.aufgenommen.behalten > 0 ? `, ${alsZahl(e.aufgenommen.behalten)} behalten` : "")
+        );
       case "laden":
         return `${alsZahl(e.laden.geladen)} geladen` + (e.laden.nicht_geladen_anzahl ? `, ${alsZahl(e.laden.nicht_geladen_anzahl)} nicht` : "");
       case "inhalte":

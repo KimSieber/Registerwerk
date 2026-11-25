@@ -501,6 +501,7 @@ async fn verarbeiten(
     zustand: State<'_, Lesen>,
     ausgeschlossen: Vec<String>,
     ohne_online: bool,
+    entfernen: bool,
     kanal: Channel<Meldung>,
 ) -> Result<AblaufErgebnis, String> {
     let (_, konfig) = konfig_laden(&app)?;
@@ -527,6 +528,7 @@ async fn verarbeiten(
             &tessdata,
             &ausgeschlossen,
             ohne_online,
+            entfernen,
             |m| {
                 // Jeder Schrittwechsel und jedes Ende wird gemeldet, sonst höchstens zehnmal je Sekunde
                 if schritt != Some(m.schritt) || m.erledigt == m.gesamt || zuletzt.elapsed() >= Duration::from_millis(100) {

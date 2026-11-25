@@ -182,7 +182,9 @@ cp config.beispiel.toml config.local.toml   # wahlweise, die Anwendung legt sie 
 npm install
 npm run tauri dev                    # Anwendung im Entwicklungsmodus
 npm run tauri dev -- --release       # dasselbe mit Release-Bau, volles Tempo
-cargo test -p registerwerk-core -p registerwerk-ocr  # Tests des Kerns und der OCR
+npm test                             # alle Rust-Tests, am Ende eine Zusammenfassung
+npm test -- -p registerwerk-core ablauf   # nur ein Paket, nur Tests mit „ablauf“ im Namen
+npm run pruefen                      # Build und Tests mit Abdeckung (cargo llvm-cov), Zusammenfassung
 npm run tauri build                  # fertige Anwendung bauen
 cargo run --release -p pdf_pruefen -- --still <Ordner>       # PDFs prüfen
 cargo run --release -p pdf_pruefen -- --vorschau 150 <Ordner> # Tempotest Vorschauen
@@ -192,6 +194,11 @@ cargo run --release -p pdf_pruefen -- --suche                # Messung der Suche
 cargo run --release -p pdf_pruefen -- --anfrage "Edeka Quittung"  # Suche in dieser Kopie
 cargo run --release -p pdf_pruefen -- --aufteilen <Register-Ordner>  # Probe: Scheiben aufteilen an einer Kopie in target/
 ```
+
+`npm test` und `npm run pruefen` sichern die volle Ausgabe in `target/pruefen/`.
+Die Abdeckung braucht einmal je Gerät `rustup component add llvm-tools-preview`
+und `cargo install cargo-llvm-cov`. Sie wird gezeigt, eine Mindestgrenze gibt es nicht.
+Der erste Lauf mit Abdeckung übersetzt alles neu, auch libaom und Tesseract.
 
 PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.
 `tools/pdfium_holen.sh` lädt einen fertigen Build mit fest eingetragener

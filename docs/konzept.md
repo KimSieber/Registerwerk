@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 24.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.0). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 25.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.1). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -47,6 +47,7 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 - Delta-Lauf: Prüfung beim Öffnen, Auswahl im Ordnerbaum, Verarbeitung durch alle Schritte, Laden von "nur online"-Dateien und Zurückstellen auf "nur online" (seit v0.0.8)
 - Lesen, Suchen und Prüfen ändern das Register nicht. Geschrieben wird nur, wenn eine Datei neu, geändert oder entfernt ist (seit v0.0.9)
 - Verschlüsseltes Register mit einem Schlüssel, den Kim selbst erzeugt und verwahrt, je Gerät im Schlüsselbund (seit v0.1.0)
+- Entfernen aus dem Register als Schritt des Delta-Laufs, abwählbar (seit v0.1.1)
 
 ### Unterstützte Cloud-Speicher
 
@@ -99,7 +100,7 @@ Der bestehende Scan-Prozess bleibt unverändert: Scan per Smartphone-App mit Bil
 - Geändert ist eine Datei, deren Größe oder Änderungsdatum abweicht. Ausnahme ist der Wechsel zwischen lokal und "nur online", siehe unten.
 - Entfernt wird nur mit Grund (seit v0.0.7): Für den Ordner gilt keine Regel mehr oder die Stufe „Aus“, der Dateityp wird nicht geführt, die Datei liegt in einem Bibliotheksordner, oder ihr Ordner ist auf diesem Gerät vorhanden und vollständig gelesen und die Datei fehlt darin. **Fehlen allein löscht nie.**
 - Fehlt ein ganzer Ordner oder gab es darin Lesefehler, bleibt sein Bestand im Register unangetastet. Ein nicht eingehängter Cloud-Ordner leert so nicht das Register. Hat das Gerät den Ordner früher gesehen, meldet der Lauf ihn als „vermisst“, sonst als Ordner eines anderen Geräts (Abschnitt 6, Äste und Geräte).
-- Vor dem Entfernen fragt die Oberfläche nach und zeigt die Liste der betroffenen Dateien mit dem Grund. Dazu läuft der Abgleich erst als Probe, die nichts ändert.
+- Vor dem Entfernen zeigt die Oberfläche die betroffenen Dateien mit dem Grund. Dazu läuft der Abgleich erst als Probe, die nichts ändert. Seit v0.1.1 stehen sie angehakt im Baum des Delta-Laufs und lassen sich abwählen. Abgewähltes bleibt im Register und steht bei der nächsten Prüfung wieder an. Ab mehr als 100 Einträgen fragt die Oberfläche vor dem Verarbeiten einmal nach.
 - Verschobene und umbenannte Dateien sollen über einen Inhalts-Hash erkannt werden, damit Text und Vorschauen nicht neu erzeugt werden müssen. **Annahme**, noch nicht umgesetzt (Stufe 4).
 
 ### Platzhalter ("nur online")
@@ -127,10 +128,12 @@ Folgen:
 Umgesetzt in v0.0.8 (Stufe 4, ohne Sperre und Inhalts-Hash).
 
 1. **Prüfen:** Beim Öffnen der Anwendung läuft der Abgleich des Dateibaums als Probe, im Hintergrund, während die Suche schon bedienbar ist. Seit v0.0.9 rechnet die Probe auf Kopien der Tabellen im Arbeitsspeicher, über eine nur lesend geöffnete Verbindung. Das Register bleibt unverändert, keine Datei im Register-Ordner wird angefasst. Steht etwas an, erscheint neben den Reitern ein gelber Knopf („Änderungen gefunden“ oder „Verarbeitung ausstehend“), der in den Reiter „Register“ führt. Geprüft wird nur beim Start, mit „Erneut prüfen“ und nach eigenen Aktionen, nicht nach Zeit (Kim: keine unerwarteten Läufe während der Suche). Dateien in vermissten Ordnern stehen nicht im Ablauf.
-2. **Anzeigen:** Zahlen für neu, geändert, noch offen, nur online, neu nur mit Namen und zu entfernen. Jede Zahl öffnet die Liste der Dateien. Darunter ein Ordnerbaum mit Anzahl je Ordner, aufklappbar bis zu den Dateien.
-3. **Auswählen:** Alles ist angehakt, auch "nur online". Ordner und Dateien lassen sich herausnehmen, alle "nur online"-Dateien mit einem Schalter.
-4. **Verarbeiten:** neue und geänderte Dateien aufnehmen, ohne etwas zu entfernen → aus der Cloud laden → Inhalte lesen → Vorschauen erzeugen → Text erkennen → in PDFs schreiben → wieder "nur online" → Suchindex nachführen. Jeder Schritt nur für die Auswahl.
-5. **Entfernen** bleibt ein eigener Schritt mit Rückfrage und Dateiliste.
+2. **Anzeigen:** Zahlen für neu, geändert, noch offen, nur online, neu nur mit Namen und zu entfernen. Jede Zahl öffnet die Liste der Dateien. Darunter ein Ordnerbaum mit Anzahl je Ordner, aufklappbar bis zu den Dateien. Seit v0.1.1 stehen auch die Dateien nur mit Namen (fester grauer Haken, Marke „nur Name“) und die zu entfernenden (rote Marke mit Grund) im Baum.
+3. **Auswählen:** Alles ist angehakt, auch "nur online" und zu Entfernendes. Ordner und Dateien lassen sich herausnehmen, alle "nur online"-Dateien und alles zu Entfernende je mit einem Schalter. Dateien nur mit Namen kommen immer ins Register.
+4. **Verarbeiten:** neue und geänderte Dateien aufnehmen und das Ausgewählte entfernen (seit v0.1.1) → aus der Cloud laden → Inhalte lesen → Vorschauen erzeugen → Text erkennen → in PDFs schreiben → wieder "nur online" → Suchindex nachführen. Jeder Schritt nur für die Auswahl.
+5. **Entfernen** war bis v0.1.0 ein eigener Schritt. Seit v0.1.1 gehört es zu „Verarbeiten“, der Knopf nennt die Zahl („Verarbeiten und 12 entfernen“).
+
+Läuft im Hintergrund eine Tätigkeit am Register (Prüfung, Verarbeiten, Aufteilen, Verschlüsseln), zeigt der Reiter „Register“ einen Kreisel, der Tooltip nennt sie (seit v0.1.1).
 
 Das Schreiben in die PDFs braucht im Delta-Lauf keinen zweiten Klick. Der Klick auf „Verarbeiten“ gilt als Freigabe (Kim, 22.11.2026). Die Textebene wird nur angehängt, das Risiko ist gering.
 
@@ -174,7 +177,7 @@ Die frühere Stufe "Nur Dokumente" für Entwicklungsprojekte ist entfallen. Die 
 - Eine Regel gilt für den Ordner und alle Unterordner. Die genaueste Regel gewinnt: Ein ausgeschlossener Unterordner bleibt ausgeschlossen, auch wenn der Oberordner auf Voll steht, und umgekehrt.
 - Die Regeln stehen in der lesbaren Textdatei `regeln.toml` neben dem Register, nicht in der Datenbank. Sie überleben damit einen Neuaufbau und gelten für alle Geräte.
 - Gewählt werden sie im Reiter "Ordner": ein aufklappbarer Baum mit der Stufe je Ordner. "Ordner prüfen" zählt vorab, was ein Ordner enthält, ohne etwas ins Register zu schreiben.
-- Ein Wechsel der Stufe wirkt beim nächsten Einlesen. "Aus" entfernt die Einträge, "Nur Namen" entfernt Text, Vorschauen und OCR. Beides nach Rückfrage (Abschnitt 5).
+- Ein Wechsel der Stufe wirkt beim nächsten Verarbeiten. "Aus" entfernt die Einträge, "Nur Namen" entfernt Text, Vorschauen und OCR. Beides abwählbar (Abschnitt 5). Seit v0.1.1 hat der Reiter "Ordner" kein eigenes Einlesen mehr: Nach dem Speichern prüft Registerwerk, ein Kasten zeigt die Zahlen und führt in den Reiter "Register".
 - Die konkrete Zuordnung der Ordner steht in `docs/intern/umgebung.md`.
 - Verwaltungsdateien von Cloud-Client und Betriebssystem werden immer übergangen.
 - **Bibliotheksordner** werden übergangen: immer `node_modules`, `__pycache__`, `site-packages`, `venv`, `Pods`, `DerivedData`, `bower_components` und Ordner mit einem Punkt am Anfang. `target`, `build`, `dist` und `vendor` nur neben einer Projektdatei, weil die Namen mehrdeutig sind. Eine eigene Regel auf einem solchen Ordner schließt ihn ein.
@@ -555,6 +558,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.8 | Reiter "Register" als Delta-Lauf: Prüfung beim Öffnen, Ordnerbaum mit Auswahl, Dateilisten je Zahl, Verarbeiten durch alle Schritte, Laden aus der Dropbox über die Dateikoordination, zurück auf "nur online" mit `onlineonly`. Scheiben 200 MB mit Aufteilen, TIFF mit Farbpalette, Platzhalter des File Providers, Build-Ordner `target/cargo` | Stufe 4 ohne Sperre und Inhalts-Hash |
 | v0.0.9 | Fehlerrelease: Lesen und Prüfen ändern das Register nicht mehr (klassisches Journal, nur lesend geöffnet, Schreiben nur bei Änderung), "nur online" am Attribut der Dropbox, Start mit der Suche und gelber Knopf, toleranter Leser für alte Office-Formate, Excel 2 bis 95, Lotus, Word 2, Pages '09, grober Rückfall, RTF, HTML, csv, tsv, log, vcf. Seit v0.0.9 nutzt Kim Registerwerk produktiv, die nächste Version heißt v0.1.0 | Korrekturen in Stufe 3 und 4 |
 | v0.1.0 | Verschlüsselung des Registers mit SQLCipher, eigener Schlüssel mit 256 Bit im Passwortsafe und je Gerät im Schlüsselbund, Umstellung per Knopf Datei für Datei, Sperre ohne Schlüssel, Prüfung des Dateibaums anhaltbar. Erste Version nach Beginn des produktiven Einsatzes | Stufe 3 abgeschlossen |
+| v0.1.1 | Reiter "Ordner" ohne eigenes Einlesen, Kreisel bei Tätigkeit im Hintergrund, Dateien nur mit Namen im Baum, Entfernen als abwählbarer Schritt von "Verarbeiten", `npm test` und `npm run pruefen` mit Zusammenfassung und Abdeckung | Abschluss des Ablaufs aus Stufe 4 |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -568,7 +572,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | `onlineonly` als Beigabe ins Programmpaket legen, mit Lizenztext | mit dem ersten Paket |
-| Reiter "Ordner": statt eigenem „Dateibaum einlesen“ zum Abgleich im Reiter "Register" führen | nächste Version |
+| Testabdeckung: 90 % der Zeilen je Datei, 90 % der Funktionen in der Summe, Ausnahmen mit Grund. Ziel danach 90 % für jede Datei und jede Funktion | v0.1.2 |
 | Ohne „zuletzt gesehen“ je Datei: Unterscheidung „anderes Gerät“ gegenüber „gelöscht“ auf dem Mac mini prüfen | mit dem zweiten Gerät |
 | Laden bei Anbietern über den File Provider (Google Drive, OneDrive): löst Lesen den Download aus? | vor der Aufnahme solcher Äste |
 | Hinweis „nur klassische Dropbox vollständig unterstützt“ auf der Webseite | mit der Webseite |
@@ -647,7 +651,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Ablauf im Reiter "Register" | Prüfung beim Öffnen, Ordnerbaum mit Haken, ein Knopf „Verarbeiten“ für alle Schritte. Bisherige Ansicht unter „Einzelheiten“ | aufgeräumt statt verstreuter Hinweise (Kim, v0.0.8) |
 | Vorauswahl im Delta-Lauf | alles angehakt, auch "nur online" | neue Belege kommen täglich und liegen meist nur online |
 | Dateien ansehen | Klick auf jede Zahl öffnet die Liste der Dateien | Kim will sehen, was gefunden wurde, bevor geladen wird |
-| Verarbeiten entfernt | nichts. Entfernen bleibt ein eigener Schritt mit Rückfrage | Schutz vor versehentlichem Löschen |
+| Verarbeiten entfernt | seit v0.1.1 das Ausgewählte, abwählbar, Rückfrage ab mehr als 100 Einträgen. Bis v0.1.0 nichts | Kim: ein Schritt wie die anderen. Die Rückfrage schützt vor einem versehentlich auf „Aus“ gestellten Ordner |
 | Laden aus der Dropbox | Dateikoordination von macOS, vier Dateien gleichzeitig, gemeinsames Warten, „Nicht warten, weiter“ | einfaches Lesen lädt nicht, `open` öffnet Fenster. Warteschlange oder offline dürfen den Lauf nicht aufhalten |
 | Zurück auf "nur online" | `onlineonly`, nur für die in diesem Lauf geladenen Dateien | keine Handarbeit danach. Bewusst lokale Dateien bleiben lokal |
 | Unterstützte Cloud-Speicher | vollständig nur die klassische Dropbox unter `~/Dropbox` | Laden und Auslagern sind nur dort gemessen und möglich. Muss auf der Webseite deutlich stehen |
@@ -661,6 +665,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Zeitpunkt der Prüfung | beim Start, auf Wunsch und nach eigenen Aktionen, nie nach Zeit (v0.0.9) | keine unerwarteten Läufe während der Suche |
 | Unlesbare alte Office-Dateien | eigene tolerante Leser, sonst grober Rückfall mit Vermerk (v0.0.9) | fast alle ließen sich in den Originalprogrammen öffnen |
 | Weitere Textformate | rtf, csv, tsv, log, htm, html, vcf lesen. eml, mbox, ics nur mit Namen (v0.0.9) | Kim |
+| Reiter "Ordner" nach dem Speichern | Kasten mit Zahlen und Knopf in den Reiter "Register", kein automatischer Wechsel (v0.1.1) | Kim |
+| Dateien nur mit Namen im Baum | fester grauer Haken, Marke „nur Name“ (v0.1.1) | ein leerer Haken hieße „wird nicht verarbeitet“ (Kim) |
+| Tätigkeit im Hintergrund | Kreisel am Reiter "Register" (v0.1.1) | Kim will sehen, was läuft |
+| Tests | Zusammenfassung wie in Stellwerk, Abdeckung mit `cargo llvm-cov`. Ziel 90 % je Datei und Funktion, 100 % ist kein Ziel (v0.1.1) | Kim |
 
 ## 17. Verworfene Alternativen
 
@@ -712,6 +720,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
 - `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
 - `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien, mit `--aufteilen <Ordner>` eine Probe des Aufteilens der Scheiben an einer Kopie des Registers unter `target/aufteilen_probe/` samt Vergleich jeder Vorschau (v0.0.8). `--suche` und `--aufteilen` arbeiten seit v0.1.0 nur mit einem unverschlüsselten Register. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
+- `scripts/pruefen.mjs` und `scripts/auswertung.mjs` (v0.1.1): `npm test` und `npm run pruefen` mit Zusammenfassung, Abdeckung gesamt und je Paket. Ausgaben in `target/pruefen/`
 - `onlineonly` (fremd, MIT, über Homebrew): stellt Dateien der klassischen Dropbox auf "nur online". Registerwerk ruft es im Delta-Lauf auf, wenn es installiert ist
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

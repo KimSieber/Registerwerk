@@ -128,6 +128,8 @@ pub struct LaufErgebnis {
     pub uebergangene_ordner: u64,
     /// Nur geprüft: Das Register ist unverändert.
     pub probe: bool,
+    /// Zu entfernen, aber von Kim abgewählt und deshalb behalten (v0.1.1).
+    pub behalten: u64,
     /// Die Dateien hinter `entfernt` und `reduziert`, nach Pfad, damit sich
     /// vor der Bestätigung beurteilen lässt, was wegfällt. Höchstens
     /// [`BETROFFEN_MAX`] Einträge.
@@ -739,28 +741,54 @@ impl Register {
     /// "nur online", ist das keine Änderung des Inhalts. Die letzte bekannte
     /// Größe bleibt dann erhalten.
     pub fn abgleichen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
-        Ok(self.abgleich(durchlauf, Modus::Voll, false)?.0)
+        Ok(self.abgleich(durchlauf, Modus::Voll, false, &[])?.0)
+    }
+
+    /// Wie [`Register::abgleichen`], entfernt aber nichts unter `behalten`
+    /// (Dateien oder Ordner samt Unterordnern). Für den Delta-Lauf (v0.1.1):
+    /// Entfernen ist dort ein Schritt von „Verarbeiten“, abgewählte Dateien
+    /// bleiben und stehen bei der nächsten Prüfung wieder an.
+    pub fn abgleichen_behalten(&mut self, durchlauf: &Durchlauf, behalten: &[String]) -> Ergebnis<LaufErgebnis> {
+        Ok(self.abgleich(durchlauf, Modus::Voll, false, behalten)?.0)
     }
 
     /// Wie [`Register::abgleichen`], lässt das Register aber unverändert.
     /// Zeigt vorab, was ein Abgleich entfernen würde.
     pub fn abgleich_pruefen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
-        Ok(self.abgleich(durchlauf, Modus::Probe, false)?.0)
+        Ok(self.abgleich(durchlauf, Modus::Probe, false, &[])?.0)
     }
 
     /// Nimmt neue und geänderte Dateien auf, entfernt aber nichts (v0.0.8).
     /// Was zu entfernen wäre, steht wie bei der Probe im Ergebnis.
     pub fn aufnehmen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<LaufErgebnis> {
-        Ok(self.abgleich(durchlauf, Modus::NurAufnehmen, false)?.0)
+        Ok(self.abgleich(durchlauf, Modus::NurAufnehmen, false, &[])?.0)
     }
 
     /// Probe mit Deltaanalyse (v0.0.8): wie [`Register::abgleich_pruefen`],
     /// dazu alle Dateien, bei denen danach ein Schritt ansteht, als neu,
     /// geändert oder schon offen. Das Register bleibt unverändert.
     pub fn delta_pruefen(&mut self, durchlauf: &Durchlauf) -> Ergebnis<crate::ablauf::Delta> {
-        let (lauf, delta) = self.abgleich(durchlauf, Modus::Probe, true)?;
+        let (lauf, delta) = self.abgleich(durchlauf, Modus::Probe, true, &[])?;
         let (dateien, nur_namen_dateien) = delta.unwrap_or_default();
-        Ok(crate::ablauf::Delta { lauf, dateien, nur_namen: nur_namen_dateien.len() as u64, nur_namen_dateien })
+        // Was wegfiele, steht auch im Baum (v0.1.1)
+        let entfernen_dateien = lauf
+            .betroffen
+            .iter()
+            .map(|b| crate::ablauf::DeltaDatei {
+                pfad: b.pfad.clone(),
+                art: crate::ablauf::Art::Entfernen,
+                nur_online: false,
+                schritte: 0,
+                grund: Some(b.grund),
+            })
+            .collect();
+        Ok(crate::ablauf::Delta {
+            lauf,
+            dateien,
+            nur_namen: nur_namen_dateien.len() as u64,
+            nur_namen_dateien,
+            entfernen_dateien,
+        })
     }
 
     #[allow(clippy::type_complexity)]
@@ -769,17 +797,18 @@ impl Register {
         durchlauf: &Durchlauf,
         modus: Modus,
         mit_delta: bool,
+        behalten: &[String],
     ) -> Ergebnis<(LaufErgebnis, Option<(Vec<crate::ablauf::DeltaDatei>, Vec<crate::ablauf::DeltaDatei>)>)> {
         let probe = modus == Modus::Probe;
         let start = Instant::now();
         if !probe {
-            return self.abgleich_tx(durchlauf, modus, mit_delta, start);
+            return self.abgleich_tx(durchlauf, modus, mit_delta, behalten, start);
         }
         // Die Probe schreibt nicht ins Register (v0.0.9). Sie arbeitet auf
         // Kopien der Tabellen, die sie ändern würde, im Arbeitsspeicher. Die
         // Kopien verdecken die Tabellen des Registers für die Dauer der Probe.
         self.db.execute_batch("PRAGMA foreign_keys = OFF")?;
-        let ergebnis = self.schatten_anlegen().and_then(|_| self.abgleich_tx(durchlauf, modus, mit_delta, start));
+        let ergebnis = self.schatten_anlegen().and_then(|_| self.abgleich_tx(durchlauf, modus, mit_delta, behalten, start));
         for t in SCHATTEN {
             let _ = self.db.execute_batch(&format!("DROP TABLE IF EXISTS temp.{t}"));
         }
@@ -812,10 +841,13 @@ impl Register {
         durchlauf: &Durchlauf,
         modus: Modus,
         mit_delta: bool,
+        behalten: &[String],
         start: Instant,
     ) -> Ergebnis<(LaufErgebnis, Option<(Vec<crate::ablauf::DeltaDatei>, Vec<crate::ablauf::DeltaDatei>)>)> {
         let probe = modus == Modus::Probe;
         let nur_aufnehmen = modus == Modus::NurAufnehmen;
+        // Von Kim abgewählt: wird nicht entfernt und nicht gekürzt (v0.1.1)
+        let bleibt = |pfad: &str| !behalten.is_empty() && !crate::ablauf::ausgewaehlt(pfad, behalten);
         let mut neu_ids: Vec<i64> = Vec::new();
         let mut geaendert_ids: Vec<i64> = Vec::new();
         let mut gesehen: std::collections::HashSet<i64> = Default::default();
@@ -906,7 +938,11 @@ impl Register {
                         // Ohne Entfernen bleibt die alte Stufe, bis der Inhalt
                         // bestätigt zurückgenommen wird
                         let zuruecknehmen = stufe_alt != stufe_neu && d.stufe == Stufe::Metadaten;
-                        let stufe_neu = if nur_aufnehmen && zuruecknehmen { stufe_alt } else { stufe_neu };
+                        let halten = zuruecknehmen && !nur_aufnehmen && bleibt(&d.pfad);
+                        if halten {
+                            e.behalten += 1;
+                        }
+                        let stufe_neu = if (nur_aufnehmen || halten) && zuruecknehmen { stufe_alt } else { stufe_neu };
                         let groesse = if gleiches_datum { groesse_neu.or(groesse_alt) } else { groesse_neu };
                         // Nur schreiben, was sich ändert (v0.0.9)
                         let anders = groesse != groesse_alt
@@ -926,7 +962,7 @@ impl Register {
                             stufe_neu
                         ])?;
                         }
-                        if zuruecknehmen && !nur_aufnehmen && Self::inhalt_entfernen(&tx, id, probe)? {
+                        if zuruecknehmen && !nur_aufnehmen && !halten && Self::inhalt_entfernen(&tx, id, probe)? {
                             geschrieben = true;
                             e.reduziert += 1;
                             e.reduziert_seiten += seiten.unwrap_or(0) as u64;
@@ -970,11 +1006,7 @@ impl Register {
                     continue;
                 }
                 let grund = match grund_der_regel(&durchlauf.regeln, &pfad, &endung) {
-                    Some(grund) => {
-                        e.entfernt_regel += 1;
-                        e.entfernt_regel_seiten += seiten.unwrap_or(0) as u64;
-                        grund
-                    }
+                    Some(grund) => grund,
                     None => {
                         // Die Regel gilt weiter. Gibt es den Ordner hier?
                         let (wurzel, _) = regel.expect("ohne Regel gäbe es einen Grund");
@@ -998,6 +1030,14 @@ impl Register {
                         Grund::Fehlt
                     }
                 };
+                if !nur_aufnehmen && bleibt(&pfad) {
+                    e.behalten += 1;
+                    continue;
+                }
+                if grund != Grund::Fehlt {
+                    e.entfernt_regel += 1;
+                    e.entfernt_regel_seiten += seiten.unwrap_or(0) as u64;
+                }
                 if e.betroffen.len() < BETROFFEN_MAX {
                     e.betroffen.push(Betroffen {
                         pfad,
