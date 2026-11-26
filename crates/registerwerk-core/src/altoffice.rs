@@ -331,25 +331,23 @@ pub fn excel(pfad: &Path) -> Result<Vec<String>, String> {
     use calamine::{Data, Reader};
     // Gleiche Prüfung und Meldung wie bei Word und PowerPoint
     let ole = oeffnen(pfad)?;
-    // Excel 5 und 95 (Strom "Book", BIFF5) liest der eigene Leser, ebenso,
-    // wenn calamine an der Datei scheitert (v0.0.9)
-    let eigen = || -> Option<Result<Vec<String>, String>> {
-        let d = ole.strom("Workbook").or_else(|| ole.strom("Book"))?;
-        let version = u16_bei(&d, 4)?;
-        (crate::biff::ist_biff(&d) && version < 0x0600).then(|| crate::biff::excel_alt(&d))
-    };
-    let mut mappe: calamine::Xls<_> = match calamine::open_workbook(pfad) {
-        Ok(m) => m,
-        Err(e) => {
-            return eigen().unwrap_or_else(|| {
-                Err(if e.to_string().contains("password") {
-                    "Excel-Datei ist verschlüsselt (Kennwortschutz)".to_string()
-                } else {
-                    format!("Excel-Datei beschädigt oder nicht lesbar ({e})")
-                })
-            });
+    // Excel 5 und 95 (Strom "Book" oder "Workbook", BIFF5) liest der eigene
+    // Leser (v0.0.9). Seit v0.1.2 vor calamine: calamine öffnet manche solche
+    // Mappe ohne Fehler, liefert aber keine Blätter. Der eigene Leser kam
+    // dann nie zum Zug.
+    let biff5 = ole.strom("Workbook").or_else(|| ole.strom("Book")).filter(|d| {
+        crate::biff::ist_biff(d) && u16_bei(d, 4).is_some_and(|version| version < 0x0600)
+    });
+    if let Some(d) = biff5 {
+        return crate::biff::excel_alt(&d);
+    }
+    let mut mappe: calamine::Xls<_> = calamine::open_workbook(pfad).map_err(|e: calamine::XlsError| {
+        if e.to_string().contains("password") {
+            "Excel-Datei ist verschlüsselt (Kennwortschutz)".to_string()
+        } else {
+            format!("Excel-Datei beschädigt oder nicht lesbar ({e})")
         }
-    };
+    })?;
     let mut seiten = Vec::new();
     for name in mappe.sheet_names() {
         let Ok(bereich) = mappe.worksheet_range(&name) else { continue };
@@ -480,6 +478,132 @@ mod tests {
         assert!(word(&p).unwrap_err().contains("RTF"));
         std::fs::write(&p, b"kein Office").unwrap();
         assert!(word(&p).is_err());
+    }
+
+    /// Word 6 mit Stücktabelle im selben Strom (schnell gespeichert) und mit
+    /// zwei Nullbytes vor dem Kopf (v0.1.2).
+    #[test]
+    fn word_6_mit_stuecken_und_versatz() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("schnell.doc");
+        let mut dok = fib(0x0065, 0x0004);
+        let text = b"Schnell gespeichert\r";
+        let ort = dok.len() as u32;
+        dok.extend(text);
+        let c = clx(&[(text.len() as u32, ort)]);
+        let fc = dok.len() as u32;
+        dok.extend(&c);
+        dok[0x160..0x164].copy_from_slice(&fc.to_le_bytes());
+        dok[0x164..0x168].copy_from_slice(&(c.len() as u32).to_le_bytes());
+        ole_schreiben(&p, &[("WordDocument", &dok)]);
+        assert_eq!(word(&p).unwrap(), "Schnell gespeichert\n");
+
+        let mut dok = vec![0u8, 0];
+        dok.extend(fib(0x0065, 0));
+        let text = b"Mit Versatz";
+        let von = dok.len() as u32;
+        dok[2 + 0x18..2 + 0x1C].copy_from_slice(&von.to_le_bytes());
+        dok[2 + 0x1C..2 + 0x20].copy_from_slice(&(von + text.len() as u32).to_le_bytes());
+        dok.extend(text);
+        ole_schreiben(&p, &[("WordDocument", &dok)]);
+        assert_eq!(word(&p).unwrap(), "Mit Versatz");
+    }
+
+    /// Beschädigtes Verzeichnis: Fehlt der Strom, wird der Kopf eines
+    /// Word-6-Dokuments an den Sektorgrenzen gesucht (v0.0.9).
+    #[test]
+    fn word_6_ohne_verzeichnis_gefunden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("kaputt.doc");
+        let mut dok = fib(0x0065, 0);
+        let text = b"Gefunden an der Sektorgrenze";
+        dok[0x18..0x1C].copy_from_slice(&0x200u32.to_le_bytes());
+        dok[0x1C..0x20].copy_from_slice(&(0x200 + text.len() as u32).to_le_bytes());
+        dok.extend(text);
+        // Ab 4096 Byte liegt ein Strom in Sektoren zu 512 Byte
+        dok.resize(5000, 0);
+        ole_schreiben(&p, &[("Anderer Name", &dok)]);
+        assert_eq!(word(&p).unwrap(), "Gefunden an der Sektorgrenze");
+        // Ohne Kopf bleibt die ursprüngliche Meldung
+        assert!(word_suchen(&[0u8; 2048]).is_none());
+    }
+
+    #[test]
+    fn word_2() {
+        let mut d = vec![0u8; 0x80];
+        d[0..2].copy_from_slice(&0xA5DBu16.to_le_bytes());
+        let text = b"Brief aus Word 2\rZweite Zeile";
+        d[0x18..0x1C].copy_from_slice(&0x80u32.to_le_bytes());
+        d[0x1C..0x20].copy_from_slice(&(0x80 + text.len() as u32).to_le_bytes());
+        d.extend(text);
+        assert!(ist_word2(&d));
+        assert_eq!(word2(&d).unwrap(), "Brief aus Word 2\nZweite Zeile");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("w2.doc");
+        std::fs::write(&p, &d).unwrap();
+        assert_eq!(crate::dokumente::lesen(&p).unwrap().seiten[0].text, "Brief aus Word 2\nZweite Zeile");
+
+        let mit = |merkmale: u16| {
+            let mut x = d.clone();
+            x[0x0A..0x0C].copy_from_slice(&merkmale.to_le_bytes());
+            x
+        };
+        assert!(word2(&mit(0x0100)).unwrap_err().contains("verschlüsselt"));
+        assert!(word2(&mit(0x0004)).unwrap_err().contains("schnell gespeichert"));
+        let mut leer = d.clone();
+        leer[0x1C..0x20].copy_from_slice(&0x80u32.to_le_bytes());
+        assert!(word2(&leer).unwrap_err().contains("beschädigt"));
+        assert!(word2(&[0xDB, 0xA5]).unwrap_err().contains("beschädigt"));
+    }
+
+    #[test]
+    fn steuerzeichen_von_word() {
+        let roh: Vec<char> = "a\u{0B}b\u{0C}c\r\r\rd\u{1E}e\u{A0}f\u{AD}g\u{01}h".chars().collect();
+        assert_eq!(word_bereinigen(roh), "a\nb\nc\n\nd-e fgh");
+        // Verschachtelte Felder: nur das äußere Ergebnis
+        let roh: Vec<char> = "x\u{13}A\u{13}B\u{14}C\u{15}\u{14}D\u{15}y".chars().collect();
+        assert_eq!(word_bereinigen(roh), "xDy");
+    }
+
+    #[test]
+    fn verbunddateien_mit_fehlern() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("x.ppt");
+        ole_schreiben(&p, &[("PP40", b"x")]);
+        assert!(powerpoint(&p).unwrap_err().contains("PowerPoint 4"));
+        ole_schreiben(&p, &[("Anderes", b"x")]);
+        assert!(powerpoint(&p).unwrap_err().contains("fehlt"));
+        // Kennung der Verbunddatei, dahinter nichts Brauchbares
+        let mut kaputt = crate::ole::KENNUNG.to_vec();
+        kaputt.extend([0u8; 100]);
+        std::fs::write(&p, &kaputt).unwrap();
+        assert!(powerpoint(&p).is_err());
+        assert!(powerpoint(&tmp.path().join("fehlt.ppt")).is_err());
+    }
+
+    /// Excel 5 im Strom `Book` liest der eigene Leser, eine unlesbare
+    /// Arbeitsmappe meldet calamine (v0.1.2).
+    #[test]
+    fn excel_5_und_unlesbar() {
+        let satz5 = |art: u16, inhalt: &[u8]| {
+            let mut d = art.to_le_bytes().to_vec();
+            d.extend((inhalt.len() as u16).to_le_bytes());
+            d.extend(inhalt);
+            d
+        };
+        let mut book = satz5(0x0809, &[0, 5, 0x10, 0, 0, 0, 0, 0]);
+        let mut l = vec![0, 0, 0, 0, 0, 0, 6, 0];
+        l.extend(b"Posten");
+        book.extend(satz5(0x0204, &l));
+        book.extend(satz5(0x000A, &[]));
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("alt.xls");
+        ole_schreiben(&p, &[("Book", &book)]);
+        assert!(excel(&p).unwrap().join("\n").contains("Posten"));
+
+        ole_schreiben(&p, &[("Workbook", b"kein Excel")]);
+        assert!(excel(&p).unwrap_err().contains("nicht lesbar"));
     }
 
     fn satz(art: u16, typ: u16, inhalt: &[u8]) -> Vec<u8> {

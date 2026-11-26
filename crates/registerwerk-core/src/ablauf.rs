@@ -553,6 +553,19 @@ pub fn auslagern(
     konfig: &Konfiguration,
     register: &mut Register,
     liste: &[(i64, String)],
+    fortschritt: impl FnMut(&Fortschritt),
+    abbrechen: &AtomicBool,
+) -> Ergebnis<AuslagernErgebnis> {
+    auslagern_mit(onlineonly(), konfig, register, liste, fortschritt, abbrechen)
+}
+
+/// Wie [`auslagern`], mit diesem Werkzeug. Tests geben ein Ersatzskript vor
+/// (v0.1.2), damit die echte Dropbox unberührt bleibt.
+fn auslagern_mit(
+    werkzeug: Option<std::path::PathBuf>,
+    konfig: &Konfiguration,
+    register: &mut Register,
+    liste: &[(i64, String)],
     mut fortschritt: impl FnMut(&Fortschritt),
     abbrechen: &AtomicBool,
 ) -> Ergebnis<AuslagernErgebnis> {
@@ -560,7 +573,7 @@ pub fn auslagern(
     if liste.is_empty() {
         return Ok(e);
     }
-    let Some(werkzeug) = onlineonly() else {
+    let Some(werkzeug) = werkzeug else {
         e.werkzeug_fehlt = true;
         e.nicht_anzahl = liste.len() as u64;
         return Ok(e);
@@ -976,6 +989,83 @@ mod tests {
         assert_eq!(zahl(&r, "SELECT count(*) FROM angefordert"), 2);
         r.abgleichen(&durchlauf(vec![eintrag("A/bleibt.pdf", 0, 1)])).unwrap();
         assert_eq!(vermerke(&r), vec![("A/bleibt.pdf".to_string(), "Notebook".to_string())]);
+    }
+
+    /// Ein Ersatz für `onlineonly`: meldet jeden Pfad als "nur online", oder
+    /// endet mit `code` ohne Ausgabe.
+    #[cfg(unix)]
+    fn ersatzwerkzeug(ordner: &std::path::Path, code: Option<i32>) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let pfad = ordner.join(format!("onlineonly-{}", code.unwrap_or(0)));
+        let rumpf = match code {
+            Some(c) => format!("exit {c}"),
+            // online -w -t 300, dann die Pfade
+            None => "shift 4\nfor p in \"$@\"; do echo \"online-only  $p\"; done".to_string(),
+        };
+        std::fs::write(&pfad, format!("#!/bin/sh\n{rumpf}\n")).unwrap();
+        std::fs::set_permissions(&pfad, std::fs::Permissions::from_mode(0o755)).unwrap();
+        pfad
+    }
+
+    /// Zurück auf "nur online" mit einem Ersatz für `onlineonly` (v0.1.2).
+    #[cfg(unix)]
+    #[test]
+    fn auslagern_traegt_ein_und_meldet_fehler() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("A")).unwrap();
+        for n in ["a.pdf", "b.pdf"] {
+            std::fs::write(tmp.path().join("A").join(n), b"%PDF").unwrap();
+        }
+        let mut konfig = Konfiguration::default();
+        konfig.geraet = "Notebook".into();
+        konfig.aeste.insert("A".into(), tmp.path().join("A"));
+        let mut r = Register::im_speicher().unwrap();
+        r.abgleichen(&durchlauf(vec![eintrag("A/a.pdf", 4, 1), eintrag("A/b.pdf", 4, 1)])).unwrap();
+        let liste: Vec<(i64, String)> = ["A/a.pdf", "A/b.pdf"]
+            .iter()
+            .map(|p| (zahl(&r, &format!("SELECT id FROM datei WHERE pfad = '{p}'")), p.to_string()))
+            .collect();
+        let ids: Vec<i64> = liste.iter().map(|l| l.0).collect();
+        r.angefordert_eintragen(&ids, "Notebook").unwrap();
+        let nein = AtomicBool::new(false);
+
+        // Ohne Werkzeug bleibt alles lokal
+        let e = auslagern_mit(None, &konfig, &mut r, &liste, |_| {}, &nein).unwrap();
+        assert_eq!((e.werkzeug_fehlt, e.ausgelagert, e.nicht_anzahl), (true, 0, 2));
+        assert!(auslagern_mit(None, &konfig, &mut r, &[], |_| {}, &nein).unwrap() == AuslagernErgebnis::default());
+
+        // Dropbox nicht erreichbar (Exit 69)
+        let e = auslagern_mit(Some(ersatzwerkzeug(tmp.path(), Some(69))), &konfig, &mut r, &liste, |_| {}, &nein).unwrap();
+        assert_eq!((e.ausgelagert, e.nicht_anzahl), (0, 2));
+        assert!(e.meldung.unwrap().contains("nicht erreichbar"));
+        let e = auslagern_mit(Some(tmp.path().join("gibt es nicht")), &konfig, &mut r, &liste, |_| {}, &nein).unwrap();
+        assert!(e.meldung.unwrap().contains("ließ sich nicht starten"));
+
+        // Angehalten vor dem ersten Aufruf
+        let e = auslagern_mit(Some(ersatzwerkzeug(tmp.path(), None)), &konfig, &mut r, &liste, |_| {}, &AtomicBool::new(true)).unwrap();
+        assert_eq!((e.ausgelagert, e.nicht_anzahl), (0, 2));
+
+        // Erfolg: beide nur online, Vermerk weg
+        let mut meldungen = 0;
+        let e = auslagern_mit(Some(ersatzwerkzeug(tmp.path(), None)), &konfig, &mut r, &liste, |_| meldungen += 1, &nein).unwrap();
+        assert_eq!((e.ausgelagert, e.nicht_anzahl, e.meldung), (2, 0, None));
+        assert_eq!(meldungen, 2);
+        assert_eq!(zahl(&r, "SELECT count(*) FROM datei WHERE nur_online"), 2);
+        assert!(vermerke(&r).is_empty());
+    }
+
+    #[test]
+    fn listen_nach_art_und_grenze() {
+        let datei = |pfad: String, art: Art| DeltaDatei { pfad, art, nur_online: false, schritte: INHALT, grund: None };
+        let mut dateien: Vec<DeltaDatei> = (0..LISTE_MAX + 5).map(|i| datei(format!("A/neu{i:05}.pdf"), Art::Neu)).collect();
+        dateien.push(datei("A/offen.pdf".into(), Art::Offen));
+        let d = Delta { dateien, ..Default::default() };
+        let (liste, gesamt) = d.liste(Filter::Neu, None);
+        assert_eq!((liste.len(), gesamt), (LISTE_MAX, LISTE_MAX as u64 + 5));
+        let (liste, gesamt) = d.liste(Filter::Offen, Some("A"));
+        assert_eq!((liste[0].pfad.as_str(), gesamt), ("A/offen.pdf", 1));
+        assert_eq!(d.liste(Filter::Offen, Some("B")).1, 0);
+        assert_eq!(d.uebersicht().offen, 1);
     }
 
     #[test]

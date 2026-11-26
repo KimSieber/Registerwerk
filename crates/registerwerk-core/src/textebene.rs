@@ -354,6 +354,11 @@ fn schrift_eintragen(inc: &mut IncrementalDocument, seite: ObjectId, schrift: Ob
     Ok(name)
 }
 
+/// Fehler an einer Seite, mit ihrer Nummer.
+fn seite_fehler<E: std::fmt::Display>(nr: u32) -> impl Fn(E) -> String {
+    move |e| format!("Seite {nr}: {e}")
+}
+
 /// Bettet die Textebene der genannten Seiten ein. Liefert die neue Fassung:
 /// das unveränderte Original mit angehängter Änderung.
 pub fn einbetten(original: &[u8], seiten: &[SeitenEbene]) -> Result<Vec<u8>, String> {
@@ -366,27 +371,23 @@ pub fn einbetten(original: &[u8], seiten: &[SeitenEbene]) -> Result<Vec<u8>, Str
     let mut plan = Vec::with_capacity(seiten.len());
     for s in seiten {
         let id = *seiten_ids.get(&s.nr).ok_or_else(|| format!("Seite {} fehlt", s.nr))?;
-        let abb = abbildung(&doc, id).map_err(|e| format!("Seite {}: {e}", s.nr))?;
-        let dict = doc.get_object(id).and_then(Object::as_dict).map_err(|e| format!("Seite {}: {e}", s.nr))?;
+        let abb = abbildung(&doc, id).map_err(seite_fehler(s.nr))?;
+        let dict = doc.get_object(id).and_then(Object::as_dict).map_err(seite_fehler(s.nr))?;
         plan.push((s, id, abb, inhalte_der_seite(&doc, dict)));
     }
     let mut inc = IncrementalDocument::create_from(original.to_vec(), doc);
     let schrift = schrift_anlegen(&mut inc.new_document);
     let anfang = inc.new_document.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
     for (s, id, abb, bisher) in plan {
-        let name = schrift_eintragen(&mut inc, id, schrift).map_err(|e| format!("Seite {}: {e}", s.nr))?;
+        let name = schrift_eintragen(&mut inc, id, schrift).map_err(seite_fehler(s.nr))?;
         let strom = inhaltsstrom(&s.woerter, &abb, &name);
         let ebene = inc.new_document.add_object(komprimiert(Dictionary::new(), &strom));
         let mut inhalte = Vec::with_capacity(bisher.len() + 2);
         inhalte.push(Object::Reference(anfang));
         inhalte.extend(bisher);
         inhalte.push(Object::Reference(ebene));
-        inc.opt_clone_object_to_new_document(id).map_err(|e| format!("Seite {}: {e}", s.nr))?;
-        let seite = inc
-            .new_document
-            .get_object_mut(id)
-            .and_then(Object::as_dict_mut)
-            .map_err(|e| format!("Seite {}: {e}", s.nr))?;
+        inc.opt_clone_object_to_new_document(id).map_err(seite_fehler(s.nr))?;
+        let seite = inc.new_document.get_object_mut(id).and_then(Object::as_dict_mut).map_err(seite_fehler(s.nr))?;
         seite.set("Contents", Object::Array(inhalte));
     }
     let mut neu = Vec::with_capacity(original.len() + 16 * 1024);
@@ -875,6 +876,41 @@ mod tests {
         b
     }
 
+    /// Ändert die Test-PDF: `aendern` bekommt das Dokument und die erste Seite.
+    fn geaendert(aendern: impl Fn(&mut Document, ObjectId)) -> Vec<u8> {
+        let mut doc = Document::load_mem(&scan_pdf(0)).unwrap();
+        let seite = *doc.get_pages().get(&1).unwrap();
+        aendern(&mut doc, seite);
+        let mut b = Vec::new();
+        doc.save_to(&mut b).unwrap();
+        b
+    }
+
+    /// CropBox begrenzt die Seite, ohne MediaBox ist die Seite unbrauchbar (v0.1.2).
+    #[test]
+    fn cropbox_und_fehlende_mediabox() {
+        let mit_crop = geaendert(|doc, seite| {
+            let d = doc.get_object_mut(seite).and_then(Object::as_dict_mut).unwrap();
+            d.set("CropBox", vec![600.into(), 800.into(), 50.into(), 40.into()]);
+        });
+        assert!(einbetten(&mit_crop, &[ebene(1)]).is_ok());
+        // Ausschnitt außerhalb der MediaBox: es gilt die MediaBox
+        let daneben = geaendert(|doc, seite| {
+            let d = doc.get_object_mut(seite).and_then(Object::as_dict_mut).unwrap();
+            d.set("CropBox", vec![700.into(), 900.into(), 800.into(), 1000.into()]);
+        });
+        assert!(einbetten(&daneben, &[ebene(1)]).is_ok());
+        let ohne = geaendert(|doc, _| {
+            for (_, o) in doc.objects.iter_mut() {
+                if let Ok(d) = o.as_dict_mut() {
+                    d.remove(b"MediaBox");
+                }
+            }
+        });
+        assert_eq!(einbetten(&ohne, &[ebene(1)]).unwrap_err(), "Seite 1: Seite ohne MediaBox");
+        assert!(einbetten(&scan_pdf(0), &[ebene(9)]).unwrap_err().contains("Seite 9 fehlt"));
+    }
+
     pub(crate) fn ebene(nr: u32) -> SeitenEbene {
         SeitenEbene {
             nr,
@@ -912,16 +948,10 @@ mod tests {
         assert!(einbetten(b"%PDF-1.4 kaputt", &[ebene(1)]).is_err());
     }
 
-    fn pdfium() -> Option<&'static pdf::Pdfium> {
-        let ordner = std::env::var_os("REGISTERWERK_PDFIUM")?;
-        Some(pdf::einbinden(Path::new(&ordner)).unwrap())
-    }
-
-    /// Prüft die neue Fassung mit PDFium wie in der Anwendung. Braucht
-    /// `REGISTERWERK_PDFIUM`.
+    /// Prüft die neue Fassung mit PDFium wie in der Anwendung.
     #[test]
     fn neue_fassung_besteht_die_pruefung() {
-        let Some(pdfium) = pdfium() else { return };
+        let pdfium = crate::testumgebung::pdfium();
         let tmp = tempfile::tempdir().unwrap();
         for drehung in [0, 90, 180, 270] {
             let alt = tmp.path().join(format!("alt{drehung}.pdf"));
@@ -1127,7 +1157,7 @@ mod tests {
         let abgleich = crate::dateibaum_einlesen(&konfig, &crate::Regeln::voll(&["A"]), &mut register, true).unwrap();
         assert_eq!(abgleich.geaendert, 1, "nur anders.pdf");
         assert!(register.ausstehend().unwrap().iter().all(|a| a.pfad == "A/anders.pdf"));
-        assert!(register.ocr_ausstehend().unwrap().iter().all(|a| a.pfad != "A/scan.pdf"));
+        assert!(register.ocr_ausstehend().unwrap().is_empty());
         // Zweiter Lauf: nichts mehr zu tun außer der geänderten Datei, die
         // erst neu gelesen und erkannt werden muss
         let e = lauf(&konfig, &mut register, None, Some(&protokoll));

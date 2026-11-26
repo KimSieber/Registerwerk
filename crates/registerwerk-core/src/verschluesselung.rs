@@ -539,6 +539,103 @@ mod tests {
         assert_eq!(format!("{s:?}"), "Schluessel(…)");
     }
 
+    /// Legt eine unverschlüsselte SQLite-Datei mit einer Tabelle an.
+    fn klar_anlegen(pfad: &Path, text: &str) {
+        let db = Connection::open(pfad).unwrap();
+        db.execute_batch(&format!("CREATE TABLE t(x); INSERT INTO t VALUES ('{text}'); PRAGMA user_version = 7;")).unwrap();
+    }
+
+    /// Umstellung eines Registers mit Index-Datenbank und Scheibe, über einen
+    /// Arbeitsordner, mit Anhalten und Prüfen des Schlüssels (v0.1.2).
+    #[test]
+    fn stellt_ein_register_um() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ordner = tmp.path().join("register");
+        std::fs::create_dir_all(&ordner).unwrap();
+        klar_anlegen(&ordner.join(DATEINAME), "Index");
+        klar_anlegen(&ordner.join("vorschau-0001.db"), "Scheibe");
+        // Kein Teil des Registers
+        std::fs::write(ordner.join("regeln.toml"), "x").unwrap();
+        std::fs::write(ordner.join("vorschau-x.db"), "x").unwrap();
+        let nein = AtomicBool::new(false);
+
+        // Ohne Schlüssel geht nichts
+        assert!(matches!(umstellen(&ordner, None, &nein, |_| {}), Err(Fehler::SchluesselFehlt)));
+        let s = stand(&ordner).unwrap();
+        assert_eq!((s.index, s.dateien, s.unverschluesselt, s.verschluesselt), (Some(Zustand::Unverschluesselt), 2, 2, 0));
+        assert_eq!(s.unverschluesselt_liste, ["vorschau-0001.db", DATEINAME]);
+        assert!(!s.vollstaendig() && !s.schluessel_hinterlegt && s.unverschluesselt_bytes > 0);
+        assert_eq!(schluessel_pruefen(&ordner, &schluessel()).unwrap(), None);
+
+        hinterlegen(&ordner, schluessel());
+        assert!(stimmt_ueberein(&ordner, &schluessel()));
+        assert!(!stimmt_ueberein(&ordner, &Schluessel::aus_text(&"1234".repeat(16)).unwrap()));
+        // Angehalten vor der ersten Datei
+        let e = umstellen(&ordner, None, &AtomicBool::new(true), |_| {}).unwrap();
+        assert_eq!((e.abgebrochen, e.dateien), (true, 0));
+
+        let arbeit = tmp.path().join("arbeit");
+        let mut meldungen = Vec::new();
+        let e = umstellen(&ordner, Some(&arbeit), &nein, |f| meldungen.push((f.erledigt, f.datei.clone()))).unwrap();
+        assert_eq!((e.abgebrochen, e.dateien), (false, 2));
+        assert_eq!(meldungen, [(0, "vorschau-0001.db".to_string()), (1, DATEINAME.to_string()), (2, String::new())]);
+        let s = stand(&ordner).unwrap();
+        assert!(s.vollstaendig() && s.schluessel_hinterlegt && s.arbeitskopien.is_empty());
+        assert!(std::fs::read_dir(&arbeit).unwrap().next().is_none(), "Arbeitskopie liegt noch");
+
+        // Inhalt, Schema-Version und Schlüssel
+        let db = Connection::open(ordner.join("vorschau-0001.db")).unwrap();
+        verbinden(&db, &ordner.join("vorschau-0001.db")).unwrap();
+        assert_eq!(db.query_row("SELECT x FROM t", [], |z| z.get::<_, String>(0)).unwrap(), "Scheibe");
+        assert_eq!(db.query_row("PRAGMA user_version", [], |z| z.get::<_, i64>(0)).unwrap(), 7);
+        assert_eq!(schluessel_pruefen(&ordner, &schluessel()).unwrap(), Some(true));
+        assert_eq!(schluessel_pruefen(&ordner, &Schluessel::aus_text(&"1234".repeat(16)).unwrap()).unwrap(), Some(false));
+        index_lesbar(&ordner).unwrap();
+        // Ein zweiter Lauf hat nichts zu tun
+        assert_eq!(umstellen(&ordner, None, &nein, |_| {}).unwrap().dateien, 0);
+
+        // Reste einer abgebrochenen Umstellung werden gemeldet
+        std::fs::write(ordner.join(format!("{DATEINAME}{ARBEITSKOPIE}")), "x").unwrap();
+        std::fs::write(ordner.join(format!("vorschau-0001.db{ARBEITSKOPIE}-journal")), "x").unwrap();
+        assert_eq!(stand(&ordner).unwrap().arbeitskopien.len(), 2);
+
+        vergessen(&ordner);
+        assert!(!hinterlegt(&ordner));
+        assert!(matches!(index_lesbar(&ordner), Err(Fehler::SchluesselFehlt)));
+    }
+
+    #[test]
+    fn zustand_und_stand_ohne_register() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(zustand(&tmp.path().join("fehlt.db")).unwrap(), Zustand::Fehlt);
+        let leer = tmp.path().join("leer.db");
+        std::fs::write(&leer, b"").unwrap();
+        assert_eq!(zustand(&leer).unwrap(), Zustand::Fehlt);
+        let kurz = tmp.path().join("kurz.db");
+        std::fs::write(&kurz, b"SQLite").unwrap();
+        assert_eq!(zustand(&kurz).unwrap(), Zustand::Verschluesselt);
+        assert!(zustand(tmp.path()).is_err());
+
+        let s = stand(&tmp.path().join("gibt es nicht")).unwrap();
+        assert_eq!((s.index, s.dateien), (None, 0));
+        let s = stand(tmp.path()).unwrap();
+        assert_eq!((s.index, s.dateien), (Some(Zustand::Fehlt), 0));
+        assert!(!s.vollstaendig());
+        index_lesbar(tmp.path()).unwrap();
+    }
+
+    /// Eine Quelle, die schon verschlüsselt ist, wird nicht noch einmal kopiert.
+    #[test]
+    fn kopie_nur_von_unverschluesselten_dateien() {
+        let tmp = tempfile::tempdir().unwrap();
+        let quelle = tmp.path().join("q.db");
+        std::fs::write(&quelle, [7u8; 64]).unwrap();
+        assert!(datei_umstellen(&quelle, None, &schluessel()).is_err());
+        // Die Arbeitskopie ist wieder weg, das Original unverändert
+        assert!(!tmp.path().join(format!("q.db{ARBEITSKOPIE}")).exists());
+        assert_eq!(std::fs::read(&quelle).unwrap(), [7u8; 64]);
+    }
+
     #[test]
     fn neue_datei_mit_und_ohne_schluessel() {
         let tmp = tempfile::tempdir().unwrap();

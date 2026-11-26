@@ -859,7 +859,7 @@ mod tests {
     }
 
     fn lauf(konfig: &Konfiguration, register: &mut Register) -> OcrErgebnis {
-        erkennen(konfig, register, testrendern, testerkenner, 2, |_| {}, &AtomicBool::new(false)).unwrap()
+        erkennen(konfig, register, testrendern, testerkenner, 2, still, &AtomicBool::new(false)).unwrap()
     }
 
     fn id(r: &Register, pfad: &str) -> i64 {
@@ -986,6 +986,47 @@ mod tests {
         assert_eq!(lauf(&konfig, &mut register).ausstehend, 2);
     }
 
+    /// Sprachdaten suchen (v0.1.2): vollständig nur mit allen Sprachen.
+    #[test]
+    fn findet_sprachdaten_ab_einem_ordner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unten = tmp.path().join("app/bin");
+        std::fs::create_dir_all(&unten).unwrap();
+        let satz = tmp.path().join(ENTWICKLUNGS_ORDNER).join("standard");
+        std::fs::create_dir_all(&satz).unwrap();
+        std::fs::write(satz.join("deu.traineddata"), b"x").unwrap();
+        assert!(!tessdata_vollstaendig(&satz));
+        assert_eq!(tessdata_suchen_ab(&unten, "standard"), None);
+        std::fs::write(satz.join("eng.traineddata"), b"x").unwrap();
+        assert_eq!(tessdata_suchen_ab(&unten, "standard"), Some(satz));
+        assert_eq!(tessdata_suchen_ab(&unten, "best"), None);
+    }
+
+    /// Rendern für die OCR an der Test-PDF: kaputte Datei, falsche Seite (v0.1.2).
+    #[test]
+    fn rendert_die_test_pdf_fuer_die_ocr() {
+        use crate::testumgebung::{pdfium, test_pdf};
+        let mut seiten = Vec::new();
+        pdf_rendern(pdfium(), &test_pdf(), &[2], &mut |nr, bild, dpi| {
+            seiten.push((nr, bild.breite, dpi));
+            true
+        })
+        .unwrap();
+        // A4 mit 300 dpi: 2479 oder 2480 px breit, je nach Rundung von PDFium
+        assert_eq!(seiten.len(), 1);
+        assert!(seiten[0].0 == 2 && (2479..=2480).contains(&seiten[0].1) && seiten[0].2 == 300, "{seiten:?}");
+        assert!(pdf_rendern(pdfium(), &test_pdf(), &[3], &mut |_, _, _| true).unwrap_err().starts_with("Seite 3"));
+        assert!(pdf_rendern(pdfium(), &test_pdf(), &[0], &mut |_, _, _| true).unwrap_err().contains("ungültig"));
+        let tmp = tempfile::tempdir().unwrap();
+        let kaputt = tmp.path().join("kaputt.pdf");
+        std::fs::write(&kaputt, b"nichts").unwrap();
+        assert!(pdf_rendern(pdfium(), &kaputt, &[1], &mut |_, _, _| true).is_err());
+    }
+
+    /// Fortschritt, der nichts tut. Eine Funktion statt `|_| {}`: Diese wird
+    /// in allen Tests geteilt und zählt nur einmal für die Abdeckung.
+    fn still(_: &crate::Fortschritt) {}
+
     #[test]
     fn fehlender_erkenner_beendet_den_lauf() {
         let (_tmp, konfig, mut register) = aufbauen();
@@ -995,7 +1036,7 @@ mod tests {
             testrendern,
             || Err("Sprachdaten fehlen".into()),
             2,
-            |_| {},
+            still,
             &AtomicBool::new(false),
         );
         assert!(r.is_err());

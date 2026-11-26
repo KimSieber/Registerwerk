@@ -318,6 +318,83 @@ mod tests {
         assert_eq!(excel_alt(&d).unwrap(), vec!["Kosten\nPosten\tBetrag\nReise\t12.5\n300".to_string()]);
     }
 
+    /// Zelle in BIFF2: Zeile, Spalte, 3 Byte Attribute, dann der Wert.
+    fn zelle2(art: u16, r: u16, c: u16, wert: &[u8]) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend(r.to_le_bytes());
+        d.extend(c.to_le_bytes());
+        d.extend([0, 0, 0]);
+        d.extend(wert);
+        satz(art, &d)
+    }
+
+    /// Excel 2: Text, Zahl, ganze Zahl, Formel mit Zahl und mit Text, RK
+    /// geteilt durch 100 (v0.1.2).
+    #[test]
+    fn liest_biff2() {
+        let mut d = satz(0x0009, &[0, 0, 0x10, 0]);
+        let mut label = vec![5u8];
+        label.extend(b"Konto");
+        d.extend(zelle2(0x0004, 0, 0, &label));
+        d.extend(zelle2(0x0003, 0, 1, &1.25f64.to_le_bytes()));
+        d.extend(zelle2(0x0002, 1, 0, &7u16.to_le_bytes()));
+        d.extend(zelle2(0x0006, 1, 1, &2.0f64.to_le_bytes()));
+        // Formel mit Text: Ergebnis 0 … FF FF, der Text folgt in STRING
+        d.extend(zelle2(0x0006, 2, 0, &[0, 0, 0, 0, 0, 0, 0xFF, 0xFF]));
+        let mut text = vec![5u8];
+        text.extend(b"Summe");
+        d.extend(satz(0x0007, &text));
+        // RK 12345 als ganze Zahl, geteilt durch 100
+        let mut rk_satz = vec![2, 0, 1, 0, 0, 0];
+        rk_satz.extend(((12345u32 << 2) | 3).to_le_bytes());
+        d.extend(satz(0x007E, &rk_satz));
+        d.extend(satz(0x000A, &[]));
+        assert!(ist_biff(&d));
+        assert_eq!(excel_alt(&d).unwrap(), vec!["Konto\t1.25\n7\t2\nSumme\t123.45".to_string()]);
+    }
+
+    /// MULRK mit Gleitkommazahl, RSTRING, eine beschädigte Stelle in der Kette
+    /// und Formel mit Text in BIFF5 (v0.1.2).
+    #[test]
+    fn liest_mulrk_und_ueberspringt_beschaedigtes() {
+        let mut d = satz(0x0809, &[0, 5, 0x10, 0, 0, 0, 0, 0]);
+        // Müll mitten in der Kette. Die Kette gilt erst ab drei stimmigen
+        // Datensätzen wieder, deshalb steht er direkt nach dem Anfang.
+        d.extend([0xFF; 5]);
+        // MULRK: Zeile 0, ab Spalte 0, 1,5 als Gleitkomma und 2 als ganze Zahl
+        let mut m = vec![0, 0, 0, 0];
+        m.extend([0, 0]);
+        m.extend(0x3FF8_0000u32.to_le_bytes());
+        m.extend([0, 0]);
+        m.extend(((2u32 << 2) | 2).to_le_bytes());
+        m.extend(1u16.to_le_bytes());
+        d.extend(satz(0x00BD, &m));
+        d.extend(label5(1, 0, "danach"));
+        let mut rs = vec![1, 0, 1, 0, 0, 0, 3, 0];
+        rs.extend(b"RTF");
+        d.extend(satz(0x00D6, &rs));
+        let mut f = vec![2, 0, 0, 0, 0, 0];
+        f.extend([0, 0, 0, 0, 0, 0, 0xFF, 0xFF]);
+        d.extend(satz(0x0206, &f));
+        let mut st = 4u16.to_le_bytes().to_vec();
+        st.extend(b"Text");
+        d.extend(satz(0x0207, &st));
+        d.extend(satz(0x000A, &[]));
+        assert_eq!(excel_alt(&d).unwrap(), vec!["1.5\t2\ndanach\tRTF\nText".to_string()]);
+    }
+
+    #[test]
+    fn leere_und_fremde_daten() {
+        assert_eq!(excel_alt(&satz(0x0204, &[0; 8])).unwrap_err(), "keine Excel-Tabelle");
+        let mut leer = satz(0x0809, &[0, 5, 0x10, 0, 0, 0, 0, 0]);
+        leer.extend(satz(0x000A, &[]));
+        assert_eq!(excel_alt(&leer).unwrap_err(), "Excel-Tabelle ohne lesbare Zellen");
+        assert!(!ist_biff(b"x") && !ist_lotus(b"\0\0\x02\0\x00\x01"));
+        assert_eq!(zahl(f64::NAN), None);
+        assert_eq!(zahl(0.5).as_deref(), Some("0.5"));
+        assert!((rk(0x3FF8_0000 | 1) - 0.015).abs() < 1e-12);
+    }
+
     #[test]
     fn meldet_verschluesselung() {
         let mut d = satz(0x0809, &[0, 5, 5, 0, 0, 0, 0, 0]);
@@ -334,8 +411,16 @@ mod tests {
         let mut n = vec![0xFF, 1, 0, 0, 0];
         n.extend(42.0f64.to_le_bytes());
         d.extend(satz(0x000E, &n));
+        // INTEGER negativ, FORMULA mit Ergebnis vorn
+        d.extend(satz(0x000D, &[0xFF, 0, 0, 1, 0, 0xFE, 0xFF]));
+        let mut f = vec![0xFF, 1, 0, 1, 0];
+        f.extend(3.5f64.to_le_bytes());
+        d.extend(satz(0x0010, &f));
         d.extend(satz(0x0001, &[]));
+        d.extend(satz(0x000F, &[0xFF, 0, 0, 5, 0, b'x', 0]));
         assert!(ist_lotus(&d));
-        assert_eq!(lotus(&d).unwrap(), vec!["Abrechnung Urlaub\t42".to_string()]);
+        assert_eq!(lotus(&d).unwrap(), vec!["Abrechnung Urlaub\t42\n-2\t3.5".to_string()]);
+        // Ohne Zellen keine Seite
+        assert!(lotus(&satz(0x0000, &[0x04, 0x04])).unwrap().is_empty());
     }
 }

@@ -50,7 +50,7 @@ fn lesen_innen(pfad: &Path) -> Result<Inhalt, String> {
         Ok(inhalt) => Ok(inhalt),
         // Verschlüsselte Dateien liefern nur Zufallszeichen, kein grober Text
         Err(meldung) if GROB_ERLAUBT.contains(&endung.as_str()) && !meldung.contains("verschlüsselt") => {
-            let daten = std::fs::read(pfad).map_err(|e| e.to_string())?;
+            let daten = roh(pfad)?;
             match crate::textformate::grob(&daten) {
                 Some(text) => Ok(Inhalt {
                     seiten: vec![Seite { nr: 1, text: kuerzen(text), bildanteil: 0.0 }],
@@ -72,7 +72,7 @@ const GROB_ERLAUBT: &[&str] = &["doc", "dot", "xls", "xlt", "ppt", "pps", "pages
 /// neue Formate, RTF, HTML, Text, Excel 2–5, Lotus 1-2-3, Word 2 (v0.0.9).
 fn alt_office(pfad: &Path, endung: &str) -> Result<Vec<String>, String> {
     use crate::textformate as t;
-    let daten = std::fs::read(pfad).map_err(|e| e.to_string())?;
+    let daten = roh(pfad)?;
     let word = matches!(endung, "doc" | "dot");
     let tabelle = matches!(endung, "xls" | "xlt");
     if daten.starts_with(&crate::ole::KENNUNG) {
@@ -115,11 +115,11 @@ fn alt_office(pfad: &Path, endung: &str) -> Result<Vec<String>, String> {
 
 fn genau(pfad: &Path, endung: &str) -> Result<Inhalt, String> {
     let seiten: Vec<String> = match endung {
-        "txt" | "md" => vec![text_datei(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
-        "rtf" => vec![crate::textformate::rtf(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
-        "csv" | "tsv" | "log" => vec![text_datei(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
-        "htm" | "html" => vec![crate::textformate::html(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
-        "vcf" => vec![crate::textformate::vcf(&std::fs::read(pfad).map_err(|e| e.to_string())?)],
+        "txt" | "md" => vec![text_datei(&roh(pfad)?)],
+        "rtf" => vec![crate::textformate::rtf(&roh(pfad)?)],
+        "csv" | "tsv" | "log" => vec![text_datei(&roh(pfad)?)],
+        "htm" | "html" => vec![crate::textformate::html(&roh(pfad)?)],
+        "vcf" => vec![crate::textformate::vcf(&roh(pfad)?)],
         "docx" | "docm" | "dotx" | "dotm" => {
             let mut zip = oeffnen(pfad)?;
             vec![xml_text(&eintrag(&mut zip, "word/document.xml")?, &WORD)?]
@@ -154,6 +154,16 @@ fn genau(pfad: &Path, endung: &str) -> Result<Inhalt, String> {
 }
 
 type Zip = zip::ZipArchive<std::fs::File>;
+
+/// Inhalt einer Datei, Fehler als Text.
+fn roh(pfad: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(pfad).map_err(|e| e.to_string())
+}
+
+/// Meldung eines Fehlers im XML eines Dokuments.
+fn xml_fehler(e: impl std::fmt::Display) -> String {
+    format!("XML: {e}")
+}
 
 fn oeffnen(pfad: &Path) -> Result<Zip, String> {
     let datei = std::fs::File::open(pfad).map_err(|e| e.to_string())?;
@@ -233,7 +243,7 @@ fn xml_text(xml: &[u8], r: &Regeln) -> Result<String, String> {
         }
     };
     loop {
-        match leser.read_event_into(&mut puffer).map_err(|e| format!("XML: {e}"))? {
+        match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
             Event::Start(e) => {
                 let n = e.local_name();
                 if r.text_in.contains(&n.as_ref()) {
@@ -256,7 +266,7 @@ fn xml_text(xml: &[u8], r: &Regeln) -> Result<String, String> {
                 }
             }
             Event::Text(t) if innen > 0 || r.text_in.is_empty() => {
-                text.push_str(&t.unescape().map_err(|e| format!("XML: {e}"))?);
+                text.push_str(&t.unescape().map_err(xml_fehler)?);
             }
             Event::CData(t) if innen > 0 => text.push_str(&String::from_utf8_lossy(&t)),
             Event::Eof => break,
@@ -426,11 +436,11 @@ fn geteilte_texte(xml: &[u8]) -> Result<Vec<String>, String> {
     let mut puffer = Vec::new();
     let (mut liste, mut aktuell, mut in_t) = (Vec::new(), String::new(), false);
     loop {
-        match leser.read_event_into(&mut puffer).map_err(|e| format!("XML: {e}"))? {
+        match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
             Event::Start(e) if e.local_name().as_ref() == b"t" => in_t = true,
             Event::End(e) if e.local_name().as_ref() == b"t" => in_t = false,
             Event::End(e) if e.local_name().as_ref() == b"si" => liste.push(std::mem::take(&mut aktuell)),
-            Event::Text(t) if in_t => aktuell.push_str(&t.unescape().map_err(|e| format!("XML: {e}"))?),
+            Event::Text(t) if in_t => aktuell.push_str(&t.unescape().map_err(xml_fehler)?),
             Event::Eof => break,
             _ => {}
         }
@@ -445,7 +455,7 @@ fn blaetter(xml: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut puffer = Vec::new();
     let mut liste = Vec::new();
     loop {
-        match leser.read_event_into(&mut puffer).map_err(|e| format!("XML: {e}"))? {
+        match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"sheet" => {
                 if let (Some(name), Some(rid)) = (attribut(&e, "name"), attribut(&e, "r:id")) {
                     liste.push((name, rid));
@@ -465,7 +475,7 @@ fn beziehungen(xml: &[u8]) -> Result<HashMap<String, String>, String> {
     let mut puffer = Vec::new();
     let mut ziele = HashMap::new();
     loop {
-        match leser.read_event_into(&mut puffer).map_err(|e| format!("XML: {e}"))? {
+        match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
                 if let (Some(id), Some(ziel)) = (attribut(&e, "Id"), attribut(&e, "Target")) {
                     ziele.insert(id, ziel);
@@ -486,7 +496,7 @@ fn blatt(xml: &[u8], geteilt: &[String]) -> Result<String, String> {
     let mut text = String::new();
     let (mut typ, mut wert, mut in_wert, mut zellen) = (String::new(), String::new(), false, Vec::<String>::new());
     loop {
-        match leser.read_event_into(&mut puffer).map_err(|e| format!("XML: {e}"))? {
+        match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
             Event::Start(e) => match e.local_name().as_ref() {
                 b"c" => {
                     typ = attribut(&e, "t").unwrap_or_default();
@@ -514,7 +524,7 @@ fn blatt(xml: &[u8], geteilt: &[String]) -> Result<String, String> {
                 }
                 _ => {}
             },
-            Event::Text(t) if in_wert => wert.push_str(&t.unescape().map_err(|e| format!("XML: {e}"))?),
+            Event::Text(t) if in_wert => wert.push_str(&t.unescape().map_err(xml_fehler)?),
             Event::Eof => break,
             _ => {}
         }
@@ -686,6 +696,190 @@ mod tests {
         }
         z.finish().unwrap();
         assert_eq!(texte(&lesen(&p).unwrap()), ["Sehr geehrte\nDamen\nFußzeile"]);
+    }
+
+    fn schreiben(dir: &Path, name: &str, daten: &[u8]) -> std::path::PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, daten).unwrap();
+        p
+    }
+
+    /// Hinter alten Endungen steckt vieles (v0.0.9), geprüft in v0.1.2.
+    #[test]
+    fn alte_endungen_mit_anderem_inhalt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        // Neues Format mit alter Endung
+        let doc = d.join("neu.doc");
+        zip_schreiben(&doc, &[("word/document.xml", r#"<w:document><w:body><w:p><w:r><w:t>Neu als doc</w:t></w:r></w:p></w:body></w:document>"#)]);
+        assert_eq!(texte(&lesen(&doc).unwrap()), ["Neu als doc"]);
+        let xls = d.join("neu.xls");
+        zip_schreiben(
+            &xls,
+            &[
+                ("xl/workbook.xml", r#"<workbook><sheets><sheet name="Blatt" r:id="rId1"/></sheets></workbook>"#),
+                ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Target="worksheets/s.xml"/></Relationships>"#),
+                ("xl/worksheets/s.xml", r#"<worksheet><sheetData><row><c t="str"><v>Zelle</v></c></row></sheetData></worksheet>"#),
+            ],
+        );
+        assert_eq!(texte(&lesen(&xls).unwrap()), ["Blatt\nZelle"]);
+        // PowerPoint im neuen Format mit alter Endung: kein Leser, höchstens grob
+        let ppt = d.join("neu.ppt");
+        zip_schreiben(&ppt, &[("ppt/slides/slide1.xml", "<p:sld/>")]);
+        match lesen(&ppt) {
+            Ok(i) => assert!(i.grob),
+            Err(f) => assert!(f.contains("PowerPoint"), "{f}"),
+        }
+        // RTF, HTML und Text mit alter Endung
+        let rtf = schreiben(d, "rtf.doc", br"{\rtf1\ansi Hallo aus RTF\par}");
+        assert_eq!(texte(&lesen(&rtf).unwrap()), ["Hallo aus RTF"]);
+        let html = schreiben(d, "html.xls", b"<html><body><p>Tabelle als HTML</p></body></html>");
+        assert!(texte(&lesen(&html).unwrap())[0].contains("Tabelle als HTML"));
+        let text = schreiben(d, "daten.doc", "Name;Ort\nKim;Stuttgart\n".as_bytes());
+        assert_eq!(texte(&lesen(&text).unwrap()), ["Name;Ort\nKim;Stuttgart"]);
+        // Fremdes Binärformat ohne lesbaren Text
+        let fremd = schreiben(d, "fremd.doc", &[0u8, 1, 2, 3, 0xFF, 0xFE, 7, 0, 9, 1]);
+        assert_eq!(lesen(&fremd).unwrap_err(), crate::altoffice::VOR_97);
+    }
+
+    /// Scheitert jeder Leser, kommen lesbare Zeichenfolgen ins Register (v0.0.9).
+    #[test]
+    fn grober_rueckfall() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut daten = vec![0u8, 1, 2, 3];
+        for satz in ["Rechnung der Stadtwerke Stuttgart", "Abschlag fuer den Monat Juli", "Kundennummer und Vertragskonto"] {
+            daten.extend_from_slice(satz.as_bytes());
+            daten.extend_from_slice(&[0, 0, 1, 2]);
+        }
+        let i = lesen(&schreiben(tmp.path(), "alt.doc", &daten)).unwrap();
+        assert!(i.grob);
+        assert!(i.seiten[0].text.contains("Stadtwerke Stuttgart"), "{:?}", i.seiten[0].text);
+        // Andere Endungen bekommen keinen Rückfall
+        assert!(lesen(&schreiben(tmp.path(), "alt.docx", &daten)).is_err());
+    }
+
+    #[test]
+    fn weitere_textformate_nach_endung() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        assert_eq!(texte(&lesen(&schreiben(d, "a.rtf", br"{\rtf1 Brief\par}")).unwrap()), ["Brief"]);
+        assert_eq!(texte(&lesen(&schreiben(d, "a.csv", b"a;b\n1;2\n")).unwrap()), ["a;b\n1;2"]);
+        assert_eq!(texte(&lesen(&schreiben(d, "a.log", b"Start\n")).unwrap()), ["Start"]);
+        assert!(texte(&lesen(&schreiben(d, "a.htm", b"<html><body>Seite</body></html>")).unwrap())[0].contains("Seite"));
+        assert!(texte(&lesen(&schreiben(d, "a.vcf", b"BEGIN:VCARD\r\nFN:Kim Sieber\r\nEND:VCARD\r\n")).unwrap())[0]
+            .contains("Kim Sieber"));
+        assert_eq!(lesen(&schreiben(d, "a.abc", b"x")).unwrap_err(), "Format abc wird nicht gelesen");
+    }
+
+    #[test]
+    fn word_mit_tabelle_und_cdata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("Tabelle.docx");
+        zip_schreiben(
+            &p,
+            &[(
+                "word/document.xml",
+                r#"<w:document><w:body><w:tbl><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t><![CDATA[B1]]></w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>X</w:t><w:br/><w:t>Y</w:t></w:r></w:p></w:body></w:document>"#,
+            )],
+        );
+        let t = lesen(&p).unwrap().seiten[0].text.clone();
+        assert!(t.contains("A1") && t.contains("B1") && t.contains('\t'), "{t:?}");
+        assert!(t.ends_with("X\nY"), "{t:?}");
+        let kaputt = tmp.path().join("kaputt.docx");
+        zip_schreiben(&kaputt, &[("word/document.xml", "<w:document><w:t>a</w:x>")]);
+        assert!(lesen(&kaputt).unwrap_err().starts_with("XML"));
+        let ohne = tmp.path().join("ohne.docx");
+        zip_schreiben(&ohne, &[("anderes.xml", "<a/>")]);
+        assert!(lesen(&ohne).unwrap_err().contains("fehlt im Dokument"));
+    }
+
+    /// Pages und Keynote vor 2013: XML in `index.xml` oder gepackt (v0.0.9).
+    #[test]
+    fn iwork_09() {
+        let tmp = tempfile::tempdir().unwrap();
+        let xml = r#"<sl:document><sl:stylesheet>Stil</sl:stylesheet><sf:text-body><sf:p>Hallo<sf:tab/>Welt<sf:br/>Zeile</sf:p></sf:text-body></sl:document>"#;
+        let pages = tmp.path().join("alt.pages");
+        zip_schreiben(&pages, &[("index.xml", xml)]);
+        assert_eq!(texte(&lesen(&pages).unwrap()), ["Hallo\tWelt\nZeile"]);
+
+        let key = tmp.path().join("alt.key");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(xml.as_bytes()).unwrap();
+        let gepackt = gz.finish().unwrap();
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&key).unwrap());
+        z.start_file("index.apxl.gz", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(&gepackt).unwrap();
+        z.finish().unwrap();
+        assert_eq!(texte(&lesen(&key).unwrap()), ["Hallo\tWelt\nZeile"]);
+
+        // Kein Text: höchstens grob, sonst die Meldung
+        let leer = tmp.path().join("leer.pages");
+        zip_schreiben(&leer, &[("x", "")]);
+        match lesen(&leer) {
+            Ok(i) => assert!(i.grob),
+            Err(f) => assert!(f.contains("vor 2013"), "{f}"),
+        }
+    }
+
+    #[test]
+    fn iwa_fehler() {
+        // Block länger als die Daten
+        assert!(iwa_entpacken(&[0, 10, 0, 0, 1, 2]).unwrap_err().contains("abgeschnitten"));
+        // Zahl ohne Ende, zu lang, abgeschnitten
+        let mut i = 0;
+        assert!(varint(&[0xFF; 11], &mut i).unwrap_err().contains("zu lang"));
+        i = 0;
+        assert!(varint(&[0x80], &mut i).unwrap_err().contains("abgeschnitten"));
+        // Feldarten: 1 (8 Byte) und 5 (4 Byte) werden übersprungen, 3 ist unbekannt
+        let f = felder(&[1 << 3 | 1, 0, 0, 0, 0, 0, 0, 0, 0, 2 << 3 | 5, 0, 0, 0, 0, 3 << 3, 7]).unwrap();
+        assert_eq!(f, vec![(3, 7, &[][..])]);
+        assert!(felder(&[1 << 3 | 3]).unwrap_err().contains("Feldart"));
+        assert!(felder(&[1 << 3 | 2, 5, 1]).unwrap_err().contains("Feld abgeschnitten"));
+        assert!(iwa_texte(&[5, 1]).unwrap_err().contains("Kopf"));
+    }
+
+    /// Fehlerpfade beim Lesen (v0.1.2): fehlende Dateien, kaputte Archive.
+    #[test]
+    fn fehlende_und_kaputte_dateien() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["fehlt.txt", "fehlt.rtf", "fehlt.csv", "fehlt.htm", "fehlt.vcf", "fehlt.docx"] {
+            assert!(lesen(&tmp.path().join(name)).is_err(), "{name}");
+        }
+        // iWork '09 gepackt, aber kein gzip
+        let gz = tmp.path().join("kaputt.pages");
+        zip_schreiben(&gz, &[("index.xml.gz", "kein gzip")]);
+        match lesen(&gz) {
+            Ok(i) => assert!(i.grob),
+            Err(f) => assert!(f.starts_with("iWork '09"), "{f}"),
+        }
+        // IWA mit kaputtem Snappy-Block
+        let iwa_kaputt = tmp.path().join("kaputt.key");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&iwa_kaputt).unwrap());
+        z.start_file("Index/Document.iwa", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(&[0, 3, 0, 0, 0xFF, 0xFF, 0xFF]).unwrap();
+        z.finish().unwrap();
+        match lesen(&iwa_kaputt) {
+            Ok(i) => assert!(i.grob),
+            Err(f) => assert!(f.starts_with("IWA"), "{f}"),
+        }
+    }
+
+    /// Mehrere Archive: Document.iwa zuerst, dann nach Namen (v0.1.2).
+    #[test]
+    fn pages_mit_mehreren_archiven() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("Bericht.pages");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
+        for (name, daten) in [
+            ("Index/Tables/Tile-2.iwa", iwa(&["Zelle B"])),
+            ("Index/Tables/Tile-1.iwa", iwa(&["Zelle A"])),
+            ("Index/Document.iwa", iwa(&["Haupttext"])),
+        ] {
+            z.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(&daten).unwrap();
+        }
+        z.finish().unwrap();
+        assert_eq!(texte(&lesen(&p).unwrap()), ["Haupttext\nZelle A\nZelle B"]);
     }
 
     #[test]

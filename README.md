@@ -197,8 +197,14 @@ cargo run --release -p pdf_pruefen -- --aufteilen <Register-Ordner>  # Probe: Sc
 
 `npm test` und `npm run pruefen` sichern die volle Ausgabe in `target/pruefen/`.
 Die Abdeckung braucht einmal je Gerät `rustup component add llvm-tools-preview`
-und `cargo install cargo-llvm-cov`. Sie wird gezeigt, eine Mindestgrenze gibt es nicht.
+und `cargo install cargo-llvm-cov`. Seit v0.1.2 gilt eine Grenze: Jede Datei braucht
+mindestens 90 % der Zeilen und 90 % der Funktionen, sonst ist `npm run pruefen` rot.
+Ausnahmen nur mit Grund in `scripts/abdeckung-ausnahmen.json`. Mit Filter oder
+einzelnem Paket wird die Grenze nicht geprüft. Der ausführliche Bericht je Funktion
+liegt danach in `target/pruefen/abdeckung.json`.
 Der erste Lauf mit Abdeckung übersetzt alles neu, auch libaom und Tesseract.
+Die Tests mit PDFium und Tesseract brauchen `bibliotheken/` (`tools/pdfium_holen.sh`,
+`tools/tesseract_holen.sh`), sonst sind sie rot.
 
 PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.
 `tools/pdfium_holen.sh` lädt einen fertigen Build mit fest eingetragener

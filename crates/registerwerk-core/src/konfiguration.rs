@@ -283,4 +283,26 @@ mod tests {
         assert!(Konfiguration::aus_text("tippfehler = 1").is_err());
         assert!(Konfiguration::aus_text("").unwrap().aeste.is_empty());
     }
+
+    /// Laden, Suchen und der frühere Cloud-Ordner als Ast (v0.1.2).
+    #[test]
+    fn laden_suchen_und_cloud_ordner() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(matches!(Konfiguration::laden(&tmp.path().join("fehlt.toml")), Err(Fehler::Konfiguration(_))));
+        let unten = tmp.path().join("a/b");
+        std::fs::create_dir_all(&unten).unwrap();
+        assert_eq!(Konfiguration::suchen_ab(&unten), None);
+        std::fs::write(tmp.path().join("a").join(DATEINAME), "geraet = \"Test\"\n").unwrap();
+        let gefunden = Konfiguration::suchen_ab(&unten).unwrap();
+        assert_eq!(gefunden, tmp.path().join("a").join(DATEINAME));
+        assert_eq!(Konfiguration::laden(&gefunden).unwrap().geraet, "Test");
+
+        // Ein Ast mit dem Ort des Cloud-Ordners behält seinen Namen
+        let k = Konfiguration::aus_text("cloud_ordner = \"/c/Dropbox\"\n[aeste]\nMeins = \"/c/Dropbox\"\n").unwrap();
+        assert_eq!((k.alter_ast.as_deref(), k.aeste.len()), (Some("Meins"), 1));
+        // Ohne brauchbaren Ordnernamen heißt der Ast "Cloud"
+        let k = Konfiguration::aus_text("cloud_ordner = \"/\"\n").unwrap();
+        assert_eq!(k.alter_ast.as_deref(), Some("Cloud"));
+    }
+
 }

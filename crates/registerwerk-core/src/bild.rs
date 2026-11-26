@@ -269,6 +269,111 @@ fn einpassen(bild: DynamicImage) -> Bild {
 mod tests {
     use super::*;
 
+    /// Baut ein TIFF mit Farbpalette, ein Streifen, Little Endian (v0.1.2).
+    /// `farben` je Eintrag Rot, Grün, Blau von 0 bis 65535.
+    fn palette_tiff(bits: u16, b: u32, h: u32, packung: u16, vorhersage: u16, streifen: &[u8], farben: &[[u16; 3]]) -> Vec<u8> {
+        let anzahl = 1usize << bits;
+        let mut tabelle = vec![0u16; 3 * anzahl];
+        for (i, f) in farben.iter().enumerate() {
+            for k in 0..3 {
+                tabelle[k * anzahl + i] = f[k];
+            }
+        }
+        const EINTRAEGE: u32 = 11;
+        let daten = 8 + 2 + EINTRAEGE * 12 + 4;
+        let streifen_ort = daten + tabelle.len() as u32 * 2;
+        let mut t = b"II*\0".to_vec();
+        t.extend(8u32.to_le_bytes());
+        t.extend((EINTRAEGE as u16).to_le_bytes());
+        let mut eintrag = |tag: u16, typ: u16, n: u32, wert: u32| {
+            t.extend(tag.to_le_bytes());
+            t.extend(typ.to_le_bytes());
+            t.extend(n.to_le_bytes());
+            t.extend(wert.to_le_bytes());
+        };
+        let (kurz, lang) = (3u16, 4u16);
+        eintrag(256, lang, 1, b);
+        eintrag(257, lang, 1, h);
+        eintrag(258, kurz, 1, bits as u32);
+        eintrag(259, kurz, 1, packung as u32);
+        eintrag(262, kurz, 1, 3);
+        eintrag(273, lang, 1, streifen_ort);
+        eintrag(277, kurz, 1, 1);
+        eintrag(278, lang, 1, h);
+        eintrag(279, lang, 1, streifen.len() as u32);
+        eintrag(317, kurz, 1, vorhersage as u32);
+        eintrag(320, kurz, tabelle.len() as u32, daten);
+        t.extend(0u32.to_le_bytes());
+        for w in tabelle {
+            t.extend(w.to_le_bytes());
+        }
+        t.extend_from_slice(streifen);
+        t
+    }
+
+    const WEISS: [u16; 3] = [65535, 65535, 65535];
+    const ROT: [u16; 3] = [65535, 0, 0];
+    const BLAU: [u16; 3] = [0, 0, 65535];
+
+    #[test]
+    fn liest_palette_mit_4_bit_und_8_bit_mit_vorhersage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let farbe = |b: &Bild, x: usize, y: usize| b.rgb[(y * b.breite as usize + x) * 3..][..3].to_vec();
+
+        // 4 Bit, 3 × 2 Pixel, ungepackt: Zeile 1 rot, blau, weiß, Zeile 2 weiß, weiß, rot
+        let p4 = tmp.path().join("p4.tif");
+        std::fs::write(&p4, palette_tiff(4, 3, 2, 1, 1, &[0x12, 0x00, 0x00, 0x10], &[WEISS, ROT, BLAU])).unwrap();
+        let b = laden(&p4).unwrap();
+        assert_eq!((b.breite, b.hoehe), (3, 2));
+        assert_eq!((farbe(&b, 0, 0), farbe(&b, 1, 0), farbe(&b, 2, 0)), (vec![255, 0, 0], vec![0, 0, 255], vec![255, 255, 255]));
+        assert_eq!(farbe(&b, 2, 1), vec![255, 0, 0]);
+
+        // 8 Bit, Deflate mit waagerechter Vorhersage: rot, rot, blau, blau als Abstände 1, 0, 1, 0
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &[1, 0, 1, 0]).unwrap();
+        let p8 = tmp.path().join("p8.tif");
+        std::fs::write(&p8, palette_tiff(8, 4, 1, 8, 2, &z.finish().unwrap(), &[WEISS, ROT, BLAU])).unwrap();
+        let b = laden(&p8).unwrap();
+        assert_eq!((farbe(&b, 0, 0), farbe(&b, 1, 0), farbe(&b, 2, 0), farbe(&b, 3, 0)),
+            (vec![255, 0, 0], vec![255, 0, 0], vec![0, 0, 255], vec![0, 0, 255]));
+
+        // Nicht unterstützt: JPEG-Packung, keine Zeile Daten, kaputte Datei
+        for (name, daten) in [
+            ("jpeg.tif", palette_tiff(8, 4, 1, 7, 1, &[0; 4], &[WEISS])),
+            ("leer.tif", palette_tiff(8, 4, 1, 1, 1, &[], &[WEISS])),
+            ("kaputt.tif", b"II*\0kaputt".to_vec()),
+        ] {
+            let datei = tmp.path().join(name);
+            std::fs::write(&datei, daten).unwrap();
+            assert!(laden(&datei).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn entpackt_packbits() {
+        // 2 wörtlich, 3-mal 0xAA, Leerbefehl -128, dann 1 wörtlich
+        assert_eq!(packbits(&[1, 5, 6, 0xFE, 0xAA, 0x80, 0, 7]), vec![5, 6, 0xAA, 0xAA, 0xAA, 7]);
+        // Abgeschnitten: so viel wie da ist
+        assert_eq!(packbits(&[3, 1, 2]), vec![1, 2]);
+        assert_eq!(packbits(&[0xFF]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn inhalt_und_grosse_bilder_fuer_die_ocr() {
+        let i = inhalt();
+        assert_eq!(i.seiten.len(), 1);
+        assert!(i.seiten[0].ist_scan() && i.seiten[0].text.is_empty());
+        // Über der Grenze der OCR wird verkleinert
+        let tmp = tempfile::tempdir().unwrap();
+        let lang = tmp.path().join("lang.png");
+        image::GrayImage::from_pixel(crate::ocr::MAX_KANTE + 1000, 20, image::Luma([255])).save(&lang).unwrap();
+        let g = fuer_ocr(&lang).unwrap();
+        assert_eq!(g.breite, crate::ocr::MAX_KANTE);
+        assert!(fuer_ocr(&tmp.path().join("fehlt.png")).is_err());
+        // Fehlende HEIC-Datei: Fehler des Lesens
+        assert!(laden(&tmp.path().join("fehlt.heic")).is_err());
+    }
+
     #[test]
     fn verkleinert_in_den_rahmen_ohne_zu_vergroessern() {
         let tmp = tempfile::tempdir().unwrap();
@@ -311,7 +416,10 @@ mod tests {
         // links, blauer Balken unten rechts, 120 x 80 Pixel
         for name in ["palette_ohne.tif", "palette_packbits.tif", "palette_lzw.tif", "palette_deflate.tif"] {
             let datei = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/daten").join(name);
-            let b = laden(&datei).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let b = match laden(&datei) {
+                Ok(b) => b,
+                Err(e) => panic!("{name}: {e}"),
+            };
             assert_eq!((b.breite, b.hoehe), (120, 80), "{name}");
             let bei = |x: usize, y: usize| &b.rgb[(y * 120 + x) * 3..(y * 120 + x) * 3 + 3];
             assert_eq!(bei(2, 2), [255, 255, 255], "{name}");

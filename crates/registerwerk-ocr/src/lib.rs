@@ -293,6 +293,20 @@ impl Drop for Erkenner {
 mod tests {
     use super::*;
 
+    /// Ordner mit den Sätzen der Sprachdaten: `REGISTERWERK_TESSDATA` oder
+    /// `bibliotheken/tesseract/tessdata` im Projekt. Fehlen sie, ist der Test
+    /// rot (v0.1.2, vorher still übersprungen).
+    fn tessdata_basis() -> std::path::PathBuf {
+        if let Some(o) = std::env::var_os("REGISTERWERK_TESSDATA") {
+            return o.into();
+        }
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .map(|o| o.join("bibliotheken/tesseract/tessdata"))
+            .find(|o| o.join("standard/deu.traineddata").is_file())
+            .expect("Sprachdaten fehlen. Bitte im Projektordner ausführen: bash tools/tesseract_holen.sh")
+    }
+
     #[test]
     fn version_ist_5() {
         assert!(version().starts_with('5'), "{}", version());
@@ -309,13 +323,62 @@ mod tests {
     #[test]
     fn leeres_bild_wird_abgelehnt() {
         // Ordner mit den Sätzen der Sprachdaten, wie bibliotheken/tesseract/tessdata
-        let Some(basis) = std::env::var_os("REGISTERWERK_TESSDATA") else { return };
-        let mut e = Erkenner::neu(&Path::new(&basis).join("standard"), "deu").unwrap();
+        let basis = tessdata_basis();
+        let mut e = Erkenner::neu(&basis.join("standard"), "deu").unwrap();
         assert!(e.erkennen(&[], 0, 0, 300).is_err());
         let weiss = vec![255u8; 200 * 100];
         let r = e.erkennen(&weiss, 200, 100, 300).unwrap();
         assert!(r.text.trim().is_empty());
         assert!(r.woerter.is_empty());
+    }
+
+    /// Zwei Zeilen Text als Graustufenbild (PGM, `tests/daten/zeilen.pgm`,
+    /// erzeugt mit Pillow und DejaVu Sans): "Kontoauszug Stuttgart" und
+    /// "Betrag 123,45" (v0.1.2).
+    fn zeilen() -> (Vec<u8>, u32, u32) {
+        let d = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/daten/zeilen.pgm")).unwrap();
+        // Kopf: P5, Breite, Höhe, Höchstwert, je durch Leerraum getrennt
+        let mut teile = Vec::new();
+        let mut i = 0;
+        while teile.len() < 4 {
+            while d[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let anfang = i;
+            while !d[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            teile.push(std::str::from_utf8(&d[anfang..i]).unwrap().to_string());
+        }
+        assert_eq!(teile[0], "P5");
+        let (b, h): (u32, u32) = (teile[1].parse().unwrap(), teile[2].parse().unwrap());
+        (d[i + 1..].to_vec(), b, h)
+    }
+
+    #[test]
+    fn erkennt_woerter_mit_lage_und_zeilenende() {
+        let (grau, b, h) = zeilen();
+        let mut e = Erkenner::neu(&tessdata_basis().join("standard"), "deu+eng").unwrap();
+        let r = e.erkennen(&grau, b, h, 300).unwrap();
+        assert!(r.text.contains("Kontoauszug Stuttgart"), "{:?}", r.text);
+        assert!(r.text.contains("123,45"), "{:?}", r.text);
+        assert!(r.konfidenz > 50, "{}", r.konfidenz);
+        let woerter: Vec<(&str, bool)> = r.woerter.iter().map(|w| (w.text.as_str(), w.zeilenende)).collect();
+        assert_eq!(woerter, [("Kontoauszug", false), ("Stuttgart", true), ("Betrag", false), ("123,45", true)]);
+        // Lage: erste Zeile über der zweiten, links vor rechts
+        let (k, s, bt) = (&r.woerter[0], &r.woerter[1], &r.woerter[2]);
+        assert!(k.rechts < s.links && k.unten < bt.oben, "{k:?} {s:?} {bt:?}");
+        assert!(k.grund_links > k.oben as f32 && k.grund_links <= k.unten as f32 + 1.0, "{k:?}");
+        // Derselbe Erkenner ein zweites Mal
+        assert_eq!(e.erkennen(&grau, b, h, 300).unwrap().woerter.len(), 4);
+        // Falsche Maße
+        assert!(e.erkennen(&grau, b + 1, h, 300).unwrap_err().contains("Maße"));
+    }
+
+    #[test]
+    fn ungueltige_sprachangabe() {
+        assert!(Erkenner::neu(&tessdata_basis().join("standard"), "de\0u").is_err());
+        assert!(version().contains('.'));
     }
 
     #[test]
@@ -329,8 +392,8 @@ mod tests {
     /// Sprachdaten.
     #[test]
     fn woerter_mit_lage() {
-        let Some(basis) = std::env::var_os("REGISTERWERK_TESSDATA") else { return };
-        let mut e = Erkenner::neu(&Path::new(&basis).join("standard"), "eng").unwrap();
+        let basis = tessdata_basis();
+        let mut e = Erkenner::neu(&basis.join("standard"), "eng").unwrap();
         // Ein schwarzer Balken ergibt kein Wort, nur die Schnittstelle wird geprüft
         let (b, h) = (600u32, 200u32);
         let mut bild = vec![255u8; (b * h) as usize];

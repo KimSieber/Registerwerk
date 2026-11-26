@@ -251,6 +251,48 @@ mod tests {
     }
 
     #[test]
+    fn leeres_und_falsches_bild() {
+        let leer = Bild { breite: 0, hoehe: 0, rgb: vec![] };
+        assert_eq!(farbanteil(&leer), 0.0);
+        assert!(kodieren(&leer, false, 10, Some(1)).unwrap_err().contains("Maße"));
+        let zu_kurz = Bild { breite: 4, hoehe: 4, rgb: vec![0; 10] };
+        assert!(erzeugen(&zu_kurz, Some(1)).is_err());
+    }
+
+    /// Rendert die Test-PDF: Seite 1 mit rotem Balken ist farbig, der Scan in
+    /// Graustufen nicht. A4 wird 1024 px breit (v0.1.2).
+    #[test]
+    fn rendert_die_test_pdf() {
+        use crate::testumgebung::{pdfium, test_pdf};
+        let seiten = pdf_rendern(pdfium(), &test_pdf(), 10).unwrap();
+        assert_eq!(seiten.len(), 2);
+        assert_eq!(pdf_rendern(pdfium(), &test_pdf(), 1).unwrap().len(), 1);
+        // PDFium rundet die lange Kante auf: 841,89 pt ergeben 1449 statt 1448 px
+        for s in &seiten {
+            assert_eq!(s.breite, 1024);
+            assert!((1448..=1449).contains(&s.hoehe), "{}", s.hoehe);
+            assert_eq!(s.rgb.len(), (s.breite * s.hoehe * 3) as usize);
+        }
+        let v: Vec<Vorschau> = seiten.iter().map(|s| erzeugen(s, Some(1)).unwrap()).collect();
+        assert_eq!(v.iter().map(|v| v.farbig).collect::<Vec<_>>(), [true, false]);
+        assert!(v.iter().all(|v| &v.avif[4..12] == b"ftypavif" && v.breite == 1024));
+
+        // Je Seite, mit Abbruch nach der ersten
+        let mut n = 0;
+        assert_eq!(pdf_rendern_je_seite(pdfium(), &test_pdf(), &mut |_| { n += 1; true }).unwrap(), 2);
+        assert_eq!(n, 2);
+        let f = pdf_rendern_je_seite(pdfium(), &test_pdf(), &mut |_| false).unwrap_err();
+        assert_eq!(f, crate::vorschauen::ABGEBROCHEN);
+
+        // Unlesbare Datei
+        let tmp = tempfile::tempdir().unwrap();
+        let kaputt = tmp.path().join("kaputt.pdf");
+        std::fs::write(&kaputt, b"nichts").unwrap();
+        assert!(pdf_rendern(pdfium(), &kaputt, 1).is_err());
+        assert!(pdf_rendern_je_seite(pdfium(), &kaputt, &mut |_| true).is_err());
+    }
+
+    #[test]
     fn kodiert_avif_in_farbe_und_grau() {
         let bild = flaeche(64, 48, |x, y| [(x * 4) as u8, (y * 5) as u8, 90]);
         for farbig in [true, false] {

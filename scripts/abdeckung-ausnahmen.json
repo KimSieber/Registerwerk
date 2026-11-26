@@ -1,0 +1,4 @@
+{
+  "beschreibung": "Ausnahmen von der Grenze der Abdeckung (90 % der Zeilen und 90 % der Funktionen je Datei), seit v0.1.2. Je Eintrag: datei (wie in der Tabelle von llvm-cov, etwa registerwerk-core/src/lib.rs), grund, und eine eigene Grenze in Prozent (unter 90) für zeilen, funktionen oder beides. Eine Grenze darf nur steigen. Neue Dateien gelten ohne Ausnahme mit 90 %.",
+  "ausnahmen": []
+}

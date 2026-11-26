@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { buildAuswerten, ohneFarben, rustAuswerten, zusammenfassen } from "./auswertung.mjs";
+import { buildAuswerten, grenzePruefen, ohneFarben, rustAuswerten, zusammenfassen } from "./auswertung.mjs";
 
 const RUST_GRUEN = `
 running 3 tests
@@ -82,7 +82,7 @@ describe("Auswertung", () => {
     ]);
   });
 
-  it("npm run pruefen mit Abdeckung: keine Grenze, Abdeckung macht nicht rot", () => {
+  it("npm run pruefen mit Abdeckung ohne Grenze (Filter): Abdeckung macht nicht rot", () => {
     const { text, gruen } = zusammenfassen({ build: ok(""), rust: ok(RUST_GRUEN) }, LOGS, { mitAbdeckung: true });
     assert.equal(gruen, true);
     assert.ok(text.includes("Build            ✓"));
@@ -108,6 +108,74 @@ describe("Auswertung", () => {
   it("nichts auswertbar", () => {
     assert.ok(zusammenfassen({ rust: rot(KOMPILIERT_NICHT) }, LOGS).text.includes("Rust-Tests       ✗  Kompilierfehler"));
     assert.ok(zusammenfassen({ rust: rot("") }, LOGS).text.includes("keine Ergebnisse gefunden"));
+  });
+
+  it("Grenze: Dateien unter 90 % der Zeilen oder Funktionen", () => {
+    const r = rustAuswerten(RUST_GRUEN);
+    assert.deepEqual(r.jeDatei.map((d) => d.name), [
+      "registerwerk-core/src/ablauf.rs",
+      "registerwerk-core/src/register.rs",
+      "registerwerk-ocr/src/lib.rs",
+    ]);
+    assert.deepEqual(grenzePruefen(r.jeDatei, r.abdeckung), {
+      verstoesse: ["registerwerk-ocr/src/lib.rs: Zeilen 50 % unter 90 %", "registerwerk-ocr/src/lib.rs: Funktionen 50 % unter 90 %"],
+      hinweise: [],
+    });
+    // Mit begründeter Ausnahme grün, auch mit führendem crates/
+    const ausnahme = { datei: "crates/registerwerk-ocr/src/lib.rs", zeilen: 50, funktionen: 50, grund: "C-Schnittstelle" };
+    assert.deepEqual(grenzePruefen(r.jeDatei, r.abdeckung, [ausnahme]).verstoesse, []);
+    assert.deepEqual(grenzePruefen(r.jeDatei, r.abdeckung, [{ ...ausnahme, zeilen: 60 }]).verstoesse, [
+      "registerwerk-ocr/src/lib.rs: Zeilen 50 % unter 60 %",
+    ]);
+    // Ausnahme nur für Zeilen: Funktionen gelten weiter mit 90 %
+    const nurZeilen = { datei: "registerwerk-ocr/src/lib.rs", zeilen: 50, grund: "x" };
+    assert.deepEqual(grenzePruefen(r.jeDatei, r.abdeckung, [nurZeilen]).verstoesse, [
+      "registerwerk-ocr/src/lib.rs: Funktionen 50 % unter 90 %",
+    ]);
+    // Funktionen in der Summe
+    assert.deepEqual(grenzePruefen([], { funktionen: 89.9 }).verstoesse, ["Funktionen gesamt 89.9 % unter 90 %"]);
+  });
+
+  it("Grenze: fehlerhafte und überflüssige Ausnahmen", () => {
+    const r = rustAuswerten(RUST_GRUEN);
+    const g = grenzePruefen(r.jeDatei, r.abdeckung, [
+      { datei: "registerwerk-core/src/gibtsnicht.rs", zeilen: 50, grund: "x" },
+      { datei: "registerwerk-core/src/ablauf.rs", zeilen: 80, grund: " " },
+      { datei: "registerwerk-ocr/src/lib.rs", zeilen: 95, grund: "x" },
+      { datei: "registerwerk-core/src/register.rs", zeilen: 80, funktionen: 80, grund: "früher niedrig" },
+      { datei: "registerwerk-core/src/ablauf.rs", grund: "ohne Grenze" },
+      {},
+    ]);
+    assert.deepEqual(g.verstoesse, [
+      "Ausnahme für unbekannte Datei: registerwerk-core/src/gibtsnicht.rs",
+      "Ausnahme ohne Grund: registerwerk-core/src/ablauf.rs",
+      "Ausnahme mit ungültiger Grenze: registerwerk-ocr/src/lib.rs",
+      "Ausnahme mit ungültiger Grenze: registerwerk-core/src/ablauf.rs",
+      "Ausnahme für unbekannte Datei: (ohne Namen)",
+      "registerwerk-ocr/src/lib.rs: Zeilen 50 % unter 90 %",
+      "registerwerk-ocr/src/lib.rs: Funktionen 50 % unter 90 %",
+    ]);
+    assert.deepEqual(g.hinweise, [
+      "registerwerk-core/src/register.rs: Ausnahme für Zeilen nicht mehr nötig (100 %)",
+      "registerwerk-core/src/register.rs: Ausnahme für Funktionen nicht mehr nötig (100 %)",
+    ]);
+  });
+
+  it("npm run pruefen mit Grenze: rot mit Dateiliste, grün mit Ausnahme", () => {
+    const rotText = zusammenfassen({ build: ok(""), rust: ok(RUST_GRUEN) }, LOGS, { mitAbdeckung: true, ausnahmen: [] });
+    assert.equal(rotText.gruen, false);
+    assert.ok(rotText.text.includes("Grenze 90 %      ✗  2 unter der Grenze"));
+    assert.ok(rotText.text.includes("Abdeckung:\n  ✗ registerwerk-ocr/src/lib.rs: Zeilen 50 % unter 90 %"));
+    const ausnahmen = [
+      { datei: "registerwerk-ocr/src/lib.rs", zeilen: 50, funktionen: 50, grund: "C-Schnittstelle" },
+      { datei: "registerwerk-core/src/register.rs", zeilen: 80, grund: "früher niedrig" },
+    ];
+    const gruen = zusammenfassen({ build: ok(""), rust: ok(RUST_GRUEN) }, LOGS, { mitAbdeckung: true, ausnahmen });
+    assert.equal(gruen.gruen, true);
+    assert.ok(gruen.text.includes("Grenze 90 %      ✓  alle Dateien, 2 Ausnahmen"));
+    assert.ok(gruen.text.includes("  Hinweis: registerwerk-core/src/register.rs: Ausnahme für Zeilen nicht mehr nötig (100 %)"));
+    // Ohne Abdeckung keine Grenze
+    assert.ok(!zusammenfassen({ rust: rot(RUST_ROT) }, LOGS, { mitAbdeckung: true, ausnahmen: [] }).text.includes("Grenze"));
   });
 
   it("mit Farbe", () => {

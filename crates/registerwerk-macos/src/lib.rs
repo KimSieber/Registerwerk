@@ -103,3 +103,22 @@ pub fn dropbox_platzhalter_setzen(pfad: &Path) -> Result<(), String> {
 pub fn dropbox_platzhalter_setzen(_pfad: &Path) -> Result<(), String> {
     Ok(())
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    /// Kennzeichen setzen und lesen, Fehler bei ungültigem und fehlendem Pfad (v0.1.2).
+    #[test]
+    fn kennzeichen_der_dropbox() {
+        let datei = std::env::temp_dir().join(format!("registerwerk-macos-{}.pdf", std::process::id()));
+        std::fs::write(&datei, b"").unwrap();
+        assert!(!dropbox_platzhalter(&datei));
+        dropbox_platzhalter_setzen(&datei).unwrap();
+        assert!(dropbox_platzhalter(&datei));
+        let _ = std::fs::remove_file(&datei);
+        assert!(dropbox_platzhalter_setzen(Path::new("a\0b")).is_err());
+        assert!(dropbox_platzhalter_setzen(Path::new("/gibt/es/nicht.pdf")).is_err());
+        assert!(!dropbox_platzhalter(Path::new("a\0b")));
+    }
+}

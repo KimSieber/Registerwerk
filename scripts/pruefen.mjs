@@ -9,7 +9,7 @@
 // Weitere Argumente gehen an cargo, etwa `npm test -- ablauf` für einen Filter.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import { zusammenfassen } from "./auswertung.mjs";
 
@@ -56,6 +56,19 @@ for (const [schluessel, name, befehl] of TEILE) {
   console.log(`\n▶ ${name} ${ok} (${Math.round((Date.now() - start) / 1000)} s)`);
 }
 
-const { text, gruen } = zusammenfassen(ergebnisse, logs, { farbe: process.stdout.isTTY, mitAbdeckung });
+// Ausführlicher Bericht je Funktion (v0.1.2), um nicht abgedeckte Funktionen
+// zu finden. Liest nur die Messung dieses Laufs, ohne neuen Testlauf.
+if (mitAbdeckung && ergebnisse.rust.code === 0) {
+  await ausfuehren(
+    `cargo llvm-cov report --json --ignore-filename-regex "${OHNE}" --output-path ${ORDNER}/abdeckung.json > /dev/null 2>&1`,
+  );
+}
+
+// Die Grenze gilt nur für den ganzen Workspace ohne Filter (v0.1.2)
+const ausnahmen =
+  mitAbdeckung && weitere === ""
+    ? JSON.parse(readFileSync(new URL("./abdeckung-ausnahmen.json", import.meta.url), "utf8")).ausnahmen
+    : null;
+const { text, gruen } = zusammenfassen(ergebnisse, logs, { farbe: process.stdout.isTTY, mitAbdeckung, ausnahmen });
 console.log(`\n${text}\n`);
 process.exit(gruen ? 0 : 1);

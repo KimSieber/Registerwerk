@@ -27,6 +27,8 @@ pub mod vorschau;
 pub mod textbild;
 pub mod textebene;
 pub mod textformate;
+#[cfg(test)]
+pub(crate) mod testumgebung;
 pub mod verschluesselung;
 pub mod vorschauen;
 pub mod woerter;
@@ -414,6 +416,118 @@ pub fn textebene_schreiben(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testumgebung::{pdfium_ordner, tessdata, test_pdf, SCAN_TEXT};
+    use std::sync::atomic::Ordering;
+
+    /// Ein Ast "A" mit der Test-PDF als `A/Belege/Beleg.pdf`, Regel Voll,
+    /// Register im Ordner `register`.
+    fn archiv() -> (tempfile::TempDir, Konfiguration, Regeln, Register) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ast = tmp.path().join("Archiv");
+        std::fs::create_dir_all(ast.join("Belege")).unwrap();
+        std::fs::copy(test_pdf(), ast.join("Belege/Beleg.pdf")).unwrap();
+        let mut konfig = Konfiguration::mit_ast("A", &ast);
+        konfig.geraet = "Notebook".into();
+        let reg = tmp.path().join("register");
+        std::fs::create_dir_all(&reg).unwrap();
+        let register = Register::oeffnen(&reg).unwrap();
+        (tmp, konfig, Regeln::voll(&["A"]), register)
+    }
+
+    fn lauf(
+        konfig: &Konfiguration,
+        regeln: &Regeln,
+        register: &mut Register,
+        abbrechen: bool,
+    ) -> (AblaufErgebnis, Vec<Schritt>) {
+        let mut schritte: Vec<Schritt> = Vec::new();
+        let e = verarbeiten(
+            konfig,
+            regeln,
+            register,
+            &pdfium_ordner(),
+            &tessdata(),
+            &[],
+            false,
+            true,
+            |m| {
+                if schritte.last() != Some(&m.schritt) {
+                    schritte.push(m.schritt);
+                }
+            },
+            &AtomicBool::new(false),
+            &AtomicBool::new(abbrechen),
+        )
+        .unwrap();
+        (e, schritte)
+    }
+
+    /// Der ganze Delta-Lauf mit PDFium und Tesseract an der Test-PDF (v0.1.2).
+    #[test]
+    fn verarbeitet_eine_pdf_durch_alle_schritte() {
+        let (tmp, konfig, regeln, mut register) = archiv();
+        let datei = tmp.path().join("Archiv/Belege/Beleg.pdf");
+        let vorher = std::fs::metadata(&datei).unwrap();
+
+        let (e, schritte) = lauf(&konfig, &regeln, &mut register, false);
+        // Jeder Schritt meldet sich, auch ohne Dateien (Laden, Auslagern)
+        use Schritt as S;
+        assert_eq!(schritte, [S::Aufnehmen, S::Laden, S::Inhalte, S::Vorschauen, S::Erkennen, S::Textebene, S::Auslagern]);
+        assert!(!e.abgebrochen);
+        assert_eq!((e.aufgenommen.neu, e.ausgewaehlt, e.laden.geladen), (1, 1, 0));
+        assert_eq!((e.inhalte.gelesen, e.inhalte.seiten, e.inhalte.fehler), (1, 2, 0));
+        assert_eq!((e.vorschauen.seiten, e.vorschauen.fehler), (2, 0));
+        // Nur die Scan-Seite wird erkannt und in die PDF geschrieben
+        assert_eq!((e.ocr.seiten, e.ocr.uebernommen, e.ocr.fehler), (1, 1, 0));
+        assert_eq!((e.textebene.geschrieben, e.textebene.seiten, e.textebene.fehler), (1, 1, 0));
+        assert_eq!(e.auslagern.ausgelagert, 0);
+
+        // Die PDF hat jetzt Text auf der Scan-Seite, Änderungsdatum unverändert
+        let nachher = std::fs::metadata(&datei).unwrap();
+        assert!(nachher.len() > vorher.len());
+        assert_eq!(nachher.modified().unwrap(), vorher.modified().unwrap());
+        let inhalt = pdf::lesen(crate::testumgebung::pdfium(), &datei).unwrap();
+        for wort in SCAN_TEXT {
+            assert!(inhalt.seiten[1].text.contains(wort), "{wort} fehlt: {:?}", inhalt.seiten[1].text);
+        }
+        assert!(register.ordner().unwrap().join(textebene::PROTOKOLL).is_file());
+
+        // Dokumentdatum aus den Metadaten der PDF
+        let (datum, quelle): (String, String) = register
+            .db
+            .query_row("SELECT datum_dokument, datum_quelle FROM datei", [], |z| Ok((z.get(0)?, z.get(1)?)))
+            .unwrap();
+        assert_eq!(datum, "2024-03-15");
+        assert_eq!(quelle, datum::QUELLE_PDF);
+
+        // Gefunden über den eingebetteten und den erkannten Text
+        register.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).unwrap();
+        for wort in ["Rechnung 4711", "Kontoauszug Testbank"] {
+            let t = register.suchen(&Anfrage { text: wort.into(), ..Default::default() }).unwrap();
+            assert_eq!(t.treffer.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Beleg.pdf"], "{wort}");
+        }
+
+        // Der nächste Lauf findet nichts mehr: Das Schreiben der Textebene ist keine Änderung
+        let (e, _) = lauf(&konfig, &regeln, &mut register, false);
+        assert_eq!((e.aufgenommen.neu, e.aufgenommen.geaendert, e.aufgenommen.unveraendert), (0, 0, 1));
+        assert_eq!((e.ausgewaehlt, e.inhalte.gelesen, e.ocr.seiten, e.textebene.geschrieben), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn angehaltener_lauf_nimmt_nur_auf() {
+        let (_tmp, konfig, regeln, mut register) = archiv();
+        let (e, schritte) = lauf(&konfig, &regeln, &mut register, true);
+        assert!(e.abgebrochen);
+        assert_eq!(e.aufgenommen.neu, 1);
+        assert_eq!(schritte, [Schritt::Aufnehmen, Schritt::Laden]);
+        assert_eq!(e.inhalte.gelesen, 0);
+        // Danach steht die Datei weiter an
+        let abbrechen = AtomicBool::new(false);
+        let d = delta_pruefen_abbrechbar(&konfig, &regeln, &mut register, &abbrechen).unwrap().unwrap();
+        assert_eq!(d.dateien.len(), 1);
+        abbrechen.store(true, Ordering::SeqCst);
+        assert!(delta_pruefen_abbrechbar(&konfig, &regeln, &mut register, &abbrechen).unwrap().is_none());
+    }
 
     #[test]
     fn stellt_regeln_und_register_auf_aeste_um() {

@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 25.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.1). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 26.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.2). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -139,9 +139,11 @@ Das Schreiben in die PDFs braucht im Delta-Lauf keinen zweiten Klick. Der Klick 
 
 **Laden:** Die ausgewählten "nur online"-Dateien werden in vier Fäden über die Dateikoordination angefordert. Gewartet wird gemeinsam, angekommene Dateien kommen sofort ins Register. Das Warten endet, wenn alle da sind, nach 2 Minuten ohne neue Datei oder mit „Nicht warten, weiter“. Was nicht ankam, bleibt offen für den nächsten Lauf. Die Anzeige zeigt laufend, wie viele Dateien da sind und auf welche gewartet wird. Grund: Die Warteschlange der Cloud kann voll sein, oder das Gerät ist offline.
 
+Seit v0.1.2 vermerkt das Register jede angeforderte Datei je Gerät (Tabelle `angefordert`). Bis dahin stand die Liste nur im Arbeitsspeicher des Laufs. Kam eine Datei erst nach dem Warten an oder endete der Lauf vor „Wieder nur online“, blieb sie lokal liegen. Jeder Schritt zeigt einen Haken, auch ohne Dateien („nichts zu laden“).
+
 ### Zurück auf "nur online"
 
-Seit v0.0.8 stellt der Delta-Lauf die Dateien, die er selbst geladen hat, danach wieder auf "nur online". Dateien, die Kim bewusst lokal hält, bleiben lokal. Dafür nutzt Registerwerk das Werkzeug `onlineonly` (MIT, inoffiziell). Es spricht mit der Dropbox-App über dieselbe Schnittstelle wie ihr Finder-Menü und wartet, bis die Dropbox den neuen Zustand meldet. Pfade, die die Dropbox noch abgleicht, hält es zurück und fordert sie erneut an. Getestet am 22.11.2026: aus `local` wurde `online-only` mit 0 Byte.
+Seit v0.0.8 stellt der Delta-Lauf die Dateien, die er selbst geladen hat, danach wieder auf "nur online". Dateien, die Kim bewusst lokal hält, bleiben lokal. Seit v0.1.2 gilt das für alle Dateien, die Registerwerk auf diesem Gerät angefordert hat und die keinen Schritt mehr offen haben, auch aus früheren Läufen. Der Vermerk entfällt nach dem Zurückstellen, wenn die Datei schon wieder "nur online" liegt, und mit dem Eintrag im Register. Dafür nutzt Registerwerk das Werkzeug `onlineonly` (MIT, inoffiziell). Es spricht mit der Dropbox-App über dieselbe Schnittstelle wie ihr Finder-Menü und wartet, bis die Dropbox den neuen Zustand meldet. Pfade, die die Dropbox noch abgleicht, hält es zurück und fordert sie erneut an. Getestet am 22.11.2026: aus `local` wurde `online-only` mit 0 Byte.
 
 - Es arbeitet nur mit der klassischen Dropbox unter `~/Dropbox`.
 - Die Schnittstelle ist undokumentiert. Ein Update der Dropbox kann sie brechen. Dann bleiben die Dateien lokal, und die Anzeige meldet das.
@@ -559,6 +561,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.0.9 | Fehlerrelease: Lesen und Prüfen ändern das Register nicht mehr (klassisches Journal, nur lesend geöffnet, Schreiben nur bei Änderung), "nur online" am Attribut der Dropbox, Start mit der Suche und gelber Knopf, toleranter Leser für alte Office-Formate, Excel 2 bis 95, Lotus, Word 2, Pages '09, grober Rückfall, RTF, HTML, csv, tsv, log, vcf. Seit v0.0.9 nutzt Kim Registerwerk produktiv, die nächste Version heißt v0.1.0 | Korrekturen in Stufe 3 und 4 |
 | v0.1.0 | Verschlüsselung des Registers mit SQLCipher, eigener Schlüssel mit 256 Bit im Passwortsafe und je Gerät im Schlüsselbund, Umstellung per Knopf Datei für Datei, Sperre ohne Schlüssel, Prüfung des Dateibaums anhaltbar. Erste Version nach Beginn des produktiven Einsatzes | Stufe 3 abgeschlossen |
 | v0.1.1 | Reiter "Ordner" ohne eigenes Einlesen, Kreisel bei Tätigkeit im Hintergrund, Dateien nur mit Namen im Baum, Entfernen als abwählbarer Schritt von "Verarbeiten", `npm test` und `npm run pruefen` mit Zusammenfassung und Abdeckung | Abschluss des Ablaufs aus Stufe 4 |
+| v0.1.2 | Testfälle ergänzt, Test-PDF im Repo, Grenze der Abdeckung 90 % der Zeilen und Funktionen je Datei. Fehler: geladene Dateien blieben lokal (Schema 11, Tabelle `angefordert`), Excel 5 und 95 ohne Text | Qualität, Korrekturen in Stufe 4 |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -572,7 +575,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | `onlineonly` als Beigabe ins Programmpaket legen, mit Lizenztext | mit dem ersten Paket |
-| Testabdeckung: 90 % der Zeilen je Datei, 90 % der Funktionen in der Summe, Ausnahmen mit Grund. Ziel danach 90 % für jede Datei und jede Funktion | v0.1.2 |
+| Punkte aus v0.1.1 in der Anwendung prüfen: Dateien nur mit Namen, Entfernen mit Abwahl, „Diesmal behalten“, Rückfrage ab 100 Einträgen. Testablauf festlegen | v0.1.3 |
 | Ohne „zuletzt gesehen“ je Datei: Unterscheidung „anderes Gerät“ gegenüber „gelöscht“ auf dem Mac mini prüfen | mit dem zweiten Gerät |
 | Laden bei Anbietern über den File Provider (Google Drive, OneDrive): löst Lesen den Download aus? | vor der Aufnahme solcher Äste |
 | Hinweis „nur klassische Dropbox vollständig unterstützt“ auf der Webseite | mit der Webseite |
@@ -653,7 +656,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Dateien ansehen | Klick auf jede Zahl öffnet die Liste der Dateien | Kim will sehen, was gefunden wurde, bevor geladen wird |
 | Verarbeiten entfernt | seit v0.1.1 das Ausgewählte, abwählbar, Rückfrage ab mehr als 100 Einträgen. Bis v0.1.0 nichts | Kim: ein Schritt wie die anderen. Die Rückfrage schützt vor einem versehentlich auf „Aus“ gestellten Ordner |
 | Laden aus der Dropbox | Dateikoordination von macOS, vier Dateien gleichzeitig, gemeinsames Warten, „Nicht warten, weiter“ | einfaches Lesen lädt nicht, `open` öffnet Fenster. Warteschlange oder offline dürfen den Lauf nicht aufhalten |
-| Zurück auf "nur online" | `onlineonly`, nur für die in diesem Lauf geladenen Dateien | keine Handarbeit danach. Bewusst lokale Dateien bleiben lokal |
+| Zurück auf "nur online" | `onlineonly`, für alle von Registerwerk auf diesem Gerät geladenen und fertigen Dateien, seit v0.1.2 auch aus früheren Läufen | keine Handarbeit danach. Bewusst lokale Dateien bleiben lokal |
 | Unterstützte Cloud-Speicher | vollständig nur die klassische Dropbox unter `~/Dropbox` | Laden und Auslagern sind nur dort gemessen und möglich. Muss auf der Webseite deutlich stehen |
 | Schreiben in die PDFs im Delta-Lauf | ohne zweiten Klick | die Textebene wird nur angehängt, im Pilot ohne Probleme (Kim) |
 | Platzhalter des File Providers | gelten wie 0 Byte als "nur online" | sonst würden sie beim Lesen still geladen |
@@ -669,6 +672,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Dateien nur mit Namen im Baum | fester grauer Haken, Marke „nur Name“ (v0.1.1) | ein leerer Haken hieße „wird nicht verarbeitet“ (Kim) |
 | Tätigkeit im Hintergrund | Kreisel am Reiter "Register" (v0.1.1) | Kim will sehen, was läuft |
 | Tests | Zusammenfassung wie in Stellwerk, Abdeckung mit `cargo llvm-cov`. Ziel 90 % je Datei und Funktion, 100 % ist kein Ziel (v0.1.1) | Kim |
+| Grenze der Abdeckung | 90 % der Zeilen und 90 % der Funktionen je Datei, sonst ist `npm run pruefen` rot. Ausnahmen nur in `scripts/abdeckung-ausnahmen.json` mit Grund, Grenze nur steigend (v0.1.2) | Kim |
+| Tests mit PDFium und Tesseract | rot, wenn die Bibliotheken fehlen. Test-PDF selbst erzeugt im Repo (v0.1.2) | Kim. Still übersprungene Tests hatten `pdf.rs` bei 0 % verdeckt |
+| Geladene Dateien | Vermerk im Register je Gerät, Zurückstellen auch aus früheren Läufen (v0.1.2) | die Liste im Arbeitsspeicher ging bei Abbruch und spätem Eintreffen verloren |
+| Excel 5 und 95 | eigener Leser vor calamine (v0.1.2) | calamine lieferte manche Mappe ohne Fehler, aber ohne Blätter |
 
 ## 17. Verworfene Alternativen
 
@@ -720,7 +727,8 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
 - `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
 - `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien, mit `--aufteilen <Ordner>` eine Probe des Aufteilens der Scheiben an einer Kopie des Registers unter `target/aufteilen_probe/` samt Vergleich jeder Vorschau (v0.0.8). `--suche` und `--aufteilen` arbeiten seit v0.1.0 nur mit einem unverschlüsselten Register. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
-- `scripts/pruefen.mjs` und `scripts/auswertung.mjs` (v0.1.1): `npm test` und `npm run pruefen` mit Zusammenfassung, Abdeckung gesamt und je Paket. Ausgaben in `target/pruefen/`
+- `scripts/pruefen.mjs` und `scripts/auswertung.mjs` (v0.1.1): `npm test` und `npm run pruefen` mit Zusammenfassung, Abdeckung gesamt und je Paket. Seit v0.1.2 mit Grenze (Ausnahmen in `scripts/abdeckung-ausnahmen.json`) und dem Bericht je Funktion `abdeckung.json`. Ausgaben in `target/pruefen/`
+- `testpdf_erzeugen.py` (v0.1.2): erzeugt die Test-PDF unter `crates/registerwerk-core/tests/daten/`
 - `onlineonly` (fremd, MIT, über Homebrew): stellt Dateien der klassischen Dropbox auf "nur online". Registerwerk ruft es im Delta-Lauf auf, wenn es installiert ist
 
 Die Skripte liegen im Repo unter `tools/`. Die Ausgaben der beiden Analyse-Skripte enthalten Dokumentinhalte und Dateinamen und gehören nicht ins Repo.

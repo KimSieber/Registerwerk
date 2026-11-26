@@ -3,8 +3,9 @@
 // Stellwerk. Reine Funktionen, getestet in auswertung.test.mjs. Das Starten der
 // Befehle übernimmt pruefen.mjs.
 //
-// Anders als in Stellwerk gibt es keine Abdeckungsgrenze: Registerwerk hat keine
-// Vorgabe von 100 %. Die Abdeckung wird gezeigt, macht die Prüfung aber nicht rot.
+// Grenze der Abdeckung (v0.1.2, Kim): je Datei mindestens 90 % der Zeilen und
+// 90 % der Funktionen. 100 % ist kein Ziel. Ausnahmen nur mit Grund in
+// scripts/abdeckung-ausnahmen.json. Unter der Grenze ist die Prüfung rot.
 
 /** Farb- und Steuerzeichen (ANSI) entfernen, auch die Zeichensatz-Umschaltung der
  *  Rust-Testprogramme (`\x0f` unter Linux, `ESC ( B` auf dem Mac). */
@@ -31,6 +32,12 @@ function tabellenZeile(zeile) {
   };
 }
 
+/** Grenze der Abdeckung in Prozent: Zeilen und Funktionen je Datei. */
+export const GRENZE = 90;
+
+/** Name einer Datei wie in den Ausnahmen: ohne führendes `crates/`. */
+const dateiname = (name) => name.replace(/^crates\//, "");
+
 const quote = ([gesamt, fehlend]) => (gesamt === 0 ? null : Math.round(((gesamt - fehlend) / gesamt) * 1000) / 10);
 
 /**
@@ -52,6 +59,7 @@ export function rustAuswerten(roh) {
 
   let abdeckung = null;
   const pakete = new Map();
+  const jeDatei = [];
   const totalZeile = text.match(/^TOTAL\s+.+$/m)?.[0];
   if (totalZeile) {
     const t = tabellenZeile(totalZeile);
@@ -59,6 +67,7 @@ export function rustAuswerten(roh) {
     for (const z of text.split("\n")) {
       const zeile = tabellenZeile(z);
       if (!zeile || zeile.name === "TOTAL" || zeile.name === "Filename") continue;
+      jeDatei.push({ name: dateiname(zeile.name), zeilen: zeile.prozent.zeilen, funktionen: zeile.prozent.funktionen });
       // Pfade relativ zum Workspace: crates/<paket>/…, sonst der erste Ordner
       const teile = zeile.name.split("/");
       const paket = teile[0] === "crates" && teile.length > 2 ? teile[1] : teile[0];
@@ -71,7 +80,50 @@ export function rustAuswerten(roh) {
   const jePaket = [...pakete.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, p]) => ({ name, funktionen: quote(p.funktionen), zeilen: quote(p.zeilen) }));
-  return { bestanden, fehler, ignoriert, fehlgeschlagen, kompilierfehler, abdeckung, jePaket };
+  return { bestanden, fehler, ignoriert, fehlgeschlagen, kompilierfehler, abdeckung, jePaket, jeDatei };
+}
+
+/**
+ * Prüft die Grenze (v0.1.2). `ausnahmen`: Einträge aus abdeckung-ausnahmen.json
+ * mit `datei`, `grund` und einer eigenen Grenze in % für `zeilen`, `funktionen`
+ * oder beides.
+ *
+ * - `verstoesse`: Dateien unter ihrer Grenze, fehlerhafte Ausnahmen. Sie machen
+ *   die Prüfung rot.
+ * - `hinweise`: Ausnahmen, die nicht mehr nötig sind. Sie machen nicht rot.
+ */
+export function grenzePruefen(jeDatei, abdeckung, ausnahmen = []) {
+  const ARTEN = [
+    ["zeilen", "Zeilen"],
+    ["funktionen", "Funktionen"],
+  ];
+  const verstoesse = [];
+  const hinweise = [];
+  const bekannt = new Map(jeDatei.map((d) => [d.name, d]));
+  const eigene = new Map();
+  for (const a of ausnahmen) {
+    const name = dateiname(String(a?.datei ?? ""));
+    const grenzen = ARTEN.filter(([art]) => a?.[art] !== undefined);
+    if (!bekannt.has(name)) verstoesse.push(`Ausnahme für unbekannte Datei: ${name || "(ohne Namen)"}`);
+    else if (!String(a.grund ?? "").trim()) verstoesse.push(`Ausnahme ohne Grund: ${name}`);
+    else if (grenzen.length === 0 || grenzen.some(([art]) => typeof a[art] !== "number" || a[art] >= GRENZE)) {
+      verstoesse.push(`Ausnahme mit ungültiger Grenze: ${name}`);
+    } else eigene.set(name, a);
+  }
+  for (const d of jeDatei) {
+    for (const [art, text] of ARTEN) {
+      const eigen = eigene.get(d.name)?.[art];
+      const grenze = eigen ?? GRENZE;
+      if (d[art] !== null && d[art] < grenze) verstoesse.push(`${d.name}: ${text} ${pz(d[art])} unter ${grenze} %`);
+      else if (eigen !== undefined && d[art] >= GRENZE) {
+        hinweise.push(`${d.name}: Ausnahme für ${text} nicht mehr nötig (${pz(d[art])})`);
+      }
+    }
+  }
+  if (abdeckung?.funktionen != null && abdeckung.funktionen < GRENZE) {
+    verstoesse.push(`Funktionen gesamt ${pz(abdeckung.funktionen)} unter ${GRENZE} %`);
+  }
+  return { verstoesse, hinweise };
 }
 
 /** TypeScript-Fehler aus dem Build (`datei(z,s): error TS…`). */
@@ -90,8 +142,10 @@ const pz = (p) => (p === null || p === undefined ? "–" : `${p} %`);
 /**
  * Zusammenfassung als Text. `teile`: je vorhandenem Teil (`build`, `rust`) Exit-Code
  * und Ausgabe. `logs`: Protokolldatei je Teil. `mitAbdeckung`: Lauf mit llvm-cov.
+ * `ausnahmen`: mit einer Liste (auch leer) wird die Grenze geprüft, ohne nicht
+ * (Lauf mit Filter oder einzelnem Paket).
  */
-export function zusammenfassen(teile, logs, { farbe = false, mitAbdeckung = false } = {}) {
+export function zusammenfassen(teile, logs, { farbe = false, mitAbdeckung = false, ausnahmen = null } = {}) {
   const zeilen = [];
   const fehlerListe = [];
   const f = (ok, text) => (farbe ? `${ok ? GRUEN : ROT}${text}${AUS}` : text);
@@ -129,6 +183,14 @@ export function zusammenfassen(teile, logs, { farbe = false, mitAbdeckung = fals
     );
     for (const p of r.jePaket) {
       zeilen.push(leise(`  ${p.name.padEnd(22)} Zeilen ${pz(p.zeilen).padStart(7)} · Funktionen ${pz(p.funktionen).padStart(7)}`));
+    }
+    if (a && ausnahmen) {
+      const g = grenzePruefen(r.jeDatei, a, ausnahmen);
+      const ok = g.verstoesse.length === 0;
+      const eigene = ausnahmen.length > 0 ? `, ${ausnahmen.length} ${ausnahmen.length === 1 ? "Ausnahme" : "Ausnahmen"}` : "";
+      teil(ok, `Grenze ${GRENZE} %`, ok ? `alle Dateien${eigene}` : `${g.verstoesse.length} unter der Grenze`);
+      for (const h of g.hinweise) zeilen.push(leise(`  Hinweis: ${h}`));
+      if (!ok) fehlerListe.push(["Abdeckung", g.verstoesse, logs.rust]);
     }
   }
 
