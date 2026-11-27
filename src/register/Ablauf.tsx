@@ -268,7 +268,16 @@ export default function Ablauf({
               <span className="kreisel" /> Prüfung anhalten
             </button>
           ) : (
-            <button className="knopf knopf--leise" onClick={() => void pruefen()} disabled={laeuft}>
+            <button
+              className="knopf knopf--leise"
+              onClick={() => {
+                // Das Ergebnis des letzten Laufs gilt nicht für die neue Prüfung (v0.1.3, Kim)
+                setErgebnis(null);
+                setFertig(new Set());
+                void pruefen();
+              }}
+              disabled={laeuft}
+            >
               Erneut prüfen
             </button>
           )}
@@ -334,11 +343,19 @@ export default function Ablauf({
               </div>
             )}
             {zuEntfernen > 0 && (
-              <div className="ablauf__online ablauf__entfernen">
-                <span>
-                  {alsZahl(zuEntfernen)} {zuEntfernen === 1 ? "Eintrag fällt" : "Einträge fallen"} aus dem Register
-                  oder verlieren Text und Vorschau. Die Originale bleiben unberührt.
-                </span>
+              <div className={`ablauf__online${ohneEntfernen ? "" : " ablauf__entfernen"}`}>
+                {ohneEntfernen ? (
+                  // Diesmal behalten (v0.1.3): kein roter Hinweis, es wird nichts entfernt
+                  <span>
+                    {alsZahl(zuEntfernen)} {zuEntfernen === 1 ? "Eintrag bleibt" : "Einträge bleiben"} diesmal im
+                    Register.
+                  </span>
+                ) : (
+                  <span>
+                    {alsZahl(zuEntfernen)} {zuEntfernen === 1 ? "Eintrag fällt" : "Einträge fallen"} aus dem Register
+                    oder verlieren Text und Vorschau. Die Originale bleiben unberührt.
+                  </span>
+                )}
                 <span className="umschalter umschalter--text">
                   <button className={!ohneEntfernen ? "aktiv" : ""} onClick={() => setOhneEntfernen(false)}>
                     Entfernen
@@ -631,10 +648,17 @@ function Knoten({
   const gewaehlt = !vorfahrAus && !selbstAus;
   // Ordner nur mit Dateien nur mit Namen: kommen immer ins Register, nichts zu wählen (v0.1.1)
   const nurName = o.dateien === 0 && o.entfernen === 0;
-  // Ohne „nur online“ ist ein Ordner nur zum Teil gewählt, ganz aus nur online gar nicht
-  const alleOnline = ohneOnline && o.nur_online === o.dateien;
+  // Was im Ordner noch zu wählen ist: ohne „nur online“ fallen diese Dateien weg, mit „Diesmal
+  // behalten“ das zu Entfernende (v0.1.3). Bleibt nichts, ist der Ordner nicht angehakt, sonst
+  // mit einem der Schalter nur zum Teil.
+  const wahlbar = (ohneOnline ? o.dateien - o.nur_online : o.dateien) + (ohneEntfernen ? 0 : o.entfernen);
+  const nichtsWahlbar = wahlbar === 0;
   const teils =
-    gewaehlt && !alleOnline && ([...aus].some((p) => p.startsWith(o.pfad + "/")) || (ohneOnline && o.nur_online > 0));
+    gewaehlt &&
+    !nichtsWahlbar &&
+    ([...aus].some((p) => p.startsWith(o.pfad + "/")) ||
+      (ohneOnline && o.nur_online > 0) ||
+      (ohneEntfernen && o.entfernen > 0));
 
   useEffect(() => {
     if (auf && dateien === null) {
@@ -663,7 +687,12 @@ function Knoten({
         {nurName ? (
           <Haken an fest onClick={() => {}} />
         ) : (
-          <Haken an={gewaehlt && !alleOnline} teils={teils} gesperrt={vorfahrAus} onClick={() => umschalten(o.pfad)} />
+          <Haken
+            an={gewaehlt && !nichtsWahlbar}
+            teils={teils}
+            gesperrt={vorfahrAus || nichtsWahlbar}
+            onClick={() => umschalten(o.pfad)}
+          />
         )}
         <span className="baum__name" onClick={klappen}>
           {name(o.pfad)}

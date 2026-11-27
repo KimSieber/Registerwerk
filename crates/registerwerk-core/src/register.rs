@@ -322,6 +322,19 @@ impl Register {
         Self::einrichten(db, Some(pfad))
     }
 
+    /// Legt in `ordner` ein leeres Register an, wenn dort noch keins liegt
+    /// (v0.1.3). Ein vorhandenes Register bleibt unberührt, nicht einmal
+    /// geöffnet. Liefert, ob es neu angelegt wurde. Ohne diesen Schritt kann
+    /// die Prüfung, die nur lesend öffnet, ein neu gewähltes Register nie
+    /// abgleichen.
+    pub fn anlegen(ordner: &Path) -> Ergebnis<bool> {
+        if ordner.join(DATEINAME).is_file() {
+            return Ok(false);
+        }
+        drop(Self::oeffnen(ordner)?);
+        Ok(true)
+    }
+
     /// Beim Programmstart, bevor irgendetwas anderes das Register öffnet:
     /// stellt ein Register aus v0.0.8 auf das klassische Journal um (v0.0.9).
     /// Liefert, ob es danach im klassischen Journal läuft. Ohne Register
@@ -1750,6 +1763,36 @@ mod tests {
         assert_eq!(r.abgleichen(&durchlauf(neu)).unwrap().neu, 1);
         drop(r);
         assert!(dateien_im_ordner(tmp.path()) != vorher);
+    }
+
+    #[test]
+    fn legt_ein_leeres_register_an_und_laesst_ein_vorhandenes_unberuehrt() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Vorher gelingt das Öffnen zum Lesen nicht, wie bei der Prüfung
+        assert!(Register::oeffnen_lesend(tmp.path()).is_err());
+        assert!(Register::anlegen(tmp.path()).unwrap());
+        let mut r = Register::oeffnen_lesend(tmp.path()).unwrap();
+        assert_eq!(r.stand().unwrap().dateien, 0);
+        let d = r.delta_pruefen(&durchlauf(vec![datei("A/neu.pdf", 10, 1)])).unwrap();
+        assert_eq!(d.lauf.neu, 1);
+        drop(r);
+
+        // Ein vorhandenes Register wird nicht angefasst
+        {
+            let mut r = Register::oeffnen(tmp.path()).unwrap();
+            r.abgleichen(&durchlauf(vec![datei("A/beleg.pdf", 10, 1)])).unwrap();
+        }
+        let vorher = dateien_im_ordner(tmp.path());
+        assert!(!Register::anlegen(tmp.path()).unwrap());
+        assert!(dateien_im_ordner(tmp.path()) == vorher);
+    }
+
+    #[test]
+    fn legt_auch_den_ordner_an() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ordner = tmp.path().join("neu");
+        assert!(Register::anlegen(&ordner).unwrap());
+        assert!(ordner.join(DATEINAME).is_file());
     }
 
     #[test]

@@ -2799,7 +2799,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_pruefen"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "registerwerk-core",
  "registerwerk-ocr",
@@ -3225,7 +3225,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "registerwerk"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "registerwerk-core",
  "security-framework",
@@ -3237,7 +3237,7 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ab_glyph",
  "calamine",
@@ -3267,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-macos"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "block2",
  "libc",
@@ -3277,7 +3277,7 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-ocr"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "cmake",
 ]

@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 26.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.2). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 27.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.3). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -357,7 +357,7 @@ Die Replikation großer Dateien ist kein Engpass: Leitungen und Laufzeit reichen
 
 ### Ablage und Veröffentlichen
 
-- Der Ordner des Registers ist je Gerät wählbar (seit v0.0.7), über das Datenbank-Symbol der Anwendung. Ohne Angabe liegt es im Datenordner der Anwendung im Benutzerprofil. Der Ort steht in `docs/intern/umgebung.md`.
+- Der Ordner des Registers ist je Gerät wählbar (seit v0.0.7), über das Datenbank-Symbol der Anwendung. Ohne Angabe liegt es im Datenordner der Anwendung im Benutzerprofil. Der Ort steht in `docs/intern/umgebung.md`. Liegt im gewählten Ordner kein Register, legt „Neues Register dort anlegen“ die leere `register.db` sofort an (seit v0.1.3). Vorher entstand sie erst beim ersten Schreiben, und die nur lesende Prüfung konnte ein neues Register nie abgleichen.
 - Im Ordner liegen die Index-Datenbank `register.db`, die Scheiben, die Regeln `regeln.toml` und das Protokoll der Textebene. Verschoben wird der ganze Inhalt bei beendetem Programm, danach wird der neue Ordner gewählt.
 - Kim legt das Register direkt in den Cloud-Ordner, damit alle Geräte dasselbe sehen. Voraussetzungen: Das Programm ist nur auf einem Gerät geöffnet, und die Cloud hat vor dem Wechsel fertig abgeglichen. Seit v0.0.9 arbeitet SQLite im klassischen Journal (`DELETE`) statt im WAL-Journal. Lesen ändert damit keine Datei. Beim Schreiben entsteht kurz `register.db-journal`. Geschrieben wird nur, was sich ändert: kein Vermerk „zuletzt gesehen“ je Datei, keine Zeile je Durchlauf ohne Änderung, keine Zeitstempel je Ordner. Grund: Jede Änderung löst einen Upload der Dropbox aus, der andere Abgleiche behindert (Kim).
 - Die ursprünglich vorgesehene Arbeitskopie außerhalb des Cloud-Ordners mit Veröffentlichen des fertigen Standes ist damit zurückgestellt. Sie bleibt der Weg, falls der direkte Betrieb Konflikte erzeugt. **Annahme**
@@ -562,6 +562,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.1.0 | Verschlüsselung des Registers mit SQLCipher, eigener Schlüssel mit 256 Bit im Passwortsafe und je Gerät im Schlüsselbund, Umstellung per Knopf Datei für Datei, Sperre ohne Schlüssel, Prüfung des Dateibaums anhaltbar. Erste Version nach Beginn des produktiven Einsatzes | Stufe 3 abgeschlossen |
 | v0.1.1 | Reiter "Ordner" ohne eigenes Einlesen, Kreisel bei Tätigkeit im Hintergrund, Dateien nur mit Namen im Baum, Entfernen als abwählbarer Schritt von "Verarbeiten", `npm test` und `npm run pruefen` mit Zusammenfassung und Abdeckung | Abschluss des Ablaufs aus Stufe 4 |
 | v0.1.2 | Testfälle ergänzt, Test-PDF im Repo, Grenze der Abdeckung 90 % der Zeilen und Funktionen je Datei. Fehler: geladene Dateien blieben lokal (Schema 11, Tabelle `angefordert`), Excel 5 und 95 ohne Text | Qualität, Korrekturen in Stufe 4 |
+| v0.1.3 | Punkte aus v0.1.1 in der Anwendung geprüft, an einem eigenen Test-Register. Fehler: neues Register ließ sich nicht prüfen (`Register::anlegen`), Ergebnis des letzten Laufs nach „Erneut prüfen“, Haken der Ordner und Hinweis bei „Diesmal behalten“ | Korrekturen in Stufe 4 |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -575,7 +576,6 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Anzeige von AVIF unter Windows und Linux. macOS ist geprüft | Stufe 2 |
 | Bau von libaom unter Windows | vor dem ersten Windows-Paket |
 | `onlineonly` als Beigabe ins Programmpaket legen, mit Lizenztext | mit dem ersten Paket |
-| Punkte aus v0.1.1 in der Anwendung prüfen: Dateien nur mit Namen, Entfernen mit Abwahl, „Diesmal behalten“, Rückfrage ab 100 Einträgen. Testablauf festlegen | v0.1.3 |
 | Ohne „zuletzt gesehen“ je Datei: Unterscheidung „anderes Gerät“ gegenüber „gelöscht“ auf dem Mac mini prüfen | mit dem zweiten Gerät |
 | Laden bei Anbietern über den File Provider (Google Drive, OneDrive): löst Lesen den Download aus? | vor der Aufnahme solcher Äste |
 | Hinweis „nur klassische Dropbox vollständig unterstützt“ auf der Webseite | mit der Webseite |
@@ -670,6 +670,10 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Weitere Textformate | rtf, csv, tsv, log, htm, html, vcf lesen. eml, mbox, ics nur mit Namen (v0.0.9) | Kim |
 | Reiter "Ordner" nach dem Speichern | Kasten mit Zahlen und Knopf in den Reiter "Register", kein automatischer Wechsel (v0.1.1) | Kim |
 | Dateien nur mit Namen im Baum | fester grauer Haken, Marke „nur Name“ (v0.1.1) | ein leerer Haken hieße „wird nicht verarbeitet“ (Kim) |
+| Neues Register | „Neues Register dort anlegen“ legt `register.db` sofort an (v0.1.3) | die Prüfung öffnet nur lesend und bricht ohne Datei ab |
+| Ergebnis des letzten Laufs | verschwindet mit „Erneut prüfen“, bleibt nach dem eigenen Verarbeiten stehen (v0.1.3) | es ist nicht das Ergebnis dieser Prüfung (Kim) |
+| Ordner bei „Diesmal behalten“ und „Diesmal auslassen“ | Haken nach dem, was im Ordner wählbar bleibt: leer und gesperrt, halb oder ganz. Hinweis bei „Diesmal behalten“ ruhig statt rot (v0.1.3) | Kim |
+| Prüfung in der Anwendung | an einem eigenen Test-Register mit erzeugten Testdaten außerhalb der Dropbox, nicht am echten Register (v0.1.3) | das echte Register und seine Regeln bleiben unberührt (Kim) |
 | Tätigkeit im Hintergrund | Kreisel am Reiter "Register" (v0.1.1) | Kim will sehen, was läuft |
 | Tests | Zusammenfassung wie in Stellwerk, Abdeckung mit `cargo llvm-cov`. Ziel 90 % je Datei und Funktion, 100 % ist kein Ziel (v0.1.1) | Kim |
 | Grenze der Abdeckung | 90 % der Zeilen und 90 % der Funktionen je Datei, sonst ist `npm run pruefen` rot. Ausnahmen nur in `scripts/abdeckung-ausnahmen.json` mit Grund, Grenze nur steigend (v0.1.2) | Kim |

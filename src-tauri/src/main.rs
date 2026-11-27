@@ -1432,6 +1432,12 @@ async fn register_waehlen(
         if !info.vorhanden && !bestaetigt {
             return Ok((info, false));
         }
+        if !info.vorhanden {
+            // Ein hinterlegter Schlüssel für diesen Ordner gilt schon für die
+            // neue Datei. Ohne register.db bricht die Prüfung ab (v0.1.3).
+            schluessel_laden(&ordner);
+            Register::anlegen(&ordner).map_err(|e| e.to_string())?;
+        }
         konfig_aendern(&app2, |k| {
             k.register_ordner = Some(ordner.clone());
             Ok(())
