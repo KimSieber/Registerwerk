@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { SchluesselStand, schluesselStand } from "./api";
-import { SchluesselEingabe } from "./Verschluesselung";
+import { SchluesselEingabe, UnverschluesseltSperre } from "./Verschluesselung";
 import logo from "../docs/icons/png-randlos/registerwerk_128.png";
 import Ordneransicht from "./ordner/Ordneransicht";
 import Registerinfo from "./Registerinfo";
@@ -33,7 +33,7 @@ export default function App() {
   const [gesperrt, setGesperrt] = useState<SchluesselStand | null | undefined>(undefined);
   useEffect(() => {
     schluesselStand()
-      .then((s) => setGesperrt(s.schluessel_fehler ? s : null))
+      .then((s) => setGesperrt(s.schluessel_fehler || s.verschluesselung.gesperrt ? s : null))
       .catch(() => setGesperrt(null));
   }, []);
 
@@ -77,7 +77,11 @@ export default function App() {
         <div className="rahmen__inhalt" />
       ) : gesperrt ? (
         <div className="rahmen__inhalt sperre">
-          <SchluesselEingabe stand={gesperrt} fertig={() => window.location.reload()} />
+          {gesperrt.schluessel_fehler ? (
+            <SchluesselEingabe stand={gesperrt} fertig={() => window.location.reload()} />
+          ) : (
+            <UnverschluesseltSperre stand={gesperrt} />
+          )}
         </div>
       ) : (
       <div className="rahmen__inhalt">

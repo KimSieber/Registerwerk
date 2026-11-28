@@ -312,6 +312,53 @@ const WARTEN_MS: u64 = 15_000;
 /// Tabellen, die ein Abgleich ändert. Die Probe arbeitet auf Kopien davon.
 const SCHATTEN: [&str; 4] = ["lauf", "geraet", "datei", "ordner_gesehen"];
 
+/// Enthält `sql` ein Semikolon außerhalb von Zeichenketten, Bezeichnern in
+/// Anführungszeichen und Kommentaren, also mehr als eine Anweisung (v0.1.4)?
+/// Ein Semikolon am Ende mit nur Leerraum danach zählt nicht.
+fn mehrere_anweisungen(sql: &str) -> bool {
+    let z: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    while i < z.len() {
+        match z[i] {
+            // Zeichenkette oder Bezeichner, verdoppeltes Zeichen ist ein Escape
+            q @ ('\'' | '"' | '`') => {
+                i += 1;
+                while i < z.len() {
+                    if z[i] == q {
+                        if z.get(i + 1) == Some(&q) {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            '[' => {
+                while i < z.len() && z[i] != ']' {
+                    i += 1;
+                }
+            }
+            '-' if z.get(i + 1) == Some(&'-') => {
+                while i < z.len() && z[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if z.get(i + 1) == Some(&'*') => {
+                i += 2;
+                while i < z.len() && !(z[i] == '*' && z.get(i + 1) == Some(&'/')) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            ';' => return z[i + 1..].iter().any(|c| !c.is_whitespace()),
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 impl Register {
     /// Öffnet das Register in `ordner` zum Schreiben und legt es bei Bedarf an.
     pub fn oeffnen(ordner: &Path) -> Ergebnis<Self> {
@@ -852,6 +899,10 @@ impl Register {
 
     /// Kopien der Tabellen, die ein Abgleich ändert, als Hilfstabellen im
     /// Arbeitsspeicher, mit derselben Definition (v0.0.9).
+    ///
+    /// Die Definition stammt aus der Datei. Sie wird nur ausgeführt, wenn sie
+    /// genau eine Anweisung `CREATE TABLE` ist (v0.1.4): Angehängtes SQL in
+    /// einer ausgetauschten Datei bricht die Probe ab, statt zu laufen.
     fn schatten_anlegen(&self) -> Ergebnis<()> {
         for t in SCHATTEN {
             let sql: String = self.db.query_row(
@@ -859,6 +910,11 @@ impl Register {
                 [t],
                 |z| z.get(0),
             )?;
+            if !sql.starts_with("CREATE TABLE") || mehrere_anweisungen(&sql) {
+                return Err(crate::Fehler::Konfiguration(format!(
+                    "Die Definition der Tabelle {t} im Register ist ungültig."
+                )));
+            }
             let sql = sql.replacen("CREATE TABLE", "CREATE TEMP TABLE", 1);
             self.db.execute_batch(&format!(
                 "DROP TABLE IF EXISTS temp.{t}; {sql}; INSERT INTO temp.{t} SELECT * FROM main.{t};"
@@ -1722,6 +1778,57 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn erkennt_mehrere_anweisungen() {
+        assert!(!mehrere_anweisungen("CREATE TABLE t (x TEXT)"));
+        assert!(!mehrere_anweisungen("CREATE TABLE t (x TEXT);  \n"));
+        assert!(!mehrere_anweisungen("CREATE TABLE t (x TEXT DEFAULT 'a;b', \"y;\" INT, [z;] INT, `w;` INT)"));
+        assert!(!mehrere_anweisungen("CREATE TABLE t (x TEXT DEFAULT 'it''s; ok')"));
+        assert!(!mehrere_anweisungen("CREATE TABLE t (\n -- Kommentar; mit Semikolon\n x TEXT /* auch; hier */)"));
+        assert!(mehrere_anweisungen("CREATE TABLE t (x TEXT); CREATE TABLE boese(x)"));
+        assert!(mehrere_anweisungen("CREATE TABLE t (x TEXT DEFAULT 'a'); ATTACH 'x.db' AS y"));
+        assert!(mehrere_anweisungen("CREATE TABLE t (x TEXT) -- Kommentar\n; DROP TABLE t"));
+        // Unvollständige Konstrukte am Ende laufen nicht über das Ende hinaus
+        assert!(!mehrere_anweisungen("CREATE TABLE t (x TEXT DEFAULT 'offen"));
+        assert!(!mehrere_anweisungen("CREATE TABLE t (x) /* offen"));
+    }
+
+    /// Eine ausgetauschte Datei mit angehängtem SQL in der gespeicherten
+    /// Definition einer Tabelle (Finding S2-5ef6f419, v0.1.4): Die Probe
+    /// bricht ab, das angehängte SQL läuft nicht.
+    #[test]
+    fn probe_fuehrt_kein_angehaengtes_sql_aus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = durchlauf(vec![datei("A/a.pdf", 10, 1)]);
+        {
+            let mut r = Register::oeffnen(tmp.path()).unwrap();
+            r.abgleichen(&d).unwrap();
+            r.db.execute_batch(
+                "PRAGMA writable_schema = ON;
+                 UPDATE sqlite_schema SET sql = sql || '; CREATE TABLE boese(x)' WHERE type = 'table' AND name = 'geraet';
+                 PRAGMA writable_schema = OFF;",
+            )
+            .unwrap();
+        }
+        let mut r = Register::oeffnen(tmp.path()).unwrap();
+        assert!(matches!(r.abgleich_pruefen(&d), Err(crate::Fehler::Konfiguration(m)) if m.contains("geraet")));
+        let boese: i64 = r
+            .db
+            .query_row(
+                "SELECT (SELECT count(*) FROM main.sqlite_schema WHERE name = 'boese')
+                      + (SELECT count(*) FROM temp.sqlite_schema WHERE name = 'boese')",
+                [],
+                |z| z.get(0),
+            )
+            .unwrap();
+        assert_eq!(boese, 0);
+        // Ohne Manipulation läuft die Probe wie bisher
+        let tmp2 = tempfile::tempdir().unwrap();
+        let mut gut = Register::oeffnen(tmp2.path()).unwrap();
+        gut.abgleichen(&d).unwrap();
+        gut.abgleich_pruefen(&d).unwrap();
     }
 
     #[test]

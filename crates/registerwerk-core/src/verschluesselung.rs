@@ -10,12 +10,16 @@
 //! Der Kern merkt sich den Schlüssel je Register-Ordner im Arbeitsspeicher
 //! ([`hinterlegen`]). Jede Verbindung zu einer Datei des Registers läuft über
 //! [`verbinden`]: Ob eine Datei verschlüsselt ist, zeigt ihr Kopf. Eine
-//! unverschlüsselte SQLite-Datei beginnt mit `SQLite format 3`. So lassen sich
-//! verschlüsselte und noch unverschlüsselte Dateien mischen, solange die
-//! Umstellung ([`umstellen`]) läuft oder angehalten wurde.
+//! unverschlüsselte SQLite-Datei beginnt mit `SQLite format 3`.
 //!
 //! Neue Dateien werden verschlüsselt angelegt, sobald für den Ordner ein
-//! Schlüssel hinterlegt ist.
+//! Schlüssel hinterlegt ist. Ist ein Schlüssel hinterlegt, öffnet
+//! [`verbinden`] keine unverschlüsselte Datei mehr (v0.1.4). Sonst würde eine
+//! zurückgespielte ältere Fassung oder eine ausgetauschte Datei still
+//! unverschlüsselt weiterbeschrieben, und ihr Inhalt (etwa das gespeicherte
+//! Schema) stammte nicht sicher von Registerwerk. Eine angehaltene Umstellung
+//! gilt damit ebenfalls als gesperrt, bis [`umstellen`] sie beendet. Das
+//! Umstellen selbst öffnet die Dateien ohne [`verbinden`].
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -38,8 +42,22 @@ const KOPF_KLAR: &[u8; 16] = b"SQLite format 3\0";
 const ARBEITSKOPIE: &str = ".verschluesseln";
 
 /// Ein Schlüssel mit 256 Bit. Wird beim Verwerfen überschrieben.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Schluessel([u8; 32]);
+
+/// Vergleich in konstanter Zeit (v0.1.4): Die Dauer verrät nicht, ab welchem
+/// Byte zwei Schlüssel abweichen.
+impl PartialEq for Schluessel {
+    fn eq(&self, anderer: &Self) -> bool {
+        let mut unterschied = 0u8;
+        for (a, b) in self.0.iter().zip(anderer.0.iter()) {
+            unterschied |= a ^ b;
+        }
+        std::hint::black_box(unterschied) == 0
+    }
+}
+
+impl Eq for Schluessel {}
 
 impl Schluessel {
     /// Liest einen Schlüssel aus 64 Hex-Zeichen. Leerzeichen, Bindestriche und
@@ -109,9 +127,13 @@ fn ablage() -> &'static Mutex<HashMap<PathBuf, Schluessel>> {
 }
 
 /// Ordner als Schlüssel der Ablage. Ohne Auflösen von Verknüpfungen, damit
-/// ein noch nicht angelegter Ordner denselben Eintrag hat wie später.
+/// ein noch nicht angelegter Ordner denselben Eintrag hat wie später. Bis
+/// v0.1.3 wurde der Ordner hier trotzdem aufgelöst: Ein Schlüssel, der vor dem
+/// Anlegen des Ordners hinterlegt wurde, galt danach unter einem anderen Pfad,
+/// und ein neues Register entstand unverschlüsselt (Finding S9-0a67a1af).
+/// Jetzt nur noch rein lexikalisch: `.` und ein `/` am Ende zählen nicht.
 fn kennung(ordner: &Path) -> PathBuf {
-    std::fs::canonicalize(ordner).unwrap_or_else(|_| ordner.to_path_buf())
+    ordner.components().collect()
 }
 
 /// Hinterlegt den Schlüssel für das Register in `ordner`, bis das Programm
@@ -189,11 +211,15 @@ fn mit_schluessel(db: &Connection, sql: String) -> rusqlite::Result<()> {
 /// Muss direkt nach dem Öffnen jeder Datei des Registers laufen, vor jeder
 /// anderen Anweisung. Ist die Datei verschlüsselt, wird der hinterlegte
 /// Schlüssel gesetzt und geprüft. Eine neue Datei wird verschlüsselt, wenn
-/// ein Schlüssel hinterlegt ist. Eine unverschlüsselte Datei bleibt, wie sie
-/// ist, bis [`umstellen`] sie verschlüsselt.
+/// ein Schlüssel hinterlegt ist. Eine unverschlüsselte Datei öffnet nur ohne
+/// hinterlegten Schlüssel, sonst [`Fehler::Unverschluesselt`] (v0.1.4).
 pub fn verbinden(db: &Connection, pfad: &Path) -> Ergebnis<()> {
     let ordner = pfad.parent().unwrap_or(Path::new("."));
     match zustand(pfad)? {
+        Zustand::Unverschluesselt if hinterlegt(ordner) => {
+            let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Err(Fehler::Unverschluesselt(name))
+        }
         Zustand::Unverschluesselt => Ok(()),
         Zustand::Fehlt => {
             if let Some(s) = schluessel_fuer(ordner) {
@@ -291,6 +317,9 @@ pub struct VerschluesselungStand {
     pub schluessel_hinterlegt: bool,
     /// Liegt eine Arbeitskopie einer abgebrochenen Umstellung im Ordner?
     pub arbeitskopien: Vec<String>,
+    /// Schlüssel hinterlegt, aber mindestens eine Datei unverschlüsselt: Das
+    /// Register öffnet nicht, bis die Umstellung fertig ist (v0.1.4).
+    pub gesperrt: bool,
 }
 
 impl VerschluesselungStand {
@@ -327,6 +356,7 @@ pub fn stand(ordner: &Path) -> Ergebnis<VerschluesselungStand> {
         }
     }
     s.arbeitskopien.sort();
+    s.gesperrt = s.schluessel_hinterlegt && s.unverschluesselt > 0;
     Ok(s)
 }
 
@@ -568,6 +598,12 @@ mod tests {
         assert_eq!(schluessel_pruefen(&ordner, &schluessel()).unwrap(), None);
 
         hinterlegen(&ordner, schluessel());
+        assert!(stand(&ordner).unwrap().gesperrt);
+        // Mit hinterlegtem Schlüssel öffnet keine unverschlüsselte Datei (v0.1.4)
+        let db = Connection::open(ordner.join(DATEINAME)).unwrap();
+        assert!(matches!(verbinden(&db, &ordner.join(DATEINAME)), Err(Fehler::Unverschluesselt(n)) if n == DATEINAME));
+        drop(db);
+        assert!(matches!(index_lesbar(&ordner), Err(Fehler::Unverschluesselt(_))));
         assert!(stimmt_ueberein(&ordner, &schluessel()));
         assert!(!stimmt_ueberein(&ordner, &Schluessel::aus_text(&"1234".repeat(16)).unwrap()));
         // Angehalten vor der ersten Datei
@@ -580,7 +616,7 @@ mod tests {
         assert_eq!((e.abgebrochen, e.dateien), (false, 2));
         assert_eq!(meldungen, [(0, "vorschau-0001.db".to_string()), (1, DATEINAME.to_string()), (2, String::new())]);
         let s = stand(&ordner).unwrap();
-        assert!(s.vollstaendig() && s.schluessel_hinterlegt && s.arbeitskopien.is_empty());
+        assert!(s.vollstaendig() && s.schluessel_hinterlegt && s.arbeitskopien.is_empty() && !s.gesperrt);
         assert!(std::fs::read_dir(&arbeit).unwrap().next().is_none(), "Arbeitskopie liegt noch");
 
         // Inhalt, Schema-Version und Schlüssel
@@ -602,6 +638,30 @@ mod tests {
         vergessen(&ordner);
         assert!(!hinterlegt(&ordner));
         assert!(matches!(index_lesbar(&ordner), Err(Fehler::SchluesselFehlt)));
+    }
+
+    /// Schlüssel hinterlegt, bevor der Ordner existiert, über eine
+    /// Verknüpfung im Pfad: Das Register entsteht trotzdem verschlüsselt
+    /// (S9-0a67a1af, v0.1.4).
+    #[cfg(unix)]
+    #[test]
+    fn schluessel_fuer_noch_nicht_angelegten_ordner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let echt = tmp.path().join("echt");
+        std::fs::create_dir(&echt).unwrap();
+        std::os::unix::fs::symlink(&echt, tmp.path().join("verweis")).unwrap();
+        let ordner = tmp.path().join("verweis").join("register");
+        hinterlegen(&ordner, schluessel());
+        std::fs::create_dir(&ordner).unwrap();
+        assert!(hinterlegt(&ordner));
+        assert!(hinterlegt(&tmp.path().join("verweis/./register/")));
+        let pfad = ordner.join(DATEINAME);
+        let db = Connection::open(&pfad).unwrap();
+        verbinden(&db, &pfad).unwrap();
+        db.execute_batch("CREATE TABLE t(x)").unwrap();
+        drop(db);
+        assert_eq!(zustand(&pfad).unwrap(), Zustand::Verschluesselt);
+        vergessen(&ordner);
     }
 
     #[test]
@@ -655,10 +715,12 @@ mod tests {
         assert_eq!(zustand(&geheim).unwrap(), Zustand::Verschluesselt);
         let roh = std::fs::read(&geheim).unwrap();
         assert!(!roh.windows(11).any(|w| w == b"Kontoauszug"));
-        // Die unverschlüsselte Datei bleibt lesbar, auch mit hinterlegtem Schlüssel
+        // Mit hinterlegtem Schlüssel öffnet die unverschlüsselte Datei nicht
+        // mehr, etwa eine ausgetauschte Scheibe neben einem verschlüsselten
+        // Index (v0.1.4)
         let db = Connection::open(&klar).unwrap();
-        verbinden(&db, &klar).unwrap();
-        db.query_row("SELECT count(*) FROM t", [], |z| z.get::<_, i64>(0)).unwrap();
+        assert!(matches!(verbinden(&db, &klar), Err(Fehler::Unverschluesselt(n)) if n == "klar.db"));
+        drop(db);
 
         vergessen(tmp.path());
         let db = Connection::open(&geheim).unwrap();

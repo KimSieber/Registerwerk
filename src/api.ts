@@ -416,6 +416,8 @@ export interface VerschluesselungStand {
   schluessel_hinterlegt: boolean;
   /** Arbeitskopien einer abgebrochenen Umstellung im Register-Ordner */
   arbeitskopien: string[];
+  /** Schlüssel hinterlegt, aber Dateien unverschlüsselt: Register öffnet nicht (v0.1.4) */
+  gesperrt: boolean;
 }
 
 export interface UmstellErgebnis {

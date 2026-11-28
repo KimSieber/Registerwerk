@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 27.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.3). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 28.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.4). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -371,7 +371,8 @@ Umgesetzt in v0.1.0. Das Register ist verschlüsselt, zusätzlich zur Verschlüs
 - **Schlüssel:** ein fertiger Schlüssel mit 256 Bit (64 Hex-Zeichen). Kim erzeugt ihn selbst auf einem anderen Rechner und verwahrt ihn im eigenen Passwortsafe. Kein Kennwort, keine Schlüsselableitung, kein Salt und keine Schlüsseldatei in Registerwerk (Kim, 24.11.2026).
 - **Je Gerät:** Der Schlüssel liegt im lokalen Schlüsselbund des Betriebssystems, ohne Cloud-Abgleich, ein Eintrag je Register-Ordner. Registerwerk liest ihn beim Start, ohne Abfrage. Eingegeben wird er einmal je Gerät. Fehlt er oder passt er nicht, zeigt die Anwendung nur die Eingabe. Schutzbedarf ist der Verlust der Daten aus der Cloud. Das Gerät selbst schützen Anmeldung und Festplattenverschlüsselung (Kim).
 - **Umstellung** eines unverschlüsselten Registers per Knopf im Datenbank-Symbol, nach erneuter Eingabe des Schlüssels zur Bestätigung. Datei für Datei: verschlüsselte Arbeitskopie außerhalb des Cloud-Ordners, Prüfung (Schlüssel, Integrität, Zeilen je Tabelle), dann Ersetzen in einem Schritt. Die Index-Datenbank zuletzt. Anhaltbar, abbruchsicher, ohne Sicherungskopie. Die Dateinamen bleiben gleich.
-- **Gemischter Zustand:** Ob eine Datei verschlüsselt ist, zeigt ihr Kopf. Unverschlüsselte und verschlüsselte Dateien können nebeneinander liegen. Neue Dateien entstehen verschlüsselt, sobald ein Schlüssel hinterlegt ist.
+- **Gemischter Zustand:** Ob eine Datei verschlüsselt ist, zeigt ihr Kopf. Neue Dateien entstehen verschlüsselt, sobald ein Schlüssel hinterlegt ist.
+- **Sperre bei unverschlüsselten Dateien** (seit v0.1.4): Ist auf dem Gerät ein Schlüssel für den Register-Ordner hinterlegt, öffnet Registerwerk keine unverschlüsselte Datei des Registers. Die Anwendung zeigt dann nur den Kasten „Register nicht vollständig verschlüsselt“ mit der Liste der Dateien und der Umstellung. Grund: Eine zurückgespielte ältere Fassung, eine Konfliktkopie oder eine ausgetauschte Datei würde sonst still unverschlüsselt weiterbeschrieben, und ihr Inhalt stammte nicht sicher von Registerwerk (Code-Review v0.1.4, Kim). Eine angehaltene Umstellung sperrt damit ebenfalls, bis sie fertig ist. Ohne Schlüssel gilt die Sperre nicht.
 - **Ein verlorener Schlüssel** kostet keine Daten. Das Register wird aus den Dateien neu aufgebaut, was bei diesem Bestand viele Stunden dauert.
 - Unverschlüsselt bleiben `regeln.toml` (Ordnernamen) und `textebene.log` (Pfade geänderter PDFs). **Annahme**, dass das genügt.
 
@@ -429,7 +430,7 @@ Aufbau und Bedienung wie Bilderwerk:
 | Journal von SQLite | klassisch (`DELETE`), lesende Zugriffe mit `SQLITE_OPEN_READ_ONLY` | entschieden, seit v0.0.9 |
 | Vorschau für Text | `ab_glyph` mit DejaVu Sans Mono, Schrift im Repo | entschieden, im Einsatz seit v0.0.7 |
 | Regeln und Konfiguration | TOML: `regeln.toml` beim Register, `config.local.toml` je Gerät | entschieden, im Einsatz seit v0.0.7 |
-| PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries | entschieden, Textauslese seit v0.0.2 |
+| PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries, Build und SHA-256-Prüfsumme fest im Skript (seit v0.1.4 Build 8179) | entschieden, Textauslese seit v0.0.2 |
 | OCR | Tesseract 5.5.2, Sprachen Deutsch und Englisch, Sprachdaten `tessdata`. Statisch aus dem Quelltext gebaut (mit Leptonica, über CMake), eigene schmale Anbindung an die C-Schnittstelle. Keine Installation auf dem Gerät | entschieden, im Einsatz seit v0.0.4 |
 | Vorschau | AVIF Q25, kurze Kante 1024 px. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3, Größenregel seit v0.0.6 |
 | Laden aus der Cloud | Dateikoordination von macOS (`NSFileCoordinator`) über `objc2-foundation`, eigenes Paket `registerwerk-macos` | entschieden, im Einsatz seit v0.0.8 |
@@ -563,6 +564,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.1.1 | Reiter "Ordner" ohne eigenes Einlesen, Kreisel bei Tätigkeit im Hintergrund, Dateien nur mit Namen im Baum, Entfernen als abwählbarer Schritt von "Verarbeiten", `npm test` und `npm run pruefen` mit Zusammenfassung und Abdeckung | Abschluss des Ablaufs aus Stufe 4 |
 | v0.1.2 | Testfälle ergänzt, Test-PDF im Repo, Grenze der Abdeckung 90 % der Zeilen und Funktionen je Datei. Fehler: geladene Dateien blieben lokal (Schema 11, Tabelle `angefordert`), Excel 5 und 95 ohne Text | Qualität, Korrekturen in Stufe 4 |
 | v0.1.3 | Punkte aus v0.1.1 in der Anwendung geprüft, an einem eigenen Test-Register. Fehler: neues Register ließ sich nicht prüfen (`Register::anlegen`), Ergebnis des letzten Laufs nach „Erneut prüfen“, Haken der Ordner und Hinweis bei „Diesmal behalten“ | Korrekturen in Stufe 4 |
+| v0.1.4 | Code-Review mit Kims Verfahren, Plan für die Findings. Register abgesichert: Sperre bei unverschlüsselten Dateien trotz Schlüssel, kein angehängtes SQL aus der Datei, Pfadprüfung zentral, Ablage der Schlüssel. PDFium 8179 mit Prüfsumme, HEIC-Vorschaubild in den Treffern, kleine Punkte des Reviews | Sicherheit, Qualität |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -582,6 +584,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Schlüsselbund unter Windows und Linux, SQLCipher unter Windows bauen | vor dem ersten Windows-Paket |
 | `pdf_pruefen` (`--suche`, `--aufteilen`) für ein verschlüsseltes Register | bei Bedarf |
 | `regeln.toml` und `textebene.log` verschlüsseln? | bei Bedarf |
+| Findings des Code-Reviews aus v0.1.4: Tesseract und Bibliotheken (v0.1.5), SQLCipher (v0.1.6), Struktur und Tests der Hülle und Oberfläche (v0.1.7). Plan in der Entwicklungsdokumentation v0.1.4 | v0.1.5 bis v0.1.7 |
 | Sperre mit Stand-Zähler für den Gerätewechsel | Stufe 4 |
 | Text aus Numbers. Mehrseitige TIFF. Excel-Mappen mit dem Standardkennwort von Excel (Kim speichert sie bisher als .xlsx neu) | später |
 | Antwortzeiten der Suche im ganzen Archiv | Stufe 6 |
@@ -680,6 +683,9 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Tests mit PDFium und Tesseract | rot, wenn die Bibliotheken fehlen. Test-PDF selbst erzeugt im Repo (v0.1.2) | Kim. Still übersprungene Tests hatten `pdf.rs` bei 0 % verdeckt |
 | Geladene Dateien | Vermerk im Register je Gerät, Zurückstellen auch aus früheren Läufen (v0.1.2) | die Liste im Arbeitsspeicher ging bei Abbruch und spätem Eintreffen verloren |
 | Excel 5 und 95 | eigener Leser vor calamine (v0.1.2) | calamine lieferte manche Mappe ohne Fehler, aber ohne Blätter |
+| Unverschlüsselte Datei bei hinterlegtem Schlüssel | Register gesperrt, Umstellung als Ausweg, kein eigener Merker (v0.1.4) | kein stilles Weiterschreiben ohne Verschlüsselung nach Rückspielen oder Austausch einer Datei (Kim) |
+| Bericht des Code-Reviews | unter `docs/intern/reviews/`, nicht im Repo (v0.1.4) | beschreibt Schwachstellen im Einzelnen, das Repo ist öffentlich (Kim) |
+| Namen und Dateiköpfe | bleiben deutsch, Dateiköpfe ohne Autor und Datum (v0.1.4) | Projektentscheidung. Das Review-Verfahren wird angepasst, nicht der Code (Kim) |
 
 ## 17. Verworfene Alternativen
 
@@ -728,7 +734,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 - `archiv_inventur.py`: Inventur und PDF-Stichprobe der Konzeptphase, nur lesend
 - `vorschau_vergleich.py`: Vorschauformate nebeneinander, Konzeptphase, nur lesend
 - `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
-- `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen
+- `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen. Seit v0.1.4 mit Prüfung der SHA-256-Prüfsumme, die Bibliothek wird ersetzt statt überschrieben (sonst beendet macOS jeden Prozess, der sie lädt)
 - `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
 - `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien, mit `--aufteilen <Ordner>` eine Probe des Aufteilens der Scheiben an einer Kopie des Registers unter `target/aufteilen_probe/` samt Vergleich jeder Vorschau (v0.0.8). `--suche` und `--aufteilen` arbeiten seit v0.1.0 nur mit einem unverschlüsselten Register. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
 - `scripts/pruefen.mjs` und `scripts/auswertung.mjs` (v0.1.1): `npm test` und `npm run pruefen` mit Zusammenfassung, Abdeckung gesamt und je Paket. Seit v0.1.2 mit Grenze (Ausnahmen in `scripts/abdeckung-ausnahmen.json`) und dem Bericht je Funktion `abdeckung.json`. Ausgaben in `target/pruefen/`

@@ -65,6 +65,10 @@ pub enum Fehler {
     SchluesselFehlt,
     #[error("Der Schlüssel passt nicht zum Register.")]
     SchluesselFalsch,
+    /// Eine Datei des Registers ist unverschlüsselt, obwohl auf diesem Gerät
+    /// ein Schlüssel hinterlegt ist (v0.1.4).
+    #[error("{0} ist nicht verschlüsselt, obwohl auf diesem Gerät ein Schlüssel für das Register hinterlegt ist.")]
+    Unverschluesselt(String),
     #[error("Schlüssel ungültig: {0}")]
     SchluesselUngueltig(String),
 }

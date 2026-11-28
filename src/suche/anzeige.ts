@@ -23,7 +23,7 @@ export function vorschauSeite(t: Treffer): number | null {
 }
 
 /** Bildformate mit Vorschau (wie formate.rs im Kern) */
-export const BILDER = ["jpg", "jpeg", "png", "tif", "tiff", "bmp", "gif", "webp"];
+export const BILDER = ["jpg", "jpeg", "png", "tif", "tiff", "bmp", "gif", "webp", "heic", "heif"];
 
 /** Seiten zum Blättern: die mit Vorschau, sonst alle Seiten mit Text (Word, Excel je Blatt). */
 export function seitenVon(d: DateiDetails | null): number[] {

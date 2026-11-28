@@ -1215,7 +1215,11 @@ fn register_info_von(konfig: &Konfiguration, ordner: &std::path::Path) -> Result
     if info.vorhanden {
         let r = match Register::oeffnen_lesend(ordner) {
             Ok(r) => r,
-            Err(f @ (registerwerk_core::Fehler::SchluesselFehlt | registerwerk_core::Fehler::SchluesselFalsch)) => {
+            Err(
+                f @ (registerwerk_core::Fehler::SchluesselFehlt
+                | registerwerk_core::Fehler::SchluesselFalsch
+                | registerwerk_core::Fehler::Unverschluesselt(_)),
+            ) => {
                 info.schluessel_fehler = Some(f.to_string());
                 return Ok(info);
             }
@@ -1479,9 +1483,7 @@ async fn ordner_im_finder(app: AppHandle, ordner: String) -> Result<(), String> 
     let (_, konfig) = konfig_laden(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let relativ = registerwerk_core::dateibaum::relativ_normalisieren(&ordner);
-        if relativ.split('/').any(|teil| teil == "..") {
-            return Err(format!("Ordner \"{ordner}\" ist ungültig"));
-        }
+        // Pfade mit `..` lehnt `Konfiguration::ort` ab (v0.1.4)
         let pfad = konfig.ort(&relativ).unwrap_or_default();
         if !pfad.is_dir() {
             return Err(format!("Ordner nicht gefunden: {}", pfad.display()));
@@ -1508,7 +1510,9 @@ fn vorschau_protokoll(app: AppHandle, anfrage: Request<Vec<u8>>, antwort: UriSch
         let fertig = match ergebnis {
             Ok(Some(avif)) => Response::builder()
                 .header("Content-Type", "image/avif")
-                .header("Cache-Control", "max-age=3600")
+                // Entschlüsselte Vorschauen nicht im Cache der Web-Ansicht auf
+                // der Festplatte ablegen (v0.1.4, vorher eine Stunde)
+                .header("Cache-Control", "no-store")
                 .body(avif),
             Ok(None) => Response::builder().status(StatusCode::NOT_FOUND).body(Vec::new()),
             Err(fehler) => Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(fehler.into_bytes()),

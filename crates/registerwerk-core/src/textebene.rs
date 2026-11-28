@@ -733,7 +733,11 @@ fn datei_schreiben(
     }
     let tmp = temporaer(&ziel);
     let geschrieben = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
+        // Neu anlegen statt überschreiben (v0.1.4): Ein Rest eines
+        // abgebrochenen Laufs wird entfernt, eine Verknüpfung unter dem Namen
+        // wird nicht verfolgt (`remove_file` entfernt nur die Verknüpfung)
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         f.write_all(&neu)?;
         f.sync_all()?;
         // Änderungsdatum wie beim Original. Das Umbenennen behält es bei.

@@ -167,10 +167,21 @@ impl Konfiguration {
 
     /// Der Ort eines Pfads aus dem Register (`Ast/Ordner/Datei`) auf diesem
     /// Gerät. `None`, wenn es den Ast hier nicht gibt.
+    ///
+    /// Auch `None`, wenn der Pfad aus dem Ast hinausführen könnte: `..`, ein
+    /// absoluter Rest oder ein Laufwerk (v0.1.4). Pfade kommen auch aus dem
+    /// Register im Cloud-Ordner, der Ort wird geöffnet oder beschrieben. Die
+    /// Prüfung steht deshalb hier und nicht bei jedem Aufrufer.
     pub fn ort(&self, pfad: &str) -> Option<PathBuf> {
         let (ast, rest) = pfad.split_once('/').unwrap_or((pfad, ""));
         let wurzel = self.aeste.get(ast)?;
-        Some(if rest.is_empty() { wurzel.clone() } else { wurzel.join(rest) })
+        if rest.is_empty() {
+            return Some(wurzel.clone());
+        }
+        let sicher = Path::new(rest)
+            .components()
+            .all(|teil| matches!(teil, std::path::Component::Normal(_) | std::path::Component::CurDir));
+        sicher.then(|| wurzel.join(rest))
     }
 
     /// Wie [`Konfiguration::ort`]. Fehlt der Ast, kommt ein Pfad zurück, den
@@ -232,6 +243,12 @@ mod tests {
         assert_eq!(k.ort("Dokumente"), Some(PathBuf::from("/home/x/Documents")));
         assert_eq!(k.ort("Fremd/a.pdf"), None);
         assert!(!k.ort_oder_nichts("Fremd/a.pdf").exists());
+        // Nichts führt aus dem Ast hinaus (v0.1.4)
+        assert_eq!(k.ort("Dropbox/../geheim"), None);
+        assert_eq!(k.ort("Dropbox/Archiv/../../geheim"), None);
+        assert_eq!(k.ort("Dropbox//etc/passwd"), None);
+        assert_eq!(k.ort("Dropbox/./Archiv/a.pdf"), Some(PathBuf::from("/c/Dropbox/./Archiv/a.pdf")));
+        assert_eq!(k.ort("Dropbox/a..b.pdf"), Some(PathBuf::from("/c/Dropbox/a..b.pdf")));
         assert_eq!(Konfiguration::ast_von("Dropbox/Archiv/a.pdf"), "Dropbox");
         assert!(!k.ist_alt() && k.alter_ast.is_none());
         // hin und zurück

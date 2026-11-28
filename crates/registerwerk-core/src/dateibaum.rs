@@ -425,9 +425,7 @@ pub fn ordner_pruefen(konfig: &Konfiguration, ordner: &str, abbrechen: &AtomicBo
     let start = std::time::Instant::now();
     let ordner = relativ_normalisieren(ordner);
     let fehlt = || crate::Fehler::Konfiguration(format!("Ordner \"{ordner}\" gibt es auf diesem Gerät nicht"));
-    if ordner.split('/').any(|teil| teil == "..") {
-        return Err(fehlt());
-    }
+    // Pfade mit `..` lehnt `Konfiguration::ort` ab (v0.1.4)
     let wurzel = konfig.ort(&ordner).filter(|w| w.is_dir()).ok_or_else(fehlt)?;
     let mut p = OrdnerPruefung { ordner, ..Default::default() };
     let mut endungen: std::collections::HashMap<String, EndungZeile> = Default::default();
@@ -545,9 +543,7 @@ pub fn unterordner(konfig: &Konfiguration, ordner: &str) -> crate::Ergebnis<Vec<
     if ordner.is_empty() {
         return Ok(aeste(konfig));
     }
-    if ordner.split('/').any(|teil| teil == "..") {
-        return Err(crate::Fehler::Konfiguration(format!("Ordner \"{ordner}\" ist ungültig")));
-    }
+    // Pfade mit `..` lehnt `Konfiguration::ort` ab (v0.1.4)
     let wurzel = konfig
         .ort(&ordner)
         .ok_or_else(|| crate::Fehler::Konfiguration(format!("Ordner \"{ordner}\" gibt es auf diesem Gerät nicht")))?;

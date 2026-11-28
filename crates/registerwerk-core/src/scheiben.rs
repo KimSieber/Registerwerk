@@ -734,6 +734,10 @@ mod tests {
         let schluessel = Schluessel::aus_text(&"0123456789abcdef".repeat(4)).unwrap();
         vs::hinterlegen(ordner, schluessel.clone());
         assert_eq!(vs::schluessel_pruefen(ordner, &schluessel).unwrap(), None);
+        // Schlüssel hinterlegt, Register noch unverschlüsselt: öffnet nicht (v0.1.4)
+        assert!(vs::stand(ordner).unwrap().gesperrt);
+        assert!(matches!(Register::oeffnen_lesend(ordner), Err(crate::Fehler::Unverschluesselt(_))));
+        assert!(matches!(Register::oeffnen(ordner), Err(crate::Fehler::Unverschluesselt(_))));
 
         // Sofort angehalten: nichts geändert
         let e = vs::umstellen(ordner, Some(arbeit.path()), &AtomicBool::new(true), |_| {}).unwrap();

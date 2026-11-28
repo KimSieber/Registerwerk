@@ -103,11 +103,37 @@ export function SchluesselEingabe(props: { stand: SchluesselStand; fertig: () =>
 }
 
 /**
+ * Sperre vor der ganzen Anwendung (v0.1.4): Auf diesem Gerät ist ein Schlüssel hinterlegt, aber
+ * mindestens eine Datei des Registers ist unverschlüsselt. Bietet die Umstellung an und lädt nach
+ * einem vollständigen Lauf neu.
+ */
+export function UnverschluesseltSperre(props: { stand: SchluesselStand }) {
+  const n = props.stand.verschluesselung.unverschluesselt;
+  return (
+    <div className="kasten schluessel">
+      <h3>Register nicht vollständig verschlüsselt</h3>
+      <p>
+        Auf diesem Gerät ist ein Schlüssel für das Register hinterlegt, aber{" "}
+        {n === 1 ? "eine Datei ist" : `${alsZahl(n)} Dateien sind`} unverschlüsselt. Das kommt vor, wenn die
+        Umstellung angehalten wurde oder eine ältere Fassung zurückgespielt wurde, etwa aus dem Versionsverlauf
+        der Cloud. Registerwerk öffnet das Register so nicht, damit nichts unverschlüsselt weitergeschrieben wird.
+      </p>
+      <p>
+        Ist die Liste der Dateien erwartet, die Umstellung abschließen. Wenn nicht, erst klären, woher die
+        Dateien stammen.
+      </p>
+      <Verschluesselung laeuft={() => {}} fertig={() => window.location.reload()} />
+    </div>
+  );
+}
+
+/**
  * Kasten „Verschlüsselung“ im Datenbank-Symbol (v0.1.0): Zustand, Schlüssel für die Umstellung,
  * Umstellung mit Fortschritt und Anhalten, Schlüssel von diesem Gerät entfernen.
- * `laeuft` meldet dem Datenbank-Symbol, dass es offen bleiben soll.
+ * `laeuft` meldet dem Datenbank-Symbol, dass es offen bleiben soll. `fertig` nach einem
+ * vollständigen Lauf (v0.1.4).
  */
-export default function Verschluesselung(props: { laeuft: (l: boolean) => void }) {
+export default function Verschluesselung(props: { laeuft: (l: boolean) => void; fertig?: () => void }) {
   // Eigener, schneller Stand: nur Dateiköpfe, unabhängig von den Kennzahlen des Registers
   const [stand, setStand] = useState<SchluesselStand | null>(null);
   const neuLaden = useCallback(() => {
@@ -136,7 +162,9 @@ export default function Verschluesselung(props: { laeuft: (l: boolean) => void }
     try {
       await schluesselEingeben(wert);
       setWert("");
-      neuLaden();
+      // Schlüssel hinterlegt, Register noch unverschlüsselt: Die Anwendung ist jetzt gesperrt und
+      // zeigt nach dem Neuladen die Sperre mit Schritt 2 (v0.1.4)
+      window.location.reload();
     } catch (e) {
       setFehler(String(e));
     } finally {
@@ -152,8 +180,10 @@ export default function Verschluesselung(props: { laeuft: (l: boolean) => void }
     setErgebnis(null);
     setFortschritt(null);
     try {
-      setErgebnis(await registerVerschluesseln(wert, setFortschritt));
+      const e = await registerVerschluesseln(wert, setFortschritt);
+      setErgebnis(e);
       setWert("");
+      if (!e.abgebrochen) props.fertig?.();
     } catch (e) {
       setFehler(String(e));
     } finally {

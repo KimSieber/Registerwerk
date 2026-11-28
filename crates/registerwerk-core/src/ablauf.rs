@@ -829,10 +829,10 @@ mod tests {
 
     #[test]
     fn liest_die_ausgabe_von_onlineonly() {
-        let a = "online-only  /Users/kim/Dropbox/A/x y.pdf\nlocal        /Users/kim/Dropbox/A/z.pdf\n\nfehler\n";
+        let a = "online-only  /Users/test/Dropbox/A/x y.pdf\nlocal        /Users/test/Dropbox/A/z.pdf\n\nfehler\n";
         let p = ausgelagerte_pfade(a);
         assert_eq!(p.len(), 1);
-        assert!(p.contains("/Users/kim/Dropbox/A/x y.pdf"));
+        assert!(p.contains("/Users/test/Dropbox/A/x y.pdf"));
     }
 
     #[test]
