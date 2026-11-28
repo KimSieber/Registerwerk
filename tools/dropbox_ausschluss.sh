@@ -5,6 +5,15 @@
 # staendig und lassen sich jederzeit neu erzeugen. Dieses Skript markiert sie
 # so, dass Dropbox sie uebergeht. Die Ordner bleiben im Projekt liegen.
 #
+# Seit v0.1.5 auch bibliotheken/ (PDFium, Quelltext und Sprachdaten von
+# Tesseract): Was das Programm als native Bibliothek laedt, soll nicht ueber
+# die Dropbox von einem anderen Geraet kommen. Auf jedem Geraet laden
+# tools/pdfium_holen.sh und tools/tesseract_holen.sh den Ordner selbst.
+#
+# Achtung bei einem Ordner, den die Dropbox schon abgleicht: Die klassische
+# Dropbox entfernt ihn dann aus der Cloud und von den anderen Geraeten. Auf
+# diesem Geraet bleibt er liegen.
+#
 # Aufruf im Terminal auf dem Mac, einmal je Geraet:
 #     bash tools/dropbox_ausschluss.sh
 #
@@ -15,7 +24,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-ORDNER=("target" "node_modules" "dist" "src-tauri/gen")
+ORDNER=("target" "node_modules" "dist" "src-tauri/gen" "bibliotheken")
 
 if [ "$(uname)" != "Darwin" ]; then
     echo "Dieses Skript ist fuer macOS. Unter Windows:"

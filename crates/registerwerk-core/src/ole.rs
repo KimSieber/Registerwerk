@@ -16,8 +16,9 @@ pub const KENNUNG: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 
 const FREI: u32 = 0xFFFF_FFFF;
 const ENDE: u32 = 0xFFFF_FFFE;
-/// Höchstens so viele Sektoren je Kette. Schützt vor Schleifen in der FAT.
-const MAX_KETTE: usize = 4_000_000;
+// Eine Kette hat höchstens so viele Glieder, wie Sektoren in der Datei
+// stehen (v0.1.5, vorher fest 4 Mio.). Eine Schleife in der FAT liefert so
+// nie mehr Daten, als die Datei groß ist.
 
 #[derive(Debug, Clone)]
 struct Eintrag {
@@ -146,7 +147,9 @@ impl Verbund {
         let mut aus = Vec::new();
         let mut s = start;
         let mut schritte = 0;
-        while s < ENDE && schritte < MAX_KETTE {
+        // Der Kopf zählt mit, die Datei hat also höchstens so viele Sektoren
+        let max = self.daten.len() / self.sektor.max(1);
+        while s < ENDE && schritte < max {
             let Some(block) = self.sektor_daten(s) else { break };
             aus.extend_from_slice(block);
             s = self.fat.get(s as usize).copied().unwrap_or(ENDE);
@@ -159,7 +162,8 @@ impl Verbund {
         let mut aus = Vec::new();
         let mut s = start;
         let mut schritte = 0;
-        while s < ENDE && schritte < MAX_KETTE && (aus.len() as u64) < groesse {
+        let max = self.ministrom.len() / 64;
+        while s < ENDE && schritte < max && (aus.len() as u64) < groesse {
             let von = s as usize * 64;
             let Some(block) = self.ministrom.get(von..(von + 64).min(self.ministrom.len())).filter(|b| !b.is_empty())
             else {
@@ -256,5 +260,22 @@ mod tests {
         d[wurzel + 0x4C..wurzel + 0x50].copy_from_slice(&0x7777u32.to_le_bytes());
         let v = Verbund::oeffnen(d).unwrap();
         assert_eq!(v.strom("WordDocument").unwrap(), b"Text des Dokuments");
+    }
+    #[test]
+    fn schleife_in_der_fat_endet_an_der_dateigroesse() {
+        // Sektor 1 zeigt auf sich selbst: Die Kette darf nicht mehr Daten
+        // liefern, als die Datei Sektoren hat (v0.1.5)
+        let daten = vec![0u8; 512 * 9];
+        let v = Verbund {
+            daten,
+            sektor: 512,
+            fat: vec![1, 1],
+            minifat: vec![0],
+            ministrom: vec![0u8; 64 * 3],
+            mini_grenze: 4096,
+            eintraege: Vec::new(),
+        };
+        assert_eq!(v.kette(0).len(), 512 * 9);
+        assert_eq!(v.mini_kette(0, u64::MAX).len(), 64 * 3);
     }
 }

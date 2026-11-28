@@ -847,8 +847,8 @@ function Haken({
 /** Kurzer Grund für die Marke im Baum (v0.1.1), der lange steht im Tooltip. */
 const KURZ: Record<Grund, string> = {
   fehlt: "gibt es nicht mehr",
-  typ: "Typ ignoriert",
   bibliothek: "Bibliothek",
+  versteckt: "versteckt",
   ausgeschlossen: "Ordner aus",
   ohne_regel: "ohne Regel",
   nur_metadaten: "nur noch Name",
@@ -942,7 +942,11 @@ function Schritte({
         if (e.laden.geladen === 0 && e.laden.nicht_geladen_anzahl === 0) return "nichts zu laden";
         return `${alsZahl(e.laden.geladen)} geladen` + (e.laden.nicht_geladen_anzahl ? `, ${alsZahl(e.laden.nicht_geladen_anzahl)} nicht` : "");
       case "inhalte":
-        return `${alsZahl(e.inhalte.gelesen)} gelesen` + (e.inhalte.fehler ? `, ${alsZahl(e.inhalte.fehler)} Fehler` : "");
+        return (
+          `${alsZahl(e.inhalte.gelesen)} gelesen` +
+          (e.inhalte.hinweise ? `, ${alsZahl(e.inhalte.hinweise)} mit Hinweis` : "") +
+          (e.inhalte.fehler ? `, ${alsZahl(e.inhalte.fehler)} Fehler` : "")
+        );
       case "vorschauen":
         return `${alsZahl(e.vorschauen.seiten)} Seiten` + (e.vorschauen.fehler ? `, ${alsZahl(e.vorschauen.fehler)} Fehler` : "");
       case "erkennen":

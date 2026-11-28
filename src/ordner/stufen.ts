@@ -10,7 +10,7 @@ export const NAMEN: Record<Stufe, string> = {
 };
 
 export const ERKLAERUNG: Record<Stufe, string> = {
-  voll: "Dokumente und Bilder mit Text, Vorschau und OCR. Quelltext und Programme werden ignoriert.",
+  voll: "Dokumente und Bilder mit Text, Vorschau und OCR. Alle anderen Dateien nur mit Name, Ordner und Datum.",
   metadaten: "Alle Dateien nur mit Name, Ordner und Datum. Kein Inhalt, keine Vorschau.",
   ausgeschlossen: "Nichts aus diesem Ordner kommt ins Register.",
 };

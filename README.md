@@ -76,9 +76,9 @@ Eine Regel gilt auch für die Unterordner, die genaueste Regel gewinnt.
 | Aus | nichts | Bildordner, die Bilderwerk abdeckt |
 
 In einem Ordner der Stufe Voll entscheidet die Endung: Dokumente und Bilder
-werden gelesen, nicht lesbare oder gepackte Formate nur mit Namen erfasst
-(Archive werden nicht entpackt), alles andere wird ignoriert, etwa Quelltext.
-Bibliotheksordner wie `node_modules` werden übergangen.
+werden gelesen, alles andere kommt nur mit Namen ins Register, auch Quelltext
+und Programme (Archive werden nicht entpackt). Bibliotheksordner wie
+`node_modules` und versteckte Dateien mit Punkt am Anfang werden übergangen.
 
 Die Ordner können überall auf dem Gerät liegen. Jeder aufgenommene Ordner ist
 ein „Ast“ mit einem Namen. Wo er liegt, steht nur in der Konfiguration des
@@ -211,8 +211,10 @@ PDFium ist eine C++-Bibliothek (BSD-3-Clause) und liegt nicht im Repo.
 Version samt Lizenztexten nach `bibliotheken/pdfium/`.
 
 Liegt das Repo in einem Cloud-Ordner, nimmt `tools/dropbox_ausschluss.sh` die
-Build-Ordner (`target`, `node_modules`, `dist`, `src-tauri/gen`) von der
-Synchronisation aus. Das Skript sollte vor dem ersten `npm install` laufen.
+Build-Ordner (`target`, `node_modules`, `dist`, `src-tauri/gen`) und seit v0.1.5
+auch `bibliotheken` von der Synchronisation aus. Native Bibliotheken kommen so nie
+über die Cloud von einem anderen Gerät, jedes Gerät lädt sie mit den beiden Skripten
+selbst. Das Skript sollte vor dem ersten `npm install` laufen.
 Cargo baut in `target/cargo` (`.cargo/config.toml`). So löscht `cargo clean`
 nur diesen Unterordner, und `target` bleibt mit seiner Ausnahme stehen.
 

@@ -53,13 +53,16 @@ pub const SPRACHEN: &str = "deu+eng";
 /// [`OCR_VERFAHREN`] erhöhen.
 pub const MODELLE: &str = "standard";
 
-/// Version des OCR-Verfahrens. Erhöhen, wenn sich Auflösung, Sprachdaten,
-/// Tesseract-Version oder die Übernahmeregel ändern. Dann wird neu erkannt.
+/// Version des OCR-Verfahrens. Erhöhen, wenn sich Auflösung, Sprachdaten
+/// oder die Übernahmeregel ändern. Dann wird neu erkannt. Ein Update von
+/// Tesseract erhöht es nicht: Bereits erkannte Seiten bleiben, wie sie sind,
+/// nur neue Seiten laufen mit der neuen Version (Kim, v0.1.5).
 pub const OCR_VERFAHREN: i64 = 3;
 // 1: 300 dpi Graustufen, Tesseract 5.5.2 LSTM, deu+eng, Sprachdaten MODELLE,
 //    Seiten ohne Text und mit schwachem Text
 // 2: wie 1, nur noch Seiten ohne Text (unter 20 Zeichen)
 // 3: wie 2, Grenze ohne Text bei höchstens 10 Zeichen, Lage der Wörter
+//    seit v0.1.5 mit Tesseract 5.5.5, Verfahren bleibt 3
 
 /// Ordner der Sprachdaten relativ zum Projekt, je Satz ein Unterordner.
 pub const ENTWICKLUNGS_ORDNER: &str = "bibliotheken/tesseract/tessdata";
@@ -815,7 +818,7 @@ mod tests {
             "leer.pdf" => vec![seite(1, "", 1.0)],
             _ => vec![seite(1, "", 1.0)],
         };
-        Ok(Inhalt { seiten, erstellt: None, grob: false })
+        Ok(Inhalt { seiten, erstellt: None, hinweis: None })
     }
 
     /// Rendert jede Seite als 1×1-Bild, dessen Pixel die Seitennummer trägt.

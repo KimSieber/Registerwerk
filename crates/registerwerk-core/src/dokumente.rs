@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesRef, BytesStart, Event};
 use quick_xml::Reader;
 
 use crate::pdf::{Inhalt, Seite};
@@ -32,11 +32,23 @@ use crate::pdf::{Inhalt, Seite};
 /// Höchstzahl der Zeichen je Seite. **Annahme**
 pub const MAX_ZEICHEN: usize = 500_000;
 
+/// Von Textdateien wird nur der Anfang gelesen (v0.1.5). Mehr als
+/// [`MAX_ZEICHEN`] Zeichen kommen ohnehin nicht ins Register.
+pub const MAX_TEXTDATEI: u64 = 8 * 1024 * 1024;
+/// Höchstgröße eines entpackten Eintrags in Office-, OpenDocument- und
+/// iWork-Dateien und Höchstgröße alter Office-Dateien (v0.1.5). Schützt vor
+/// Dateien, die beim Entpacken den Speicher füllen.
+pub const MAX_ENTPACKT: u64 = 256 * 1024 * 1024;
+/// Hinweis für Textdateien über [`MAX_TEXTDATEI`] (v0.1.5).
+pub const GEKUERZT: &str = "Text gekürzt: Datei größer als 8 MB, nur der Anfang gelesen";
+/// Anfang der Meldung für Dateien über einer Grenze (v0.1.5).
+pub const ZU_GROSS: &str = "zu groß";
+
 /// Liest den Text einer Office- oder Textdatei.
 ///
 /// Scheitert der Leser an einem alten Office-Format, zieht der grobe
 /// Rückfall lesbare Zeichenfolgen aus der Datei (v0.0.9). Das Ergebnis trägt
-/// dann `grob`.
+/// dann den Hinweis [`crate::textformate::GROB`].
 pub fn lesen(pfad: &Path) -> Result<Inhalt, String> {
     // Ein Fehler im Leser einer einzelnen Datei darf den Lauf nicht beenden
     // (v0.0.9): Die Datei bekommt dann einen Lesefehler.
@@ -49,13 +61,22 @@ fn lesen_innen(pfad: &Path) -> Result<Inhalt, String> {
     match genau(pfad, &endung) {
         Ok(inhalt) => Ok(inhalt),
         // Verschlüsselte Dateien liefern nur Zufallszeichen, kein grober Text
-        Err(meldung) if GROB_ERLAUBT.contains(&endung.as_str()) && !meldung.contains("verschlüsselt") => {
+        // Zu große Dateien auch nicht: Der Rückfall läse die ganze Datei
+        Err(meldung)
+            if GROB_ERLAUBT.contains(&endung.as_str())
+                && !meldung.contains("verschlüsselt")
+                && !meldung.starts_with(ZU_GROSS) =>
+        {
+            // Der Rückfall liest die ganze Datei, große Pakete mit Medien nicht
+            if groesse_pruefen(pfad, MAX_ENTPACKT).is_err() {
+                return Err(meldung);
+            }
             let daten = roh(pfad)?;
             match crate::textformate::grob(&daten) {
                 Some(text) => Ok(Inhalt {
                     seiten: vec![Seite { nr: 1, text: kuerzen(text), bildanteil: 0.0 }],
                     erstellt: None,
-                    grob: true,
+                    hinweis: Some(crate::textformate::GROB),
                 }),
                 None => Err(meldung),
             }
@@ -72,6 +93,7 @@ const GROB_ERLAUBT: &[&str] = &["doc", "dot", "xls", "xlt", "ppt", "pps", "pages
 /// neue Formate, RTF, HTML, Text, Excel 2–5, Lotus 1-2-3, Word 2 (v0.0.9).
 fn alt_office(pfad: &Path, endung: &str) -> Result<Vec<String>, String> {
     use crate::textformate as t;
+    groesse_pruefen(pfad, MAX_ENTPACKT)?;
     let daten = roh(pfad)?;
     let word = matches!(endung, "doc" | "dot");
     let tabelle = matches!(endung, "xls" | "xlt");
@@ -114,12 +136,20 @@ fn alt_office(pfad: &Path, endung: &str) -> Result<Vec<String>, String> {
 }
 
 fn genau(pfad: &Path, endung: &str) -> Result<Inhalt, String> {
+    let mut hinweis = None;
+    // Textformate: nur der Anfang, mit Hinweis, wenn gekürzt (v0.1.5)
+    let mut anfang = || -> Result<Vec<u8>, String> {
+        let (daten, gekuerzt) = roh_anfang(pfad, MAX_TEXTDATEI)?;
+        if gekuerzt {
+            hinweis = Some(GEKUERZT);
+        }
+        Ok(daten)
+    };
     let seiten: Vec<String> = match endung {
-        "txt" | "md" => vec![text_datei(&roh(pfad)?)],
-        "rtf" => vec![crate::textformate::rtf(&roh(pfad)?)],
-        "csv" | "tsv" | "log" => vec![text_datei(&roh(pfad)?)],
-        "htm" | "html" => vec![crate::textformate::html(&roh(pfad)?)],
-        "vcf" => vec![crate::textformate::vcf(&roh(pfad)?)],
+        "txt" | "md" | "csv" | "tsv" | "log" => vec![text_datei(&anfang()?)],
+        "rtf" => vec![crate::textformate::rtf(&anfang()?)],
+        "htm" | "html" => vec![crate::textformate::html(&anfang()?)],
+        "vcf" => vec![crate::textformate::vcf(&anfang()?)],
         "docx" | "docm" | "dotx" | "dotm" => {
             let mut zip = oeffnen(pfad)?;
             vec![xml_text(&eintrag(&mut zip, "word/document.xml")?, &WORD)?]
@@ -128,7 +158,8 @@ fn genau(pfad: &Path, endung: &str) -> Result<Inhalt, String> {
             let mut zip = oeffnen(pfad)?;
             let mut folien: Vec<(u32, String)> = zip
                 .file_names()
-                .filter_map(|n| nummer(n, "ppt/slides/slide", ".xml").map(|z| (z, n.to_string())))
+                .filter_map(Result::ok)
+                .filter_map(|n| nummer(&n, "ppt/slides/slide", ".xml").map(|z| (z, n.to_string())))
                 .collect();
             folien.sort();
             folien.iter().map(|(_, n)| xml_text(&eintrag(&mut zip, n)?, &FOLIE)).collect::<Result<_, _>>()?
@@ -149,7 +180,7 @@ fn genau(pfad: &Path, endung: &str) -> Result<Inhalt, String> {
             .map(|(i, text)| Seite { nr: i as u32 + 1, text: kuerzen(text.trim().to_string()), bildanteil: 0.0 })
             .collect(),
         erstellt: None,
-        grob: false,
+        hinweis,
     })
 }
 
@@ -158,6 +189,35 @@ type Zip = zip::ZipArchive<std::fs::File>;
 /// Inhalt einer Datei, Fehler als Text.
 fn roh(pfad: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(pfad).map_err(|e| e.to_string())
+}
+
+/// Höchstens `grenze` Bytes vom Anfang einer Datei, dazu ob gekürzt wurde.
+/// Ein beim Kürzen zerschnittenes UTF-8-Zeichen am Ende fällt weg, sonst
+/// hielte [`text_datei`] den ganzen Text für Latin-1.
+fn roh_anfang(pfad: &Path, grenze: u64) -> Result<(Vec<u8>, bool), String> {
+    let datei = std::fs::File::open(pfad).map_err(|e| e.to_string())?;
+    let mut daten = Vec::new();
+    datei.take(grenze + 1).read_to_end(&mut daten).map_err(|e| e.to_string())?;
+    if daten.len() as u64 <= grenze {
+        return Ok((daten, false));
+    }
+    daten.truncate(grenze as usize);
+    if let Err(f) = std::str::from_utf8(&daten) {
+        // Nur ein unvollständiges Zeichen ganz am Ende abschneiden
+        if f.error_len().is_none() {
+            daten.truncate(f.valid_up_to());
+        }
+    }
+    Ok((daten, true))
+}
+
+/// Fehler, wenn die Datei größer als `grenze` ist (v0.1.5).
+fn groesse_pruefen(pfad: &Path, grenze: u64) -> Result<(), String> {
+    let groesse = std::fs::metadata(pfad).map_err(|e| e.to_string())?.len();
+    if groesse > grenze {
+        return Err(format!("{ZU_GROSS}: Datei hat mehr als {} MB", grenze / (1024 * 1024)));
+    }
+    Ok(())
 }
 
 /// Meldung eines Fehlers im XML eines Dokuments.
@@ -171,9 +231,19 @@ fn oeffnen(pfad: &Path) -> Result<Zip, String> {
 }
 
 fn eintrag(zip: &mut Zip, name: &str) -> Result<Vec<u8>, String> {
-    let mut e = zip.by_name(name).map_err(|_| format!("{name} fehlt im Dokument"))?;
+    eintrag_begrenzt(zip, name, MAX_ENTPACKT)
+}
+
+/// Ein Eintrag des Archivs, entpackt höchstens `grenze` Bytes. Gelesen wird
+/// über `take`, nicht nach der Größe im Verzeichnis des Archivs: Die kann
+/// falsch sein (v0.1.5).
+fn eintrag_begrenzt(zip: &mut Zip, name: &str, grenze: u64) -> Result<Vec<u8>, String> {
+    let e = zip.by_name(name).map_err(|_| format!("{name} fehlt im Dokument"))?;
     let mut daten = Vec::new();
-    e.read_to_end(&mut daten).map_err(|e| e.to_string())?;
+    e.take(grenze + 1).read_to_end(&mut daten).map_err(|e| e.to_string())?;
+    if daten.len() as u64 > grenze {
+        return Err(format!("{ZU_GROSS}: {name} hat entpackt mehr als {} MB", grenze / (1024 * 1024)));
+    }
     Ok(daten)
 }
 
@@ -206,18 +276,18 @@ fn text_datei(daten: &[u8]) -> String {
 /// aussehen. Verglichen wird der Name ohne Namensraum.
 struct Regeln {
     /// Text zählt nur innerhalb dieser Elemente. Leer: überall.
-    text_in: &'static [&'static [u8]],
-    absatz: &'static [&'static [u8]],
-    tab: &'static [&'static [u8]],
-    umbruch: &'static [&'static [u8]],
+    text_in: &'static [&'static str],
+    absatz: &'static [&'static str],
+    tab: &'static [&'static str],
+    umbruch: &'static [&'static str],
 }
 
-const WORD: Regeln = Regeln { text_in: &[b"t"], absatz: &[b"p", b"tr"], tab: &[b"tab", b"tc"], umbruch: &[b"br", b"cr"] };
-const FOLIE: Regeln = Regeln { text_in: &[b"t"], absatz: &[b"p"], tab: &[b"tab"], umbruch: &[b"br"] };
+const WORD: Regeln = Regeln { text_in: &["t"], absatz: &["p", "tr"], tab: &["tab", "tc"], umbruch: &["br", "cr"] };
+const FOLIE: Regeln = Regeln { text_in: &["t"], absatz: &["p"], tab: &["tab"], umbruch: &["br"] };
 const IWORK_09: Regeln =
-    Regeln { text_in: &[b"text-body"], absatz: &[b"p"], tab: &[b"tab"], umbruch: &[b"br", b"lnbr", b"pgbr"] };
+    Regeln { text_in: &["text-body"], absatz: &["p"], tab: &["tab"], umbruch: &["br", "lnbr", "pgbr"] };
 const OPEN_DOCUMENT: Regeln =
-    Regeln { text_in: &[b"body"], absatz: &[b"p", b"h", b"table-row"], tab: &[b"tab", b"table-cell"], umbruch: &[b"line-break"] };
+    Regeln { text_in: &["body"], absatz: &["p", "h", "table-row"], tab: &["tab", "table-cell"], umbruch: &["line-break"] };
 
 fn xml_text(xml: &[u8], r: &Regeln) -> Result<String, String> {
     let mut leser = Reader::from_reader(xml);
@@ -231,13 +301,13 @@ fn xml_text(xml: &[u8], r: &Regeln) -> Result<String, String> {
             text.push('\t');
         } else if r.umbruch.contains(&n) || r.absatz.contains(&n) {
             text.push('\n');
-        } else if n == b"s" {
+        } else if n == "s" {
             // OpenDocument: mehrere Leerzeichen
             let anzahl = e
                 .try_get_attribute("text:c")
                 .ok()
                 .flatten()
-                .and_then(|a| std::str::from_utf8(&a.value).ok().and_then(|v| v.parse().ok()))
+                .and_then(|a| a.value.parse().ok())
                 .unwrap_or(1usize);
             text.push_str(&" ".repeat(anzahl.min(100)));
         }
@@ -249,7 +319,7 @@ fn xml_text(xml: &[u8], r: &Regeln) -> Result<String, String> {
                 if r.text_in.contains(&n.as_ref()) {
                     innen += 1;
                 }
-                if r.tab.contains(&n.as_ref()) && n.as_ref() != b"tc" && n.as_ref() != b"table-cell" {
+                if r.tab.contains(&n.as_ref()) && n.as_ref() != "tc" && n.as_ref() != "table-cell" {
                     text.push('\t');
                 }
             }
@@ -261,14 +331,13 @@ fn xml_text(xml: &[u8], r: &Regeln) -> Result<String, String> {
                 }
                 if r.absatz.contains(&n.as_ref()) {
                     text.push('\n');
-                } else if n.as_ref() == b"tc" || n.as_ref() == b"table-cell" {
+                } else if n.as_ref() == "tc" || n.as_ref() == "table-cell" {
                     text.push('\t');
                 }
             }
-            Event::Text(t) if innen > 0 || r.text_in.is_empty() => {
-                text.push_str(&t.unescape().map_err(xml_fehler)?);
-            }
-            Event::CData(t) if innen > 0 => text.push_str(&String::from_utf8_lossy(&t)),
+            Event::Text(t) if innen > 0 || r.text_in.is_empty() => text.push_str(&t.xml10_content()),
+            Event::GeneralRef(g) if innen > 0 || r.text_in.is_empty() => text.push_str(&referenz(&g)),
+            Event::CData(t) if innen > 0 => text.push_str(&t.xml10_content()),
             Event::Eof => break,
             _ => {}
         }
@@ -285,9 +354,10 @@ fn xml_text(xml: &[u8], r: &Regeln) -> Result<String, String> {
 fn iwork(zip: &mut Zip) -> Result<String, String> {
     let mut namen: Vec<String> = zip
         .file_names()
+        .filter_map(Result::ok)
         .filter(|n| n.starts_with("Index/") && n.ends_with(".iwa"))
         .filter(|n| !["Stylesheet", "ViewState", "Metadata", "Annotation", "CalculationEngine"].iter().any(|x| n.contains(x)))
-        .map(str::to_string)
+        .map(|n| n.into_owned())
         .collect();
     if namen.is_empty() {
         return iwork_09(zip);
@@ -312,10 +382,20 @@ fn iwork(zip: &mut Zip) -> Result<String, String> {
 /// `index.xml` (Pages) oder `index.apxl` (Keynote), wahlweise gepackt (v0.0.9).
 fn iwork_09(zip: &mut Zip) -> Result<String, String> {
     for name in ["index.xml", "index.apxl", "index.xml.gz", "index.apxl.gz"] {
-        let Ok(daten) = eintrag(zip, name) else { continue };
+        let daten = match eintrag(zip, name) {
+            Ok(d) => d,
+            Err(e) if e.starts_with(ZU_GROSS) => return Err(e),
+            Err(_) => continue,
+        };
         let xml = if name.ends_with(".gz") {
             let mut aus = Vec::new();
-            flate2::read::GzDecoder::new(&daten[..]).read_to_end(&mut aus).map_err(|e| format!("iWork '09: {e}"))?;
+            flate2::read::GzDecoder::new(&daten[..])
+                .take(MAX_ENTPACKT + 1)
+                .read_to_end(&mut aus)
+                .map_err(|e| format!("iWork '09: {e}"))?;
+            if aus.len() as u64 > MAX_ENTPACKT {
+                return Err(format!("{ZU_GROSS}: {name} hat entpackt mehr als {} MB", MAX_ENTPACKT / (1024 * 1024)));
+            }
             aus
         } else {
             daten
@@ -327,11 +407,21 @@ fn iwork_09(zip: &mut Zip) -> Result<String, String> {
 
 /// IWA: Blöcke aus 1 Byte Typ, 3 Byte Länge (little endian) und Snappy-Daten ohne Rahmen.
 fn iwa_entpacken(daten: &[u8]) -> Result<Vec<u8>, String> {
+    iwa_entpacken_begrenzt(daten, MAX_ENTPACKT)
+}
+
+/// Wie [`iwa_entpacken`], insgesamt höchstens `grenze` Bytes. Die Größe
+/// jedes Blocks steht in seinem Kopf und wird vor dem Entpacken geprüft.
+fn iwa_entpacken_begrenzt(daten: &[u8], grenze: u64) -> Result<Vec<u8>, String> {
     let mut aus = Vec::new();
     let mut i = 0;
     while i + 4 <= daten.len() {
         let n = daten[i + 1] as usize | (daten[i + 2] as usize) << 8 | (daten[i + 3] as usize) << 16;
         let block = daten.get(i + 4..i + 4 + n).ok_or("IWA: Block abgeschnitten")?;
+        let laenge = snap::raw::decompress_len(block).map_err(|e| format!("IWA: {e}"))?;
+        if (aus.len() + laenge) as u64 > grenze {
+            return Err(format!("{ZU_GROSS}: IWA hat entpackt mehr als {} MB", grenze / (1024 * 1024)));
+        }
         aus.extend(snap::raw::Decoder::new().decompress_vec(block).map_err(|e| format!("IWA: {e}"))?);
         i += 4 + n;
     }
@@ -428,7 +518,25 @@ fn excel(zip: &mut Zip) -> Result<Vec<String>, String> {
 }
 
 fn attribut(e: &BytesStart, name: &str) -> Option<String> {
-    e.try_get_attribute(name).ok().flatten().and_then(|a| a.unescape_value().ok().map(|v| v.to_string()))
+    e.try_get_attribute(name)
+        .ok()
+        .flatten()
+        .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.into_owned()))
+}
+
+/// Text einer Referenz im XML (`&amp;`, `&#8364;`). Seit quick-xml 0.38 kommen
+/// Referenzen als eigenes Ereignis und nicht mehr im Text. Unbekannte Namen
+/// bleiben als `&name;` stehen, damit nichts still verloren geht (v0.1.5).
+fn referenz(g: &BytesRef) -> String {
+    if let Ok(Some(c)) = g.resolve_char_ref() {
+        return c.to_string();
+    }
+    let name: &str = g;
+    match quick_xml::escape::resolve_predefined_entity(name) {
+        Some(t) => t.to_string(),
+        None if g.is_char_ref() => String::new(),
+        None => format!("&{name};"),
+    }
 }
 
 fn geteilte_texte(xml: &[u8]) -> Result<Vec<String>, String> {
@@ -437,10 +545,11 @@ fn geteilte_texte(xml: &[u8]) -> Result<Vec<String>, String> {
     let (mut liste, mut aktuell, mut in_t) = (Vec::new(), String::new(), false);
     loop {
         match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
-            Event::Start(e) if e.local_name().as_ref() == b"t" => in_t = true,
-            Event::End(e) if e.local_name().as_ref() == b"t" => in_t = false,
-            Event::End(e) if e.local_name().as_ref() == b"si" => liste.push(std::mem::take(&mut aktuell)),
-            Event::Text(t) if in_t => aktuell.push_str(&t.unescape().map_err(xml_fehler)?),
+            Event::Start(e) if e.local_name().as_ref() == "t" => in_t = true,
+            Event::End(e) if e.local_name().as_ref() == "t" => in_t = false,
+            Event::End(e) if e.local_name().as_ref() == "si" => liste.push(std::mem::take(&mut aktuell)),
+            Event::Text(t) if in_t => aktuell.push_str(&t.xml10_content()),
+            Event::GeneralRef(g) if in_t => aktuell.push_str(&referenz(&g)),
             Event::Eof => break,
             _ => {}
         }
@@ -456,7 +565,7 @@ fn blaetter(xml: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut liste = Vec::new();
     loop {
         match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"sheet" => {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "sheet" => {
                 if let (Some(name), Some(rid)) = (attribut(&e, "name"), attribut(&e, "r:id")) {
                     liste.push((name, rid));
                 }
@@ -476,7 +585,7 @@ fn beziehungen(xml: &[u8]) -> Result<HashMap<String, String>, String> {
     let mut ziele = HashMap::new();
     loop {
         match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "Relationship" => {
                 if let (Some(id), Some(ziel)) = (attribut(&e, "Id"), attribut(&e, "Target")) {
                     ziele.insert(id, ziel);
                 }
@@ -498,16 +607,16 @@ fn blatt(xml: &[u8], geteilt: &[String]) -> Result<String, String> {
     loop {
         match leser.read_event_into(&mut puffer).map_err(xml_fehler)? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"c" => {
+                "c" => {
                     typ = attribut(&e, "t").unwrap_or_default();
                     wert.clear();
                 }
-                b"v" | b"t" => in_wert = true,
+                "v" | "t" => in_wert = true,
                 _ => {}
             },
             Event::End(e) => match e.local_name().as_ref() {
-                b"v" | b"t" => in_wert = false,
-                b"c" => {
+                "v" | "t" => in_wert = false,
+                "c" => {
                     let w = match typ.as_str() {
                         "s" => wert.trim().parse::<usize>().ok().and_then(|i| geteilt.get(i)).cloned().unwrap_or_default(),
                         "b" => String::new(),
@@ -517,14 +626,15 @@ fn blatt(xml: &[u8], geteilt: &[String]) -> Result<String, String> {
                         zellen.push(w);
                     }
                 }
-                b"row" if !zellen.is_empty() => {
+                "row" if !zellen.is_empty() => {
                     text.push_str(&zellen.join("\t"));
                     text.push('\n');
                     zellen.clear();
                 }
                 _ => {}
             },
-            Event::Text(t) if in_wert => wert.push_str(&t.unescape().map_err(xml_fehler)?),
+            Event::Text(t) if in_wert => wert.push_str(&t.xml10_content()),
+            Event::GeneralRef(g) if in_wert => wert.push_str(&referenz(&g)),
             Event::Eof => break,
             _ => {}
         }
@@ -564,12 +674,12 @@ mod tests {
                 "word/document.xml",
                 r#"<w:document xmlns:w="w"><w:body>
                    <w:p><w:r><w:t>Sehr geehrte</w:t></w:r><w:r><w:t xml:space="preserve"> Damen &amp; Herren,</w:t></w:r></w:p>
-                   <w:p><w:r><w:instrText>PAGE</w:instrText><w:t>Betrag</w:t><w:tab/><w:t>12,00</w:t></w:r></w:p>
+                   <w:p><w:r><w:instrText>PAGE</w:instrText><w:t>Betrag</w:t><w:tab/><w:t>12,00 &#8364; &#x2013; &lt;netto&gt;</w:t></w:r></w:p>
                    </w:body></w:document>"#,
             )],
         );
         let i = lesen(&p).unwrap();
-        assert_eq!(texte(&i), ["Sehr geehrte Damen & Herren,\nBetrag\t12,00"]);
+        assert_eq!(texte(&i), ["Sehr geehrte Damen & Herren,\nBetrag\t12,00 € – <netto>"]);
     }
 
     #[test]
@@ -581,23 +691,23 @@ mod tests {
             &[
                 (
                     "xl/workbook.xml",
-                    r#"<workbook xmlns:r="r"><sheets><sheet name="Strom" sheetId="1" r:id="rId1"/><sheet name="Gas" sheetId="2" r:id="rId2"/></sheets></workbook>"#,
+                    r#"<workbook xmlns:r="r"><sheets><sheet name="Strom &amp; W&#228;rme" sheetId="1" r:id="rId1"/><sheet name="Gas" sheetId="2" r:id="rId2"/></sheets></workbook>"#,
                 ),
                 (
                     "xl/_rels/workbook.xml.rels",
                     r#"<Relationships><Relationship Id="rId2" Target="worksheets/sheet2.xml"/><Relationship Id="rId1" Target="/xl/worksheets/sheet1.xml"/></Relationships>"#,
                 ),
-                ("xl/sharedStrings.xml", r#"<sst><si><t>EnBW</t></si><si><r><t>Abschlag </t></r><r><t>Juli</t></r></si></sst>"#),
+                ("xl/sharedStrings.xml", r#"<sst><si><t>EnBW &amp; Co</t></si><si><r><t>Abschlag </t></r><r><t>Juli</t></r></si></sst>"#),
                 (
                     "xl/worksheets/sheet1.xml",
                     r#"<worksheet><sheetData><row><c t="s"><v>0</v></c><c t="s"><v>1</v></c><c><v>89.5</v></c></row>
                        <row><c t="inlineStr"><is><t>Summe</t></is></c><c t="b"><v>1</v></c></row></sheetData></worksheet>"#,
                 ),
-                ("xl/worksheets/sheet2.xml", r#"<worksheet><sheetData><row><c t="str"><v>Stadtwerke</v></c></row></sheetData></worksheet>"#),
+                ("xl/worksheets/sheet2.xml", r#"<worksheet><sheetData><row><c t="str"><v>Stadtwerke &quot;Nord&quot;</v></c></row></sheetData></worksheet>"#),
             ],
         );
         let i = lesen(&p).unwrap();
-        assert_eq!(texte(&i), ["Strom\nEnBW\tAbschlag Juli\t89.5\nSumme", "Gas\nStadtwerke"]);
+        assert_eq!(texte(&i), ["Strom & Wärme\nEnBW & Co\tAbschlag Juli\t89.5\nSumme", "Gas\nStadtwerke \"Nord\""]);
         assert_eq!(i.seiten[1].nr, 2);
     }
 
@@ -727,7 +837,7 @@ mod tests {
         let ppt = d.join("neu.ppt");
         zip_schreiben(&ppt, &[("ppt/slides/slide1.xml", "<p:sld/>")]);
         match lesen(&ppt) {
-            Ok(i) => assert!(i.grob),
+            Ok(i) => assert_eq!(i.hinweis, Some(crate::textformate::GROB)),
             Err(f) => assert!(f.contains("PowerPoint"), "{f}"),
         }
         // RTF, HTML und Text mit alter Endung
@@ -752,7 +862,7 @@ mod tests {
             daten.extend_from_slice(&[0, 0, 1, 2]);
         }
         let i = lesen(&schreiben(tmp.path(), "alt.doc", &daten)).unwrap();
-        assert!(i.grob);
+        assert_eq!(i.hinweis, Some(crate::textformate::GROB));
         assert!(i.seiten[0].text.contains("Stadtwerke Stuttgart"), "{:?}", i.seiten[0].text);
         // Andere Endungen bekommen keinen Rückfall
         assert!(lesen(&schreiben(tmp.path(), "alt.docx", &daten)).is_err());
@@ -816,7 +926,7 @@ mod tests {
         let leer = tmp.path().join("leer.pages");
         zip_schreiben(&leer, &[("x", "")]);
         match lesen(&leer) {
-            Ok(i) => assert!(i.grob),
+            Ok(i) => assert_eq!(i.hinweis, Some(crate::textformate::GROB)),
             Err(f) => assert!(f.contains("vor 2013"), "{f}"),
         }
     }
@@ -849,7 +959,7 @@ mod tests {
         let gz = tmp.path().join("kaputt.pages");
         zip_schreiben(&gz, &[("index.xml.gz", "kein gzip")]);
         match lesen(&gz) {
-            Ok(i) => assert!(i.grob),
+            Ok(i) => assert_eq!(i.hinweis, Some(crate::textformate::GROB)),
             Err(f) => assert!(f.starts_with("iWork '09"), "{f}"),
         }
         // IWA mit kaputtem Snappy-Block
@@ -859,7 +969,7 @@ mod tests {
         z.write_all(&[0, 3, 0, 0, 0xFF, 0xFF, 0xFF]).unwrap();
         z.finish().unwrap();
         match lesen(&iwa_kaputt) {
-            Ok(i) => assert!(i.grob),
+            Ok(i) => assert_eq!(i.hinweis, Some(crate::textformate::GROB)),
             Err(f) => assert!(f.starts_with("IWA"), "{f}"),
         }
     }
@@ -890,5 +1000,65 @@ mod tests {
         assert!(lesen(&p).unwrap_err().contains("kein gültiges Office-Dokument"));
         assert!(lesen(Path::new("x.doc")).is_err());
         assert_eq!(kuerzen("ä".repeat(MAX_ZEICHEN)).len(), MAX_ZEICHEN);
+    }
+
+    #[test]
+    fn grosse_textdatei_wird_gekuerzt_mit_hinweis() {
+        // v0.1.5: nur der Anfang, das Register vermerkt die Kürzung
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("gross.log");
+        let zeile = "2026-11-28 12:00:00 Eintrag mit Umlaut ä\n";
+        let anzahl = MAX_TEXTDATEI as usize / zeile.len() + 100;
+        std::fs::write(&p, zeile.repeat(anzahl)).unwrap();
+        let i = lesen(&p).unwrap();
+        assert_eq!(i.hinweis, Some(GEKUERZT));
+        assert!(i.seiten[0].text.starts_with("2026-11-28") && i.seiten[0].text.len() <= MAX_ZEICHEN);
+        // Klein: kein Hinweis
+        let k = tmp.path().join("klein.log");
+        std::fs::write(&k, zeile).unwrap();
+        assert_eq!(lesen(&k).unwrap().hinweis, None);
+    }
+
+    #[test]
+    fn kuerzen_schneidet_kein_zeichen_an() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("t.txt");
+        std::fs::write(&p, "abcä").unwrap();
+        // ä ist 2 Byte: nach 4 Byte zerschnitten, fällt also weg
+        assert_eq!(roh_anfang(&p, 4).unwrap(), (b"abc".to_vec(), true));
+        assert_eq!(roh_anfang(&p, 5).unwrap(), ("abcä".as_bytes().to_vec(), false));
+        // Kein UTF-8: bleibt, wie es ist
+        std::fs::write(&p, b"ab\xe4\xe4cd").unwrap();
+        assert_eq!(roh_anfang(&p, 4).unwrap(), (b"ab\xe4\xe4".to_vec(), true));
+    }
+
+    #[test]
+    fn entpackte_eintraege_sind_begrenzt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("bombe.docx");
+        zip_schreiben(&p, &[("word/document.xml", &"x".repeat(5000))]);
+        let mut zip = oeffnen(&p).unwrap();
+        let fehler = eintrag_begrenzt(&mut zip, "word/document.xml", 1000).unwrap_err();
+        assert!(fehler.starts_with(ZU_GROSS), "{fehler}");
+        assert_eq!(eintrag_begrenzt(&mut zip, "word/document.xml", 5000).unwrap().len(), 5000);
+        // IWA: die Größe jedes Blocks wird vor dem Entpacken geprüft
+        let daten = iwa(&["Text"]);
+        assert!(iwa_entpacken_begrenzt(&daten, 3).unwrap_err().starts_with(ZU_GROSS));
+        assert!(iwa_entpacken_begrenzt(&daten, 1000).is_ok());
+    }
+
+    #[test]
+    fn zu_grosse_alte_dateien_ohne_groben_rueckfall() {
+        // Dünn belegte Dateien: groß laut Dateisystem, ohne Platz zu kosten
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["riesig.doc", "riesig.pages"] {
+            let p = tmp.path().join(name);
+            std::fs::File::create(&p).unwrap().set_len(MAX_ENTPACKT + 1).unwrap();
+            let fehler = lesen(&p).unwrap_err();
+            assert!(!fehler.is_empty(), "{name}");
+            if name.ends_with(".doc") {
+                assert!(fehler.starts_with(ZU_GROSS), "{fehler}");
+            }
+        }
     }
 }

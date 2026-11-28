@@ -748,7 +748,7 @@ mod tests {
                     .map(|(i, t)| Seite { nr: i as u32 + 1, text: t.to_string(), bildanteil: 1.0 })
                     .collect(),
                 erstellt: None,
-                grob: false,
+                hinweis: None,
             };
             r.inhalt_speichern(id, 100, 10, &Ok(inhalt)).unwrap();
         }
@@ -875,7 +875,7 @@ mod tests {
         let mut r = register(&[("A/a.pdf", &["Alter Text"]), ("A/b.pdf", &["Bleibt"])]);
         assert_eq!(r.suche_ausstehend().unwrap(), 0);
         let id: i64 = r.db.query_row("SELECT id FROM datei WHERE pfad = 'A/a.pdf'", [], |z| z.get(0)).unwrap();
-        let inhalt = Inhalt { seiten: vec![Seite { nr: 1, text: "Neuer Inhalt".into(), bildanteil: 1.0 }], erstellt: None, grob: false };
+        let inhalt = Inhalt { seiten: vec![Seite { nr: 1, text: "Neuer Inhalt".into(), bildanteil: 1.0 }], erstellt: None, hinweis: None };
         r.inhalt_speichern(id, 100, 10, &Ok(inhalt)).unwrap();
         assert_eq!(r.suche_ausstehend().unwrap(), 1);
         r.suche_aktualisieren(|_| {}, &AtomicBool::new(false)).unwrap();

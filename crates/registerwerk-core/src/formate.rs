@@ -7,6 +7,8 @@
 //!   Text kommt nur ins Register. HEIC und HEIF seit v0.0.7
 //! - Textdateien (txt, md, seit v0.0.9 rtf, csv, tsv, log, htm, html, vcf): dazu eine gezeichnete
 //!   Vorschau (`textbild.rs`)
+//! - alle anderen: nur Name, Ordner, Größe und Datum (seit v0.1.5 auch
+//!   Quelltext, Programme und Unbekanntes)
 //!
 //! Die Listen stehen als Makros, damit sie in SQL-Bedingungen als Text
 //! eingesetzt werden können.
@@ -50,50 +52,26 @@ pub const BILDER: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "bmp", "gif",
 /// Seit v0.0.9 auch RTF, Tabellen als Text, Protokolle, HTML und Visitenkarten.
 pub const TEXT: &[&str] = &["txt", "md", "rtf", "csv", "tsv", "log", "htm", "html", "vcf"];
 
-/// Formate, die in der Stufe Voll nur mit Name, Ordner, Größe und Datum ins
-/// Register kommen: Dokumente und Sammlungen, deren Inhalt nicht gelesen wird.
-/// Archive werden nie entpackt. Alles, was weder hier noch bei den gelesenen
-/// Formaten steht (Quelltext, Programme, Daten), wird in der Stufe Voll
-/// ignoriert (v0.0.7).
-pub const NUR_NAME: &[&str] = &[
-    // Archive und Abbilder
-    "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "dmg", "iso",
-    // Office und Text ohne Leser
-    "numbers", "mht", "xps", "pub", "vsd",
-    "vsdx", "mpp", "one",
-    // E-Mail, Kontakte, Termine
-    "eml", "msg", "mbox", "ics",
-    // eBooks
-    "epub", "mobi", "azw", "azw3", "djvu",
-    // Bilder ohne Leser, Grafik
-    "svg", "psd", "ai", "eps", "indd", "raw", "dng", "cr2", "nef", "arw",
-    // Audio und Video
-    "mp3", "m4a", "m4b", "wav", "flac", "aac", "ogg", "wma", "aiff", "mp4", "m4v", "mov", "avi", "mkv", "wmv",
-    "mpg", "mpeg", "webm",
-    // Notizen, Wege, Karten
-    "enex", "note", "goodnotes", "gpx", "kml", "kmz", "fit", "tcx",
-];
-
-/// Wie eine Datei in einem Ordner der Stufe Voll behandelt wird.
+/// Wie eine Datei in einem Ordner der Stufe Voll behandelt wird. Bis v0.1.4
+/// gab es dazu „ignoriert“ für Quelltext, Programme und Unbekanntes. Seit
+/// v0.1.5 kommt jede Datei wenigstens mit Namen ins Register, damit sich auch
+/// Programme über den Namen finden lassen (Kim).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Klasse {
     /// Text wird gelesen, PDFs und Bilder bekommen Vorschau und OCR.
     Gelesen,
-    /// Nur Name, Ordner, Größe und Datum.
+    /// Nur Name, Ordner, Größe und Datum: Archive, Medien, Quelltext,
+    /// Programme und alles Unbekannte.
     NurName,
-    /// Kommt nicht ins Register.
-    Ignoriert,
 }
 
 /// Klasse einer Endung (Kleinbuchstaben, ohne Punkt).
 pub fn klasse(endung: &str) -> Klasse {
     if endung == "pdf" || DOKUMENTE.contains(&endung) || BILDER.contains(&endung) {
         Klasse::Gelesen
-    } else if NUR_NAME.contains(&endung) {
-        Klasse::NurName
     } else {
-        Klasse::Ignoriert
+        Klasse::NurName
     }
 }
 
@@ -135,19 +113,13 @@ mod tests {
     }
 
     #[test]
-    fn klassen_ueberschneiden_sich_nicht() {
-        for e in NUR_NAME {
-            assert!(!DOKUMENTE.contains(e) && !BILDER.contains(e) && *e != "pdf", "{e} doppelt");
-            assert_eq!(e.to_lowercase(), *e);
-        }
-        let mut sortiert = NUR_NAME.to_vec();
-        sortiert.sort();
-        sortiert.dedup();
-        assert_eq!(sortiert.len(), NUR_NAME.len());
+    fn klassen() {
         assert_eq!(klasse("pdf"), Klasse::Gelesen);
         assert_eq!(klasse("jpg"), Klasse::Gelesen);
         assert_eq!(klasse("zip"), Klasse::NurName);
-        assert_eq!(klasse("rs"), Klasse::Ignoriert);
-        assert_eq!(klasse(""), Klasse::Ignoriert);
+        // Quelltext, Programme und Unbekanntes seit v0.1.5 mit Namen
+        assert_eq!(klasse("rs"), Klasse::NurName);
+        assert_eq!(klasse("exe"), Klasse::NurName);
+        assert_eq!(klasse(""), Klasse::NurName);
     }
 }

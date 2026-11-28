@@ -32,6 +32,8 @@ pub struct InhaltErgebnis {
     pub gelesen: u64,
     pub seiten: u64,
     pub fehler: u64,
+    /// Gelesen, aber mit Hinweis, etwa gekürzt oder nur grob (v0.1.5).
+    pub hinweise: u64,
     /// Übergangen, weil "nur online".
     pub nur_online: u64,
     pub abgebrochen: bool,
@@ -78,11 +80,12 @@ pub fn lesen(
             // Eine lokale leere Datei ist gelesen: kein Fehler, keine Seiten.
             // Sie steht mit Namen im Register und ist fertig (v0.0.9).
             let inhalt =
-                if groesse == 0 { Ok(Inhalt { seiten: Vec::new(), erstellt: None, grob: false }) } else { leser(&pfad) };
+                if groesse == 0 { Ok(Inhalt { seiten: Vec::new(), erstellt: None, hinweis: None }) } else { leser(&pfad) };
             match &inhalt {
                 Ok(i) => {
                     e.gelesen += 1;
                     e.seiten += i.seiten.len() as u64;
+                    e.hinweise += i.hinweis.is_some() as u64;
                 }
                 Err(_) => e.fehler += 1,
             }
@@ -116,12 +119,12 @@ mod tests {
                     seite(2, "", 1.0),
                 ],
                 erstellt: Some("D:20190515120000+02'00'".into()),
-                grob: false,
+                hinweis: None,
             }),
             _ => Ok(Inhalt {
                 seiten: vec![seite(1, "ÿ§ 3a %$ Ü1 ~~ ¶ q ® 7x ±± ab ¤¤ ½x", 0.0)],
                 erstellt: None,
-                grob: false,
+                hinweis: None,
             }),
         }
     }

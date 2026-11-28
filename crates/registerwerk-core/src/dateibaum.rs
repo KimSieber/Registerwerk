@@ -18,8 +18,10 @@ use crate::formate::{self, Klasse};
 use crate::regeln::{Regeln, Stufe};
 use crate::Konfiguration;
 
-/// Verwaltungsdateien von Cloud-Client und Betriebssystem, die nie ins Register
-/// gehören.
+/// Verwaltungsdateien und -ordner von Cloud-Client und Betriebssystem, die nie
+/// ins Register gehören. Dazu kommen seit v0.1.5 alle Dateien mit einem Punkt
+/// am Anfang (`.localized`, `.disk_label` …): Ihr Name hilft bei keiner Suche.
+/// Ordner mit Punkt gelten als Bibliothek (siehe [`ist_bibliothek`]).
 const UEBERGANGENE_NAMEN: &[&str] = &[
     ".DS_Store",
     ".dropbox",
@@ -159,9 +161,6 @@ pub struct Durchlauf {
     pub unvollstaendige_verzeichnisse: Vec<String>,
     /// Einträge, deren Metadaten sich nicht lesen ließen.
     pub nicht_lesbar: Vec<String>,
-    /// Dateien in Ordnern der Stufe Voll, die wegen ihres Typs nicht ins
-    /// Register kommen (`formate::Klasse::Ignoriert`).
-    pub ignoriert: u64,
     /// Übergangene Ordner fremder Bibliotheken.
     pub uebergangene_ordner: u64,
 }
@@ -263,6 +262,10 @@ fn baum_lesen(
             }
             baum_lesen(&pfad, eigene_regel, fund, abbrechen);
         } else if typ.is_file() {
+            // Versteckte Dateien (v0.1.5)
+            if name.starts_with('.') {
+                continue;
+            }
             match eintrag.metadata() {
                 Ok(meta) => fund(Fund::Datei { pfad: &pfad, meta }),
                 Err(_) => fund(Fund::NichtLesbar(pfad.display().to_string())),
@@ -334,10 +337,6 @@ pub fn durchlaufen_abbrechbar(konfig: &Konfiguration, regeln: &Regeln, abbrechen
                     let Some(pfad) = im_register(&wurzel, verzeichnis, pfad) else { return };
                     let name = pfad.rsplit('/').next().unwrap_or_default().to_string();
                     let endung = endung_von(&name);
-                    if stufe == Stufe::Voll && formate::klasse(&endung) == Klasse::Ignoriert {
-                        ergebnis.ignoriert += 1;
-                        return;
-                    }
                     let nur_online = platzhalter(fund_pfad, &meta);
                     ergebnis.dateien.push(DateiEintrag {
                         pfad,
@@ -385,7 +384,6 @@ pub struct UnterordnerZeile {
     pub name: String,
     pub gelesen: u64,
     pub nur_name: u64,
-    pub ignoriert: u64,
     pub bytes: u64,
     pub nur_online: u64,
 }
@@ -401,7 +399,6 @@ pub struct OrdnerPruefung {
     pub dateien: u64,
     pub gelesen: u64,
     pub nur_name: u64,
-    pub ignoriert: u64,
     /// Dateien mit 0 Byte ("nur online oder leer"). Ihre Größe ist unbekannt.
     pub nur_online: u64,
     /// Summe der Größen der lokal vorhandenen Dateien.
@@ -463,7 +460,6 @@ pub fn ordner_pruefen(konfig: &Konfiguration, ordner: &str, abbrechen: &AtomicBo
                 match klasse {
                     Klasse::Gelesen => (p.gelesen += 1, u.gelesen += 1),
                     Klasse::NurName => (p.nur_name += 1, u.nur_name += 1),
-                    Klasse::Ignoriert => (p.ignoriert += 1, u.ignoriert += 1),
                 };
                 u.bytes += bytes;
                 u.nur_online += online;
@@ -630,18 +626,27 @@ mod tests {
                 ("Archiv/Alles/Unterordner/Platzhalter.pdf", b""),
                 ("Archiv/Alles/Unterordner/ohne endung", b"x"),
                 ("Archiv/Alles/.DS_Store", b"x"),
+                ("Archiv/Alles/.localized", b""),
+                ("Archiv/Alles/Unterordner/._Platzhalter.pdf", b"x"),
+                ("Archiv/Alles/desktop.ini", b"x"),
                 ("Archiv/Alles/.dropbox.cache/rest.pdf", b"x"),
                 ("Archiv/ausserhalb.pdf", b"x"),
             ],
         );
         let d = durchlaufen(&konfig(tmp.path()), &Regeln::voll(&["C/Archiv/Alles", "C/Archiv/Fehlt", "Fremd/X"]));
-        // "ohne endung" ist kein bekanntes Format und wird ignoriert
-        assert_eq!(pfade(&d), vec!["C/Archiv/Alles/2020-01-02 Brief.PDF", "C/Archiv/Alles/Unterordner/Platzhalter.pdf"]);
+        // "ohne endung" ist kein bekanntes Format und kommt mit Namen (v0.1.5)
+        assert_eq!(
+            pfade(&d),
+            vec![
+                "C/Archiv/Alles/2020-01-02 Brief.PDF",
+                "C/Archiv/Alles/Unterordner/Platzhalter.pdf",
+                "C/Archiv/Alles/Unterordner/ohne endung"
+            ]
+        );
         // betretene Ordner, ohne Verwaltungsordner
         let ordner: Vec<_> = d.ordner.iter().map(String::as_str).collect();
         assert_eq!(ordner, vec!["C", "C/Archiv", "C/Archiv/Alles", "C/Archiv/Alles/Unterordner"]);
         assert_eq!(d.geraet, "Test");
-        assert_eq!(d.ignoriert, 1);
         let brief = d.dateien.iter().find(|e| e.name.ends_with("Brief.PDF")).unwrap();
         assert_eq!((brief.endung.as_str(), brief.groesse, brief.stufe), ("pdf", 3, Stufe::Voll));
         assert!(brief.geaendert > 1_600_000_000);
@@ -678,6 +683,7 @@ mod tests {
                 "C/Archiv/Bilder/Belege/beleg.jpg",
                 "C/Archiv/a.pdf",
                 "C/Archiv/alt.zip",
+                "C/Archiv/quelle.rs",
                 "C/Musik/A/cover.jpg",
                 "C/Musik/A/lied.mp3",
                 "C/Musik/A/liesmich",
@@ -686,7 +692,6 @@ mod tests {
         // In der Stufe Metadaten kommt jede Datei mit Namen ins Register
         assert!(d.dateien.iter().filter(|e| e.pfad.starts_with("C/Musik/")).all(|e| e.stufe == Stufe::Metadaten));
         assert!(d.ordner.contains("C/Archiv") && d.ordner.contains("C/Archiv/Bilder/Belege"));
-        assert_eq!(d.ignoriert, 1);
         assert_eq!(d.gelesene_verzeichnisse, vec!["C/Archiv", "C/Archiv/Bilder/Belege", "C/Musik"]);
     }
 
@@ -716,6 +721,9 @@ mod tests {
                 "C/Archiv/vendor/Rechnung.pdf",
                 "C/Dev/App/README.md",
                 "C/Dev/App/docs/build/plan.md",
+                // Projektdateien seit v0.1.5 mit Namen
+                "C/Dev/App/package.json",
+                "C/Dev/Rust/Cargo.toml",
             ]
         );
         assert_eq!(d.uebergangene_ordner, 4);
@@ -749,14 +757,14 @@ mod tests {
         let k = konfig(tmp.path());
         let p = ordner_pruefen(&k, "C/Dev/", &AtomicBool::new(false)).unwrap();
         assert_eq!(p.ordner, "C/Dev");
-        assert_eq!((p.dateien, p.gelesen, p.nur_name, p.ignoriert), (7, 3, 1, 3));
+        assert_eq!((p.dateien, p.gelesen, p.nur_name), (7, 3, 4));
         assert_eq!((p.nur_online, p.bytes), (1, 12));
         assert_eq!((p.bibliotheken.clone(), p.bibliotheken_anzahl), (vec!["App/node_modules".to_string()], 1));
         let pdf = p.endungen.iter().find(|e| e.endung == "pdf").unwrap();
         assert_eq!((pdf.klasse, pdf.anzahl, pdf.bytes, pdf.nur_online), (Klasse::Gelesen, 2, 3, 1));
         assert_eq!(p.endungen[0].endung, "pdf");
-        let namen: Vec<_> = p.unterordner.iter().map(|u| (u.name.as_str(), u.gelesen + u.nur_name, u.ignoriert)).collect();
-        assert_eq!(namen, vec![("App", 3, 2), ("", 1, 0), ("Leer", 0, 1)]);
+        let namen: Vec<_> = p.unterordner.iter().map(|u| (u.name.as_str(), u.gelesen, u.nur_name)).collect();
+        assert_eq!(namen, vec![("App", 2, 3), ("", 1, 0), ("Leer", 0, 1)]);
         assert!(ordner_pruefen(&k, "C/Fehlt", &AtomicBool::new(false)).is_err());
         assert!(ordner_pruefen(&k, "Fremd/Dev", &AtomicBool::new(false)).is_err());
         assert!(ordner_pruefen(&k, "C/../x", &AtomicBool::new(false)).is_err());

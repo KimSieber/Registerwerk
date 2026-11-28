@@ -1,6 +1,6 @@
 # Registerwerk: Konzept
 
-Stand: 28.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.4). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
+Stand: 28.11.2026 (ergänzt um die Festlegungen aus v0.0.1 bis v0.1.5). Dieses Dokument hält alle Entscheidungen der Konzeptphase fest und ist die Grundlage für die Umsetzung. Konkrete Pfade, Ordnernamen und Zugangsdaten stehen nicht hier, sondern in `docs/intern/` (nicht versioniert).
 
 Punkte, die noch nicht ausdrücklich entschieden sind, tragen den Vermerk **Annahme**. Sie gelten, bis sie in der Umsetzung bestätigt oder geändert werden.
 
@@ -48,6 +48,8 @@ Registerwerk führt ein durchsuchbares Register über ein privates Dokumentenarc
 - Lesen, Suchen und Prüfen ändern das Register nicht. Geschrieben wird nur, wenn eine Datei neu, geändert oder entfernt ist (seit v0.0.9)
 - Verschlüsseltes Register mit einem Schlüssel, den Kim selbst erzeugt und verwahrt, je Gerät im Schlüsselbund (seit v0.1.0)
 - Entfernen aus dem Register als Schritt des Delta-Laufs, abwählbar (seit v0.1.1)
+- Jede Datei in einem Ordner mit Regel kommt wenigstens mit Namen ins Register, auch Quelltext, Programme und Unbekanntes. Versteckte Dateien mit Punkt am Anfang nicht (seit v0.1.5)
+- Grenzen für die Leser: Textdateien nur die ersten 8 MB mit Hinweis, Office- und iWork-Einträge und alte Office-Dateien bis 256 MB, eigene TIFF-Leser bis 150 Mio. Pixel (seit v0.1.5)
 
 ### Unterstützte Cloud-Speicher
 
@@ -98,7 +100,7 @@ Der bestehende Scan-Prozess bleibt unverändert: Scan per Smartphone-App mit Bil
 - Der Indexer durchläuft den Dateibaum und vergleicht ihn mit dem Register.
 - Neu ist jeder Pfad, den das Register nicht kennt. Ein Datum wird dafür nicht gebraucht.
 - Geändert ist eine Datei, deren Größe oder Änderungsdatum abweicht. Ausnahme ist der Wechsel zwischen lokal und "nur online", siehe unten.
-- Entfernt wird nur mit Grund (seit v0.0.7): Für den Ordner gilt keine Regel mehr oder die Stufe „Aus“, der Dateityp wird nicht geführt, die Datei liegt in einem Bibliotheksordner, oder ihr Ordner ist auf diesem Gerät vorhanden und vollständig gelesen und die Datei fehlt darin. **Fehlen allein löscht nie.**
+- Entfernt wird nur mit Grund (seit v0.0.7): Für den Ordner gilt keine Regel mehr oder die Stufe „Aus“, die Datei ist versteckt (seit v0.1.5, bis v0.1.4: der Dateityp wird nicht geführt), die Datei liegt in einem Bibliotheksordner, oder ihr Ordner ist auf diesem Gerät vorhanden und vollständig gelesen und die Datei fehlt darin. **Fehlen allein löscht nie.**
 - Fehlt ein ganzer Ordner oder gab es darin Lesefehler, bleibt sein Bestand im Register unangetastet. Ein nicht eingehängter Cloud-Ordner leert so nicht das Register. Hat das Gerät den Ordner früher gesehen, meldet der Lauf ihn als „vermisst“, sonst als Ordner eines anderen Geräts (Abschnitt 6, Äste und Geräte).
 - Vor dem Entfernen zeigt die Oberfläche die betroffenen Dateien mit dem Grund. Dazu läuft der Abgleich erst als Probe, die nichts ändert. Seit v0.1.1 stehen sie angehakt im Baum des Delta-Laufs und lassen sich abwählen. Abgewähltes bleibt im Register und steht bei der nächsten Prüfung wieder an. Ab mehr als 100 Einträgen fragt die Oberfläche vor dem Verarbeiten einmal nach.
 - Verschobene und umbenannte Dateien sollen über einen Inhalts-Hash erkannt werden, damit Text und Vorschauen nicht neu erzeugt werden müssen. **Annahme**, noch nicht umgesetzt (Stufe 4).
@@ -171,7 +173,7 @@ Umgesetzt in v0.0.7.
 
 Begründung für "Nur Metadaten" bei eBooks: Ihr Inhalt würde sonst bei fast jeder Suche Treffer liefern.
 
-Die frühere Stufe "Nur Dokumente" für Entwicklungsprojekte ist entfallen. Die Einteilung der Dateitypen (unten) gilt in jedem Ordner der Stufe Voll und lässt Quelltext und Bibliotheken von selbst aus.
+Die frühere Stufe "Nur Dokumente" für Entwicklungsprojekte ist entfallen. Die Einteilung der Dateitypen (unten) gilt in jedem Ordner der Stufe Voll und liest Quelltext nicht. Bibliotheken werden übergangen.
 
 ### Regeln
 
@@ -181,7 +183,7 @@ Die frühere Stufe "Nur Dokumente" für Entwicklungsprojekte ist entfallen. Die 
 - Gewählt werden sie im Reiter "Ordner": ein aufklappbarer Baum mit der Stufe je Ordner. "Ordner prüfen" zählt vorab, was ein Ordner enthält, ohne etwas ins Register zu schreiben.
 - Ein Wechsel der Stufe wirkt beim nächsten Verarbeiten. "Aus" entfernt die Einträge, "Nur Namen" entfernt Text, Vorschauen und OCR. Beides abwählbar (Abschnitt 5). Seit v0.1.1 hat der Reiter "Ordner" kein eigenes Einlesen mehr: Nach dem Speichern prüft Registerwerk, ein Kasten zeigt die Zahlen und führt in den Reiter "Register".
 - Die konkrete Zuordnung der Ordner steht in `docs/intern/umgebung.md`.
-- Verwaltungsdateien von Cloud-Client und Betriebssystem werden immer übergangen.
+- Verwaltungsdateien von Cloud-Client und Betriebssystem werden immer übergangen, seit v0.1.5 auch alle versteckten Dateien mit einem Punkt am Anfang (`.localized`, `.disk_label` …). Ihr Name hilft bei keiner Suche.
 - **Bibliotheksordner** werden übergangen: immer `node_modules`, `__pycache__`, `site-packages`, `venv`, `Pods`, `DerivedData`, `bower_components` und Ordner mit einem Punkt am Anfang. `target`, `build`, `dist` und `vendor` nur neben einer Projektdatei, weil die Namen mehrdeutig sind. Eine eigene Regel auf einem solchen Ordner schließt ihn ein.
 
 ### Äste und Geräte
@@ -198,13 +200,14 @@ Die frühere Stufe "Nur Dokumente" für Entwicklungsprojekte ist entfallen. Die 
 
 ### Dateitypen
 
-In einem Ordner der Stufe Voll entscheidet die Endung. Die Listen sind fest (`formate.rs`).
+In einem Ordner der Stufe Voll entscheidet die Endung. Die Liste der gelesenen Formate ist fest (`formate.rs`).
 
 | Klasse | Was geschieht |
 |---|---|
 | gelesen | Text, je nach Format Vorschau und OCR |
-| nur Name | Name, Ordner, Größe, Datum. Archive werden nicht entpackt |
-| ignoriert | kommt nicht ins Register: Quelltext, Programme, Daten und alles, was in keiner Liste steht |
+| nur Name | alles andere: Name, Ordner, Größe, Datum. Archive werden nicht entpackt |
+
+Bis v0.1.4 gab es dazu die Klasse „ignoriert“: Quelltext, Programme und alles, was in keiner Liste stand, kam in der Stufe Voll nicht ins Register. Seit v0.1.5 kommen sie mit Namen ins Register, wie in der Stufe „Nur Namen“. Auch Programme sollen sich über ihren Namen finden lassen (Kim).
 
 **Gelesen:**
 
@@ -225,7 +228,9 @@ In einem Ordner der Stufe Voll entscheidet die Endung. Die Listen sind fest (`fo
 - **Alte Office-Dateien** (seit v0.0.9): Hinter den Endungen doc, xls und ppt steckt im Archiv vieles. Registerwerk erkennt am Inhalt, was es ist: Verbunddatei (eigener toleranter Leser, verzeiht kleine Fehler), neues Format, RTF, HTML, Text, Word für Windows 2, Excel 2 bis 95, Lotus 1-2-3. Word 6 und 95 mit beschädigtem Verzeichnis werden über die Suche des Dokumentkopfs gelesen. Pages und Keynote '09 liefern ihren Text aus `index.xml`.
 - **Grober Rückfall** (seit v0.0.9): Scheitert jeder Leser an einer alten Office- oder iWork-Datei, kommen lesbare Zeichenfolgen der Datei ins Register, mit dem Vermerk „Text nur grob gelesen“. Die Datei ist so über die Suche auffindbar. Verschlüsselte Dateien sind ausgenommen.
 
-**Nur Name:** Archive und Abbilder (zip, rar, 7z, dmg …), Numbers, E-Mail (eml, msg, mbox), Termine (ics), eBooks (epub, mobi …), Grafik- und Rohformate, Audio, Video, Notizbuch- und Tracking-Dateien. E-Mail und Termine bleiben bewusst ohne Inhalt (Kim, v0.0.9).
+**Nur Name:** alles, was nicht gelesen wird, etwa Archive und Abbilder (zip, rar, 7z, dmg …), Numbers, E-Mail (eml, msg, mbox), Termine (ics), eBooks, Grafik- und Rohformate, Audio, Video, Quelltext und Programme. E-Mail und Termine bleiben bewusst ohne Inhalt (Kim, v0.0.9). Google-Dokumente (gdoc, gsheet) sind nur Verweise auf Googles Server, ihr Inhalt ist ohne die Schnittstelle von Google nicht lesbar (Grundsatz 4, v0.1.5).
+
+**Grenzen** (seit v0.1.5): Von Textdateien (txt, md, csv, tsv, log, rtf, htm, html, vcf) werden die ersten 8 MB gelesen, größere tragen den Hinweis „Text gekürzt“. Einträge in Office-, OpenDocument- und iWork-Dateien werden höchstens bis 256 MB entpackt, alte Office-Dateien über 256 MB nicht gelesen, Ketten in OLE-Verbunddateien sind auf die Zahl der Sektoren begrenzt. Die eigenen TIFF-Leser nehmen höchstens 150 Mio. Pixel an. Was über einer Grenze liegt, bekommt einen Lesefehler „zu groß“ mit Grund und wird erst wieder gelesen, wenn sich die Datei ändert. Hinweise (gekürzt, nur grob gelesen) zeigt die Liste „Dateien mit Hinweis“.
 
 **Nicht gelesen** werden weiter Numbers, verschlüsselte Office-Dateien (auch Excel mit dem Standardkennwort von Excel), schnell gespeicherte Word-2-Dokumente und Word 1.
 
@@ -422,7 +427,7 @@ Aufbau und Bedienung wie Bilderwerk:
 | Aufbau | Kern als eigene Rust-Bibliothek ohne Oberfläche, die Tauri-Anwendung ist nur eine Hülle darüber | entschieden. Hält den lesenden Teil für eine Web-Oberfläche wiederverwendbar |
 | Datenbank | SQLCipher über `rusqlite` (`bundled-sqlcipher`), unter macOS mit CommonCrypto, sonst mit beim Bau übersetztem OpenSSL | entschieden, im Einsatz seit v0.1.0 |
 | Suchindex | SQLite FTS5 mit Trigrammen im Register, Wortliste als Automat (`fst`) | entschieden, im Einsatz seit v0.0.6 |
-| Office, OpenDocument | `zip` und `quick-xml`, eigene Auslese | entschieden, im Einsatz seit v0.0.6 |
+| Office, OpenDocument | `zip` und `quick-xml`, eigene Auslese. Seit v0.1.5 zip 9 und quick-xml 0.42 (Referenzen wie `&amp;` kommen dort als eigenes Ereignis) | entschieden, im Einsatz seit v0.0.6 |
 | Pages, Keynote | eigener Leser für die Textspeicher der IWA-Archive, entpackt mit `snap` | entschieden, im Einsatz seit v0.0.6 |
 | Bilder | `image` (jpeg, png, tiff, bmp, gif, webp), `zune-heic` für HEIC, `tiff` und `fax` für Fax-TIFF, eigener Leser für TIFF mit Farbpalette (`weezl` für LZW) | entschieden, im Einsatz seit v0.0.6, HEIC und Fax seit v0.0.7, Palette seit v0.0.8 |
 | Altes Office | eigener toleranter Leser für OLE-Verbunddateien (`ole.rs`, seit v0.0.9, vorher `cfb`) mit eigenem Leser für doc und ppt, `calamine` für xls ab Excel 97, eigener Leser für Excel 2 bis 95 und Lotus 1-2-3 (`biff.rs`, seit v0.0.9) | entschieden, im Einsatz seit v0.0.7 |
@@ -431,7 +436,7 @@ Aufbau und Bedienung wie Bilderwerk:
 | Vorschau für Text | `ab_glyph` mit DejaVu Sans Mono, Schrift im Repo | entschieden, im Einsatz seit v0.0.7 |
 | Regeln und Konfiguration | TOML: `regeln.toml` beim Register, `config.local.toml` je Gerät | entschieden, im Einsatz seit v0.0.7 |
 | PDF | PDFium für Textauslese und Rendering, über `pdfium-render`. Die Bibliothek wird zur Laufzeit geladen und kommt aus den fertigen Builds von bblanchon/pdfium-binaries, Build und SHA-256-Prüfsumme fest im Skript (seit v0.1.4 Build 8179) | entschieden, Textauslese seit v0.0.2 |
-| OCR | Tesseract 5.5.2, Sprachen Deutsch und Englisch, Sprachdaten `tessdata`. Statisch aus dem Quelltext gebaut (mit Leptonica, über CMake), eigene schmale Anbindung an die C-Schnittstelle. Keine Installation auf dem Gerät | entschieden, im Einsatz seit v0.0.4 |
+| OCR | Tesseract 5.5.5 (seit v0.1.5, vorher 5.5.2), Sprachen Deutsch und Englisch, Sprachdaten `tessdata` auf festem Stand. Statisch aus dem Quelltext gebaut (mit Leptonica, über CMake), eigene schmale Anbindung an die C-Schnittstelle. Quelltext und Sprachdaten mit SHA-256-Prüfsumme geladen. Keine Installation auf dem Gerät | entschieden, im Einsatz seit v0.0.4 |
 | Vorschau | AVIF Q25, kurze Kante 1024 px. Kodiert mit libavif und libaom über `libavif-sys`, beim Bau aus dem Quelltext übersetzt (braucht CMake, unter x86 auch NASM) | entschieden, im Einsatz seit v0.0.3, Größenregel seit v0.0.6 |
 | Laden aus der Cloud | Dateikoordination von macOS (`NSFileCoordinator`) über `objc2-foundation`, eigenes Paket `registerwerk-macos` | entschieden, im Einsatz seit v0.0.8 |
 | Zurück auf "nur online" | Werkzeug `onlineonly` (MIT), wird aufgerufen, wenn installiert | entschieden, im Einsatz seit v0.0.8. Beigabe im Programmpaket offen |
@@ -565,6 +570,7 @@ Die Reihenfolge ist ein Vorschlag. **Annahme**. Stufe 5 wurde vorgezogen (v0.0.4
 | v0.1.2 | Testfälle ergänzt, Test-PDF im Repo, Grenze der Abdeckung 90 % der Zeilen und Funktionen je Datei. Fehler: geladene Dateien blieben lokal (Schema 11, Tabelle `angefordert`), Excel 5 und 95 ohne Text | Qualität, Korrekturen in Stufe 4 |
 | v0.1.3 | Punkte aus v0.1.1 in der Anwendung geprüft, an einem eigenen Test-Register. Fehler: neues Register ließ sich nicht prüfen (`Register::anlegen`), Ergebnis des letzten Laufs nach „Erneut prüfen“, Haken der Ordner und Hinweis bei „Diesmal behalten“ | Korrekturen in Stufe 4 |
 | v0.1.4 | Code-Review mit Kims Verfahren, Plan für die Findings. Register abgesichert: Sperre bei unverschlüsselten Dateien trotz Schlüssel, kein angehängtes SQL aus der Datei, Pfadprüfung zentral, Ablage der Schlüssel. PDFium 8179 mit Prüfsumme, HEIC-Vorschaubild in den Treffern, kleine Punkte des Reviews | Sicherheit, Qualität |
+| v0.1.5 | Lieferkette und Leser: Tesseract 5.5.5 ohne Neuerkennen des Bestands, Prüfsummen und fester Stand der Sprachdaten, `bibliotheken/` von der Dropbox ausgenommen, zip 9, quick-xml 0.42, toml 1, Grenzen für die Leser mit Hinweis „Text gekürzt“. Filter „Sonstige“ mit eigenem Scrollen und Suchfeld. Klasse „ignoriert“ entfallen, versteckte Dateien übergangen | Sicherheit, Korrekturen in Stufe 3 |
 
 Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 
@@ -584,7 +590,8 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Schlüsselbund unter Windows und Linux, SQLCipher unter Windows bauen | vor dem ersten Windows-Paket |
 | `pdf_pruefen` (`--suche`, `--aufteilen`) für ein verschlüsseltes Register | bei Bedarf |
 | `regeln.toml` und `textebene.log` verschlüsseln? | bei Bedarf |
-| Findings des Code-Reviews aus v0.1.4: Tesseract und Bibliotheken (v0.1.5), SQLCipher (v0.1.6), Struktur und Tests der Hülle und Oberfläche (v0.1.7). Plan in der Entwicklungsdokumentation v0.1.4 | v0.1.5 bis v0.1.7 |
+| Findings des Code-Reviews aus v0.1.4: SQLCipher (v0.1.6), Struktur und Tests der Hülle und Oberfläche (v0.1.7). Plan in der Entwicklungsdokumentation v0.1.4 | v0.1.6 bis v0.1.7 |
+| Echte Vorschau für HTML (Bild der ersten Bildschirmseite über WebKit, ohne Netz) und Suche nur im Dateinamen, wahlweise genau | Ende von v0.1.x |
 | Sperre mit Stand-Zähler für den Gerätewechsel | Stufe 4 |
 | Text aus Numbers. Mehrseitige TIFF. Excel-Mappen mit dem Standardkennwort von Excel (Kim speichert sie bisher als .xlsx neu) | später |
 | Antwortzeiten der Suche im ganzen Archiv | Stufe 6 |
@@ -639,7 +646,7 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Oberfläche der Suche | wie Bilderwerk | Wiedererkennung in der Reihe |
 | Entfernen aus dem Register | nur mit Grund und nach Rückfrage mit Dateiliste. Ein fehlender Ordner löscht nie | ein fehlender Cloud-Ordner darf das Register nicht leeren (v0.0.1, v0.0.7) |
 | Ordnerregeln | ohne Regel wird nichts gelesen, Vererbung, genaueste Regel gewinnt, drei Stufen | Ordner werden bewusst eingeschlossen (v0.0.7) |
-| Dateitypen | feste Listen: gelesen, nur Name, ignoriert | Quelltext und Programmdateien sollen nie ins Register. Ersetzt die Stufe "Nur Dokumente" |
+| Dateitypen | feste Liste der gelesenen Formate, alles andere nur mit Namen (bis v0.1.4 dazu „ignoriert“) | Quelltext wird nie gelesen. Ersetzt die Stufe "Nur Dokumente" |
 | Ordner außerhalb des Cloud-Ordners | Äste mit Namen, Ort je Gerät | mehrere Cloud-Speicher, Dokumente, Downloads |
 | Mehrere Geräte | ein Register und gemeinsame Regeln, jedes Gerät darf einlesen, das Register merkt sich, wer einen Ordner gesehen hat | Ergänzen von jedem Gerät. Unterscheidet "nicht auf diesem Gerät" von "gelöscht" |
 | Ort des Registers | je Gerät wählbar, bei Kim direkt im Cloud-Ordner | ein Register für alle Geräte ohne eigenen Schritt zum Veröffentlichen |
@@ -686,6 +693,12 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Unverschlüsselte Datei bei hinterlegtem Schlüssel | Register gesperrt, Umstellung als Ausweg, kein eigener Merker (v0.1.4) | kein stilles Weiterschreiben ohne Verschlüsselung nach Rückspielen oder Austausch einer Datei (Kim) |
 | Bericht des Code-Reviews | unter `docs/intern/reviews/`, nicht im Repo (v0.1.4) | beschreibt Schwachstellen im Einzelnen, das Repo ist öffentlich (Kim) |
 | Namen und Dateiköpfe | bleiben deutsch, Dateiköpfe ohne Autor und Datum (v0.1.4) | Projektentscheidung. Das Review-Verfahren wird angepasst, nicht der Code (Kim) |
+| Tesseract-Update | Bereits erkannte Seiten bleiben, `OCR_VERFAHREN` bleibt 3, nur neue Seiten laufen mit der neuen Version (v0.1.5) | Kim: Was erkannt ist, bleibt so. Im Vergleich erkannten 5.5.2 und 5.5.5 gleich gut |
+| Native Bibliotheken | `bibliotheken/` von der Dropbox ausgenommen, jedes Gerät lädt sie selbst mit geprüfter Prüfsumme (v0.1.5) | nichts, was als Code geladen wird, soll über die Cloud von einem anderen Gerät kommen |
+| Grenzen der Leser | Text 8 MB mit Hinweis, Entpacken und alte Office-Dateien 256 MB, TIFF 150 Mio. Pixel (v0.1.5) | ein kaputtes oder riesiges Dokument darf Speicher und Lauf nicht lahmlegen. Kim will die betroffenen Dateien sehen, große Dateien sind oft nicht gewollt |
+| Dateitypen in der Stufe Voll | alles, was nicht gelesen wird, mit Namen ins Register (v0.1.5) | Kim will auch Programme über den Namen finden. Ersetzt die Klasse „ignoriert“ |
+| Versteckte Dateien | übergangen, beim Entfernen mit eigenem Grund (v0.1.5) | Verwaltungsdateien von macOS und Programmen, ihr Name hilft nie |
+| Lange Gruppen im Filter der Suche | begrenzte Höhe mit eigenem Scrollen, nach Anzahl sortiert, ab 12 Typen ein Suchfeld (v0.1.5) | „Sonstige“ verdrängte die Treffer |
 
 ## 17. Verworfene Alternativen
 
@@ -728,14 +741,17 @@ Einzelheiten je Version stehen in der Entwicklungsdokumentation unter `docs/`.
 | Prüfung alle 15 Minuten im Hintergrund | unerwartete Läufe stören die Suche (Kim, v0.0.9) |
 | `cfb` für alte Office-Dateien | lehnt Dateien mit kleinen Fehlern ab, die Word und Excel öffnen (v0.0.9) |
 | Entschlüsseln von Excel mit dem Standardkennwort | Aufwand für 9 Dateien zu hoch, Kim speichert sie neu (v0.0.9) |
+| Bestand nach dem Tesseract-Update neu erkennen | rund 43.000 Seiten für keinen messbaren Gewinn (Kim, v0.1.5) |
+| Klasse „ignoriert“ für Quelltext und Programme in der Stufe Voll | Programme ließen sich nicht über den Namen finden (Kim, v0.1.5) |
+| Inhalt von gdoc und gsheet über die Schnittstelle von Google oder die Miniatur der Google-Drive-App | Bindung an einen Anbieter, nur mit Anmeldung und Netz. Die Miniatur ist ein kleines Bild ohne Text (v0.1.5) |
 
 ## 18. Werkzeuge
 
 - `archiv_inventur.py`: Inventur und PDF-Stichprobe der Konzeptphase, nur lesend
 - `vorschau_vergleich.py`: Vorschauformate nebeneinander, Konzeptphase, nur lesend
-- `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen
+- `dropbox_ausschluss.sh`: nimmt die Build-Ordner des Projekts und seit v0.1.5 `bibliotheken/` von der Synchronisation des Cloud-Ordners aus. Einmal je Gerät auszuführen. Ein schon abgeglichener Ordner wird dabei aus der Cloud und von den anderen Geräten entfernt
 - `pdfium_holen.sh`: lädt die PDFium-Bibliothek samt Lizenztexten nach `bibliotheken/pdfium/`. Einmal je Gerät auszuführen. Seit v0.1.4 mit Prüfung der SHA-256-Prüfsumme, die Bibliothek wird ersetzt statt überschrieben (sonst beendet macOS jeden Prozess, der sie lädt)
-- `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
+- `tesseract_holen.sh`: lädt Quelltext von Tesseract und Leptonica sowie die Sprachdaten `standard` nach `bibliotheken/tesseract/`. Einmal je Gerät auszuführen. Seit v0.1.5 mit fester SHA-256-Prüfsumme je Datei und Sprachdaten von einem festen Commit, bei Abweichung bricht es ab, bevor es etwas ablegt. Mit `--best` zusätzlich `tessdata_best` für Vergleiche. Der Quelltext muss liegen bleiben, cargo braucht ihn für jeden neuen Bau
 - `pdf_pruefen`: liest PDFs mit dem Kern, ohne das Register anzufassen. Mit `--suche` baut es den Suchindex in einer Kopie des Registers unter `target/suche_messung/` auf und misst Größe und Antwortzeiten, mit `--anfrage "…"` sucht es in dieser Kopie. Für Prüfungen nach einem PDFium-Update, auf einem neuen Gerät oder bei einzelnen Problemdateien. Mit `--vorschau N` ein Tempotest der Vorschauen, mit `--render N` unkomprimierte Seiten als Vorlage für Encoder-Vergleiche, mit `--ocr N` eine Messung der OCR mit den vorhandenen Sätzen der Sprachdaten, mit `--textebene N` eine Probe der Textebene an Kopien, mit `--aufteilen <Ordner>` eine Probe des Aufteilens der Scheiben an einer Kopie des Registers unter `target/aufteilen_probe/` samt Vergleich jeder Vorschau (v0.0.8). `--suche` und `--aufteilen` arbeiten seit v0.1.0 nur mit einem unverschlüsselten Register. Die Ausgaben enthalten Dokumentinhalte und landen in `target/`
 - `scripts/pruefen.mjs` und `scripts/auswertung.mjs` (v0.1.1): `npm test` und `npm run pruefen` mit Zusammenfassung, Abdeckung gesamt und je Paket. Seit v0.1.2 mit Grenze (Ausnahmen in `scripts/abdeckung-ausnahmen.json`) und dem Bericht je Funktion `abdeckung.json`. Ausgaben in `target/pruefen/`
 - `testpdf_erzeugen.py` (v0.1.2): erzeugt die Test-PDF unter `crates/registerwerk-core/tests/daten/`

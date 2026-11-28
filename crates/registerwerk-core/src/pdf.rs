@@ -48,9 +48,10 @@ pub struct Inhalt {
     pub seiten: Vec<Seite>,
     /// Erstellungsdatum aus den Metadaten, als Rohwert (`D:JJJJMMTT...`).
     pub erstellt: Option<String>,
-    /// Der Text ist nur grob gelesen: lesbare Zeichenfolgen der Datei, weil
-    /// kein Leser das Format verstand (v0.0.9).
-    pub grob: bool,
+    /// Hinweis zum gelesenen Text, kommt als `inhalt_hinweis` ins Register:
+    /// nur grob gelesen (v0.0.9) oder gekürzt, weil die Datei sehr groß ist
+    /// (v0.1.5).
+    pub hinweis: Option<&'static str>,
 }
 
 /// Name der Bibliothek auf dieser Plattform in einem Ordner,
@@ -100,7 +101,7 @@ pub fn lesen(pdfium: &Pdfium, pfad: &Path) -> Result<Inhalt, String> {
         let text = seitentext(&seite);
         seiten.push(Seite { nr: i as u32 + 1, text, bildanteil: bildanteil(&seite) });
     }
-    Ok(Inhalt { seiten, erstellt, grob: false })
+    Ok(Inhalt { seiten, erstellt, hinweis: None })
 }
 
 /// Prüft eine neue Fassung mit Textebene gegen das Original und liest ihren
@@ -235,7 +236,7 @@ mod tests {
     fn liest_text_bildanteil_und_datum() {
         let i = lesen(pdfium(), &test_pdf()).unwrap();
         assert_eq!(i.seiten.len(), 2);
-        assert!(!i.grob);
+        assert_eq!(i.hinweis, None);
         assert!(i.erstellt.as_deref().unwrap().starts_with("D:20240315"), "{:?}", i.erstellt);
         let (s1, s2) = (&i.seiten[0], &i.seiten[1]);
         assert_eq!((s1.nr, s2.nr), (1, 2));

@@ -103,15 +103,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "arbitrary"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "atk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -359,9 +350,9 @@ dependencies = [
  "encoding_rs",
  "fast-float2",
  "log",
- "quick-xml 0.42.0",
+ "quick-xml",
  "serde",
- "zip 9.8.1",
+ "zip",
 ]
 
 [[package]]
@@ -812,17 +803,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "derive_arbitrary"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.10",
 ]
 
 [[package]]
@@ -2799,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "pdf_pruefen"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "registerwerk-core",
  "registerwerk-ocr",
@@ -2968,7 +2948,7 @@ checksum = "327a4cb2ad49dc48adfdc9da89e22c64d488b508c67a044d71ba729e4521a285"
 dependencies = [
  "base64 0.23.1",
  "indexmap 2.14.2",
- "quick-xml 0.42.0",
+ "quick-xml",
  "serde",
  "time",
 ]
@@ -3085,15 +3065,6 @@ name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
-
-[[package]]
-name = "quick-xml"
-version = "0.37.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "quick-xml"
@@ -3225,7 +3196,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "registerwerk"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "registerwerk-core",
  "security-framework",
@@ -3237,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "ab_glyph",
  "calamine",
@@ -3249,7 +3220,7 @@ dependencies = [
  "libavif-sys",
  "lopdf",
  "pdfium-render",
- "quick-xml 0.37.5",
+ "quick-xml",
  "registerwerk-macos",
  "registerwerk-ocr",
  "rusqlite",
@@ -3258,16 +3229,16 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tiff",
- "toml 0.8.23",
+ "toml 1.2.1+spec-1.1.0",
  "unicode-normalization",
  "weezl 0.1.12",
- "zip 2.6.1",
+ "zip",
  "zune-heic",
 ]
 
 [[package]]
 name = "registerwerk-macos"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "block2",
  "libc",
@@ -3277,7 +3248,7 @@ dependencies = [
 
 [[package]]
 name = "registerwerk-ocr"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "cmake",
 ]
@@ -4523,7 +4494,6 @@ dependencies = [
  "serde",
  "serde_spanned 0.6.9",
  "toml_datetime 0.6.11",
- "toml_write",
  "winnow 0.7.15",
 ]
 
@@ -4535,12 +4505,6 @@ checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow 1.0.5",
 ]
-
-[[package]]
-name = "toml_write"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "toml_writer"
@@ -5513,21 +5477,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
-]
-
-[[package]]
-name = "zip"
-version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dcb24d0152526ae49b9b96c1dcf71850ca1e0b882e4e28ed898a93c41334744"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "crossbeam-utils",
- "flate2",
- "indexmap 2.14.2",
- "memchr",
- "zopfli",
 ]
 
 [[package]]

@@ -22,10 +22,14 @@ pub fn laden(pfad: &Path) -> Result<Bild, String> {
     Ok(einpassen(oeffnen(pfad)?))
 }
 
+/// Höchstzahl der Pixel für die eigenen TIFF-Leser (v0.1.5). A0 mit 300 dpi
+/// hat rund 140 Mio. Pixel. Größere Angaben im Dateikopf gelten als kaputt.
+pub const MAX_PIXEL: u64 = 150_000_000;
+
 /// Inhalt eines Bilds: eine Seite ohne Text, ganz Bild. Die OCR erkennt sie
 /// wie eine Scan-Seite ohne Text.
 pub fn inhalt() -> crate::pdf::Inhalt {
-    crate::pdf::Inhalt { seiten: vec![crate::pdf::Seite { nr: 1, text: String::new(), bildanteil: 1.0 }], erstellt: None, grob: false }
+    crate::pdf::Inhalt { seiten: vec![crate::pdf::Seite { nr: 1, text: String::new(), bildanteil: 1.0 }], erstellt: None, hinweis: None }
 }
 
 /// Lädt ein Bild für die OCR in Graustufen in voller Auflösung, die längste
@@ -88,9 +92,13 @@ fn fax(pfad: &Path) -> Option<DynamicImage> {
     let x = aufloesung(&mut d, Tag::XResolution);
     let y = aufloesung(&mut d, Tag::YResolution);
     let je_zeile: u32 = if y > 0.0 && x / y >= 1.5 { 2 } else { 1 };
+    if breite as u64 * hoehe as u64 * je_zeile as u64 > MAX_PIXEL {
+        return None;
+    }
 
     let (weiss, schwarz) = if null_ist_weiss { (255u8, 0u8) } else { (0u8, 255u8) };
-    let mut pixel: Vec<u8> = Vec::with_capacity((breite * hoehe * je_zeile) as usize);
+    // Speicher erst belegen, wenn Zeilen ankommen, nicht nach dem Dateikopf
+    let mut pixel: Vec<u8> = Vec::new();
     let mut zeilen = 0u32;
     for (ort, laenge) in orte.iter().zip(&laengen) {
         let streifen = daten.get(*ort as usize..(*ort as usize).checked_add(*laenge as usize)?)?;
@@ -134,7 +142,7 @@ fn palette(pfad: &Path) -> Option<DynamicImage> {
     }
     let breite = zahl(&mut d, Tag::ImageWidth)?;
     let hoehe = zahl(&mut d, Tag::ImageLength)?;
-    if breite == 0 || hoehe == 0 || breite > 30_000 || hoehe > 100_000 {
+    if breite == 0 || hoehe == 0 || breite > 30_000 || hoehe > 100_000 || breite as u64 * hoehe as u64 > MAX_PIXEL {
         return None;
     }
     let packung = zahl(&mut d, Tag::Compression).unwrap_or(1);
@@ -149,16 +157,26 @@ fn palette(pfad: &Path) -> Option<DynamicImage> {
     let laengen = d.get_tag_u64_vec(Tag::StripByteCounts).ok()?;
 
     let je_zeile = (breite as usize * bits as usize).div_ceil(8);
-    let mut roh: Vec<u8> = Vec::with_capacity(je_zeile * hoehe as usize);
+    // Mehr Bytes, als das Bild laut Kopf hat, werden nie entpackt (v0.1.5)
+    let gesamt = je_zeile * hoehe as usize;
+    let mut roh: Vec<u8> = Vec::new();
     for (ort, laenge) in orte.iter().zip(&laengen) {
+        let rest = gesamt.saturating_sub(roh.len());
+        if rest == 0 {
+            break;
+        }
         let streifen = daten.get(*ort as usize..(*ort as usize).checked_add(*laenge as usize)?)?;
         let mut teil = match packung {
-            1 => streifen.to_vec(),
-            32773 => packbits(streifen),
-            5 => weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).decode(streifen).ok()?,
+            1 => streifen[..streifen.len().min(rest)].to_vec(),
+            32773 => packbits(streifen, rest),
+            5 => lzw(streifen, rest)?,
             8 | 32946 => {
                 let mut aus = Vec::new();
-                std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(streifen), &mut aus).ok()?;
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(flate2::read::ZlibDecoder::new(streifen), rest as u64),
+                    &mut aus,
+                )
+                .ok()?;
                 aus
             }
             _ => return None,
@@ -190,12 +208,35 @@ fn palette(pfad: &Path) -> Option<DynamicImage> {
     image::RgbImage::from_raw(breite, zeilen as u32, rgb).map(DynamicImage::ImageRgb8)
 }
 
+/// Entpackt LZW, wie TIFF es schreibt, höchstens `grenze` Bytes (v0.1.5).
+/// `None` bei kaputten Daten oder ohne Endmarke vor der Grenze.
+fn lzw(daten: &[u8], grenze: usize) -> Option<Vec<u8>> {
+    let mut d = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+    let mut aus = Vec::new();
+    let mut puffer = vec![0u8; 64 * 1024];
+    let mut eingabe = daten;
+    loop {
+        let r = d.decode_bytes(eingabe, &mut puffer);
+        eingabe = &eingabe[r.consumed_in..];
+        let platz = grenze - aus.len();
+        aus.extend_from_slice(&puffer[..r.consumed_out.min(platz)]);
+        if aus.len() >= grenze {
+            return Some(aus);
+        }
+        match r.status {
+            Ok(weezl::LzwStatus::Done) => return Some(aus),
+            Ok(weezl::LzwStatus::Ok) => {}
+            Ok(weezl::LzwStatus::NoProgress) | Err(_) => return None,
+        }
+    }
+}
+
 /// Entpackt PackBits: ein Zählbyte, dann so viele Bytes wörtlich oder ein
-/// Byte so oft wiederholt.
-fn packbits(daten: &[u8]) -> Vec<u8> {
-    let mut aus = Vec::with_capacity(daten.len() * 2);
+/// Byte so oft wiederholt. Höchstens `grenze` Bytes (v0.1.5).
+fn packbits(daten: &[u8], grenze: usize) -> Vec<u8> {
+    let mut aus = Vec::with_capacity((daten.len() * 2).min(grenze));
     let mut i = 0;
-    while i < daten.len() {
+    while i < daten.len() && aus.len() < grenze {
         let n = daten[i] as i8;
         i += 1;
         if n >= 0 {
@@ -209,6 +250,7 @@ fn packbits(daten: &[u8]) -> Vec<u8> {
             i += 1;
         }
     }
+    aus.truncate(grenze);
     aus
 }
 
@@ -352,10 +394,13 @@ mod tests {
     #[test]
     fn entpackt_packbits() {
         // 2 wörtlich, 3-mal 0xAA, Leerbefehl -128, dann 1 wörtlich
-        assert_eq!(packbits(&[1, 5, 6, 0xFE, 0xAA, 0x80, 0, 7]), vec![5, 6, 0xAA, 0xAA, 0xAA, 7]);
+        assert_eq!(packbits(&[1, 5, 6, 0xFE, 0xAA, 0x80, 0, 7], 100), vec![5, 6, 0xAA, 0xAA, 0xAA, 7]);
+        // Grenze (v0.1.5): nie mehr als verlangt, auch bei langen Wiederholungen
+        assert_eq!(packbits(&[1, 5, 6, 0xFE, 0xAA, 0x80, 0, 7], 4), vec![5, 6, 0xAA, 0xAA]);
+        assert_eq!(packbits(&[0x81; 1000], 10), vec![0x81; 10]);
         // Abgeschnitten: so viel wie da ist
-        assert_eq!(packbits(&[3, 1, 2]), vec![1, 2]);
-        assert_eq!(packbits(&[0xFF]), Vec::<u8>::new());
+        assert_eq!(packbits(&[3, 1, 2], 100), vec![1, 2]);
+        assert_eq!(packbits(&[0xFF], 100), Vec::<u8>::new());
     }
 
     #[test]
@@ -436,5 +481,30 @@ mod tests {
         let falsch = tmp.path().join("falsch.HEIC");
         std::fs::copy(&quer, &falsch).unwrap();
         assert_eq!(laden(&falsch).unwrap().breite, 1536);
+    }
+
+    #[test]
+    fn entpackt_lzw_hoechstens_bis_zur_grenze() {
+        let roh: Vec<u8> = (0..200_000u32).map(|i| (i % 7) as u8).collect();
+        let gepackt = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(&roh).unwrap();
+        assert_eq!(lzw(&gepackt, usize::MAX), Some(roh.clone()));
+        assert_eq!(lzw(&gepackt, 1000), Some(roh[..1000].to_vec()));
+        // Ohne Endmarke und kaputt: nichts
+        assert_eq!(lzw(&gepackt[..gepackt.len() / 2], usize::MAX), None);
+        assert_eq!(lzw(&[0xFF; 50], usize::MAX), None);
+    }
+
+    #[test]
+    fn riesige_angaben_im_dateikopf_gelten_als_kaputt() {
+        // 30.000 × 100.000 Pixel laut Kopf, aber nur 4 Byte Daten (v0.1.5)
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("riesig.tif");
+        std::fs::write(&p, palette_tiff(8, 30_000, 100_000, 1, 1, &[1, 1, 1, 1], &[WEISS, ROT])).unwrap();
+        assert!(laden(&p).is_err());
+        // Knapp unter der Grenze: liest, was da ist, ohne den Speicher vorab zu belegen
+        let p = tmp.path().join("gross.tif");
+        std::fs::write(&p, palette_tiff(8, 10_000, 10_000, 1, 1, &[1; 20_000], &[WEISS, ROT])).unwrap();
+        let b = laden(&p).unwrap();
+        assert_eq!(b.rgb[..3], [255, 0, 0]);
     }
 }

@@ -209,20 +209,12 @@ export function VermisstListe({ ordner }: { ordner: OrdnerBestand[] }) {
 
 export const GRUENDE: { grund: Grund; titel: string }[] = [
   { grund: "fehlt", titel: "Datei gibt es nicht mehr (gelöscht, verschoben oder umbenannt)" },
-  { grund: "typ", titel: "Dateityp wird ignoriert (kein Dokument, kein Bild)" },
   { grund: "bibliothek", titel: "Ordner fremder Bibliotheken" },
+  { grund: "versteckt", titel: "Versteckte Datei (Punkt am Anfang), wird übergangen" },
   { grund: "ausgeschlossen", titel: "Ordner ist ausgeschlossen" },
   { grund: "ohne_regel", titel: "Ordner hat keine Regel" },
   { grund: "nur_metadaten", titel: "Ordner steht auf „Nur Namen“: bleibt ohne Text und Vorschau" },
 ];
-
-const endungVon = (pfad: string) => {
-  const name = pfad.slice(pfad.lastIndexOf("/") + 1);
-  const punkt = name.lastIndexOf(".");
-  return punkt > 0 && punkt < name.length - 1 && !name.slice(punkt + 1).includes(" ")
-    ? "." + name.slice(punkt + 1).toLowerCase()
-    : "ohne Endung";
-};
 
 /**
  * Die Dateien, die nach den Ordnerregeln wegfallen, nach Grund und mit vollem Pfad. Damit lässt sich
@@ -232,12 +224,7 @@ export function BetroffenListe({ dateien, gesamt }: { dateien: Betroffen[]; gesa
   const [kopiert, setKopiert] = useState(false);
   const gruppen = useMemo(
     () =>
-      GRUENDE.map((g) => {
-        const teil = dateien.filter((d) => d.grund === g.grund);
-        const endungen = new Map<string, number>();
-        for (const d of teil) endungen.set(endungVon(d.pfad), (endungen.get(endungVon(d.pfad)) ?? 0) + 1);
-        return { ...g, teil, endungen: [...endungen].sort((a, b) => b[1] - a[1]) };
-      }).filter((g) => g.teil.length > 0),
+      GRUENDE.map((g) => ({ ...g, teil: dateien.filter((d) => d.grund === g.grund) })).filter((g) => g.teil.length > 0),
     [dateien],
   );
   if (dateien.length === 0) return null;
@@ -261,15 +248,6 @@ export function BetroffenListe({ dateien, gesamt }: { dateien: Betroffen[]; gesa
             <h3>
               {g.titel} <span className="leise">({alsZahl(g.teil.length)})</span>
             </h3>
-            {g.grund === "typ" && (
-              <p className="betroffen__endungen">
-                {g.endungen.map(([e, n]) => (
-                  <span key={e}>
-                    {e} <b>{alsZahl(n)}</b>
-                  </span>
-                ))}
-              </p>
-            )}
             <ul>
               {g.teil.map((d) => (
                 <li key={d.pfad}>
@@ -319,10 +297,9 @@ export function LaufMeldung({ lauf }: { lauf: LaufErgebnis }) {
           <BetroffenListe dateien={lauf.betroffen} gesamt={lauf.entfernt + lauf.reduziert} />
         </details>
       )}
-      {(lauf.ignoriert > 0 || lauf.uebergangene_ordner > 0) && (
+      {lauf.uebergangene_ordner > 0 && (
         <p className="stand-zeile">
-          Nicht aufgenommen: {alsZahl(lauf.ignoriert)} Dateien anderer Typen (Quelltext, Programme, Daten)
-          {lauf.uebergangene_ordner > 0 && <>, {alsZahl(lauf.uebergangene_ordner)} Ordner fremder Bibliotheken</>}.
+          Nicht aufgenommen: {alsZahl(lauf.uebergangene_ordner)} Ordner fremder Bibliotheken.
         </p>
       )}
       {lauf.nur_online > 0 && (

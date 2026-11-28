@@ -55,9 +55,9 @@ function EndungListe({ zeilen }: { zeilen: EndungZeile[] }) {
  */
 export default function Pruefung({ ordner, wirksam, pruefung: p, laeuft, gesperrt, onPruefen, onAbbrechen, onUnterordner }: Props) {
   const nurNamen = wirksam.stufe === "metadaten";
-  const insRegister = p ? (nurNamen ? p.dateien : p.gelesen + p.nur_name) : 0;
+  // Seit v0.1.5 kommt jede Datei wenigstens mit Namen ins Register
+  const insRegister = p ? p.dateien : 0;
   const nurName = p?.endungen.filter((e) => e.klasse === "nur_name") ?? [];
-  const ignoriert = p?.endungen.filter((e) => e.klasse === "ignoriert") ?? [];
 
   return (
     <section className="regel__karte pruefung">
@@ -99,8 +99,8 @@ export default function Pruefung({ ordner, wirksam, pruefung: p, laeuft, gesperr
               <span className="leise">kämen ins Register{wirksam.stufe === "ausgeschlossen" ? " (bei Stufe Voll)" : ""}</span>
             </div>
             <div>
-              <span className="pruefung__wert">{alsZahl(nurNamen ? 0 : p.ignoriert)}</span>
-              <span className="leise">würden ignoriert</span>
+              <span className="pruefung__wert">{alsZahl(nurNamen ? p.dateien : p.nur_name)}</span>
+              <span className="leise">nur mit Namen</span>
             </div>
             <div>
               <span className="pruefung__wert">{alsZahl(p.nur_online)}</span>
@@ -137,12 +137,6 @@ export default function Pruefung({ ordner, wirksam, pruefung: p, laeuft, gesperr
               <EndungListe zeilen={nurName} />
             </>
           )}
-          {ignoriert.length > 0 && (
-            <>
-              <h4>Ignoriert ({alsZahl(p.ignoriert)})</h4>
-              <EndungListe zeilen={ignoriert} />
-            </>
-          )}
 
           {p.unterordner.length > 0 && (
             <>
@@ -152,7 +146,6 @@ export default function Pruefung({ ordner, wirksam, pruefung: p, laeuft, gesperr
                   <tr>
                     <th />
                     <th className="zahl">ins Register</th>
-                    <th className="zahl">ignoriert</th>
                     <th className="zahl">lokal</th>
                     <th className="zahl">nur online</th>
                   </tr>
@@ -170,7 +163,6 @@ export default function Pruefung({ ordner, wirksam, pruefung: p, laeuft, gesperr
                         )}
                       </td>
                       <td className="zahl">{alsZahl(u.gelesen + u.nur_name)}</td>
-                      <td className="zahl leise">{alsZahl(u.ignoriert)}</td>
                       <td className="zahl leise">{alsGroesse(u.bytes)}</td>
                       <td className="zahl leise">{alsZahl(u.nur_online)}</td>
                     </tr>

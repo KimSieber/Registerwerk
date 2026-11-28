@@ -1007,7 +1007,7 @@ mod tests {
             "nummer.pdf" => vec![seite(1, "- 1 -", 1.0), seite(2, GUT, 1.0)],
             _ => vec![seite(1, GUT, 1.0)],
         };
-        Ok(Inhalt { seiten, erstellt: None, grob: false })
+        Ok(Inhalt { seiten, erstellt: None, hinweis: None })
     }
 
     /// Ersatz für die Prüfung mit PDFium: liest den Text aus `testleser` und

@@ -37,8 +37,6 @@ export interface LaufErgebnis {
   /** Ordner jetzt "nur Metadaten": Text und Vorschauen entfallen */
   reduziert: number;
   reduziert_seiten: number;
-  /** Beim Durchlauf wegen ihres Typs ignorierte Dateien */
-  ignoriert: number;
   uebergangene_ordner: number;
   /** Nur geprüft, das Register ist unverändert. Die Oberfläche fragt nach. */
   probe: boolean;
@@ -61,7 +59,7 @@ export interface OrdnerBestand {
 }
 
 /** Warum eine Datei nach den Ordnerregeln wegfällt oder nur mit Namen bleibt (register.rs) */
-export type Grund = "ohne_regel" | "ausgeschlossen" | "typ" | "bibliothek" | "nur_metadaten" | "fehlt";
+export type Grund = "ohne_regel" | "ausgeschlossen" | "bibliothek" | "versteckt" | "nur_metadaten" | "fehlt";
 
 export interface Betroffen {
   /** Pfad relativ zum Cloud-Ordner */
@@ -108,8 +106,9 @@ export interface OnlineOrdner {
   dateien: number;
 }
 
-/** Behandlung eines Dateityps in der Stufe Voll (formate.rs) */
-export type Klasse = "gelesen" | "nur_name" | "ignoriert";
+/** Behandlung eines Dateityps in der Stufe Voll (formate.rs). Seit v0.1.5
+ * kommt jede Datei wenigstens mit Namen ins Register. */
+export type Klasse = "gelesen" | "nur_name";
 
 export interface EndungZeile {
   endung: string;
@@ -124,7 +123,6 @@ export interface UnterordnerZeile {
   name: string;
   gelesen: number;
   nur_name: number;
-  ignoriert: number;
   bytes: number;
   nur_online: number;
 }
@@ -136,7 +134,6 @@ export interface OrdnerPruefung {
   dateien: number;
   gelesen: number;
   nur_name: number;
-  ignoriert: number;
   nur_online: number;
   /** Summe der lokal vorhandenen Dateien */
   bytes: number;
@@ -185,9 +182,9 @@ export interface InhaltStand {
   pdfs_ohne_text: number;
   pdfs_schwach: number;
   fehler_liste: FehlerZeile[];
-  /** Text nur grob gelesen (v0.0.9) */
-  grob: number;
-  grob_liste: FehlerZeile[];
+  /** Dateien mit Hinweis zum Text: nur grob gelesen (v0.0.9), gekürzt (v0.1.5) */
+  hinweise: number;
+  hinweis_liste: FehlerZeile[];
 }
 
 export interface Fortschritt {
@@ -202,6 +199,8 @@ export interface InhaltErgebnis {
   gelesen: number;
   seiten: number;
   fehler: number;
+  /** Gelesen, aber mit Hinweis, etwa gekürzt (v0.1.5) */
+  hinweise: number;
   nur_online: number;
   abgebrochen: boolean;
 }

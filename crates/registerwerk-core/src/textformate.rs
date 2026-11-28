@@ -218,6 +218,14 @@ pub fn rtf(daten: &[u8]) -> String {
 // ---------- HTML ----------
 
 /// Text einer HTML-Datei.
+/// Stelle von `nadel` (ASCII, klein geschrieben) in `text`, Groß- und
+/// Kleinschreibung egal. Die Stelle liegt immer auf einer Zeichengrenze, weil
+/// die Nadel mit `<` beginnt.
+fn finde_ohne_gross(text: &str, nadel: &str) -> Option<usize> {
+    let n = nadel.as_bytes();
+    text.as_bytes().windows(n.len().max(1)).position(|w| w.eq_ignore_ascii_case(n))
+}
+
 pub fn html(daten: &[u8]) -> String {
     let quelle = dekodieren(daten);
     let mut text = String::new();
@@ -231,8 +239,9 @@ pub fn html(daten: &[u8]) -> String {
         rest = &rest[ende + 1..];
         if (name == "script" || name == "style") && !tag.starts_with('/') {
             let schluss = format!("</{name}");
-            // ASCII: gleiche Bytelängen wie das Original, die Stelle passt
-            match rest.to_ascii_lowercase().find(&schluss) {
+            // Ohne Kopie in Kleinbuchstaben, die kostete bei großen Dateien je
+            // Script-Block den ganzen Rest (v0.1.5)
+            match finde_ohne_gross(rest, &schluss) {
                 Some(p) => rest = &rest[p..],
                 None => break,
             }

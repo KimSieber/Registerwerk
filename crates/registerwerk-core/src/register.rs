@@ -38,7 +38,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 use crate::dateibaum::{self, Durchlauf};
-use crate::formate::{self, Klasse};
 use crate::regeln::{Regeln, Stufe};
 use crate::guete::{self, Zaehlung};
 use crate::pdf;
@@ -116,8 +115,7 @@ pub struct LaufErgebnis {
     /// Verzeichnisse mit Lesefehlern. Für sie wurde nichts entfernt.
     pub unvollstaendige_verzeichnisse: Vec<String>,
     /// Von den entfernten Dateien: nicht mehr von den Ordnerregeln erfasst
-    /// (Ordner ausgeschlossen oder ohne Regel, Typ wird ignoriert, Ordner
-    /// einer Bibliothek). Die übrigen gibt es im Dateibaum nicht mehr.
+    /// (Ordner ausgeschlossen oder ohne Regel, Ordner einer Bibliothek). Die übrigen gibt es im Dateibaum nicht mehr.
     pub entfernt_regel: u64,
     /// Seiten mit Text oder Vorschau, die mit `entfernt_regel` verloren gehen.
     pub entfernt_regel_seiten: u64,
@@ -125,8 +123,6 @@ pub struct LaufErgebnis {
     /// und Vorschauen deshalb entfernt werden.
     pub reduziert: u64,
     pub reduziert_seiten: u64,
-    /// Beim Durchlauf wegen ihres Typs ignorierte Dateien.
-    pub ignoriert: u64,
     /// Beim Durchlauf übergangene Ordner fremder Bibliotheken.
     pub uebergangene_ordner: u64,
     /// Nur geprüft: Das Register ist unverändert.
@@ -177,10 +173,10 @@ pub enum Grund {
     OhneRegel,
     /// Der Ordner ist ausgeschlossen.
     Ausgeschlossen,
-    /// Der Dateityp wird in der Stufe Voll ignoriert (`formate::Klasse`).
-    Typ,
     /// Die Datei liegt in einem Ordner fremder Bibliotheken.
     Bibliothek,
+    /// Versteckte Datei mit Punkt am Anfang, seit v0.1.5 übergangen.
+    Versteckt,
     /// Der Ordner steht auf "nur Metadaten": Text und Vorschauen entfallen.
     NurMetadaten,
     /// Den Ordner gibt es auf diesem Gerät, die Datei darin nicht mehr:
@@ -257,9 +253,10 @@ pub struct InhaltStand {
     /// PDFs mit Text, deren Güte insgesamt unter der Schwelle liegt.
     pub pdfs_schwach: u64,
     pub fehler_liste: Vec<FehlerZeile>,
-    /// Dateien, deren Text nur grob gelesen ist (v0.0.9), und die ersten 50.
-    pub grob: u64,
-    pub grob_liste: Vec<FehlerZeile>,
+    /// Dateien mit einem Hinweis zum Text, etwa nur grob gelesen (v0.0.9)
+    /// oder gekürzt (v0.1.5), und die ersten 50.
+    pub hinweise: u64,
+    pub hinweis_liste: Vec<FehlerZeile>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -953,7 +950,6 @@ impl Register {
             gesehen: durchlauf.dateien.len() as u64,
             nicht_lesbar: durchlauf.nicht_lesbar.len() as u64,
             fehlende_verzeichnisse: durchlauf.fehlende_verzeichnisse.clone(),
-            ignoriert: durchlauf.ignoriert,
             uebergangene_ordner: durchlauf.uebergangene_ordner,
             probe,
             ..Default::default()
@@ -1073,27 +1069,27 @@ impl Register {
             // v0.0.9 ohne Vermerk je Datei: Der hätte bei jedem Durchlauf jede
             // Zeile des Registers geändert. Wann und wo eine Datei zuletzt
             // gesehen wurde, ist damit nicht mehr bekannt.
-            type Fehlende = (i64, String, String, Option<i64>, Option<i64>, Option<String>);
+            type Fehlende = (i64, String, Option<i64>, Option<i64>, Option<String>);
             let mut fehlen: Vec<Fehlende> = Vec::new();
             {
-                let mut alle = tx.prepare("SELECT id, pfad, endung, seiten FROM datei")?;
+                let mut alle = tx.prepare("SELECT id, pfad, seiten FROM datei")?;
                 let mut zeilen = alle.query([])?;
                 while let Some(z) = zeilen.next()? {
                     let id: i64 = z.get(0)?;
                     if !gesehen.contains(&id) {
-                        fehlen.push((id, z.get(1)?, z.get(2)?, z.get(3)?, None, None));
+                        fehlen.push((id, z.get(1)?, z.get(2)?, None, None));
                     }
                 }
             }
             let mut entfernen = tx.prepare("DELETE FROM datei WHERE id = ?1")?;
             // oberster fehlender Ordner -> Zahl der Dateien darin
             let mut ohne_ordner: BTreeMap<String, u64> = BTreeMap::new();
-            for (id, pfad, endung, seiten, zuletzt, zuletzt_geraet) in fehlen {
+            for (id, pfad, seiten, zuletzt, zuletzt_geraet) in fehlen {
                 let regel = durchlauf.regeln.fuer_datei(&pfad);
                 if regel.is_some_and(|(ordner, _)| unvollstaendig(ordner)) {
                     continue;
                 }
-                let grund = match grund_der_regel(&durchlauf.regeln, &pfad, &endung) {
+                let grund = match grund_der_regel(&durchlauf.regeln, &pfad) {
                     Some(grund) => grund,
                     None => {
                         // Die Regel gilt weiter. Gibt es den Ordner hier?
@@ -1414,7 +1410,7 @@ impl Register {
              WHERE id = ?1",
             [id],
         )?;
-        let hinweis = inhalt.as_ref().ok().filter(|i| i.grob).map(|_| crate::textformate::GROB);
+        let hinweis = inhalt.as_ref().ok().and_then(|i| i.hinweis);
         let (seiten, erstellt, fehler) = match inhalt {
             Ok(inhalt) => {
                 let mut einfuegen = tx.prepare(
@@ -1637,8 +1633,8 @@ impl Register {
             params![guete::MIN_ZEICHEN as i64, guete::SCHWELLE],
             |z| Ok((zahl(z, 0)?, zahl(z, 1)?)),
         )?;
-        s.grob = self.db.query_row("SELECT count(*) FROM datei WHERE inhalt_hinweis IS NOT NULL AND inhalt_fehler IS NULL", [], |z| zahl(z, 0))?;
-        s.grob_liste = self
+        s.hinweise = self.db.query_row("SELECT count(*) FROM datei WHERE inhalt_hinweis IS NOT NULL AND inhalt_fehler IS NULL", [], |z| zahl(z, 0))?;
+        s.hinweis_liste = self
             .db
             .prepare(
                 "SELECT pfad, inhalt_hinweis FROM datei WHERE inhalt_hinweis IS NOT NULL AND inhalt_fehler IS NULL
@@ -1697,11 +1693,13 @@ fn journal_umstellen(db: &Connection, versuche: u32) -> rusqlite::Result<()> {
 /// Dateisystem: Bei Ordnernamen wie "build" gilt die Regel als Grund, auch
 /// wenn die Datei in Wahrheit gelöscht wurde. Das führt höchstens zu einer
 /// Rückfrage mehr.
-fn grund_der_regel(regeln: &Regeln, pfad: &str, endung: &str) -> Option<Grund> {
+fn grund_der_regel(regeln: &Regeln, pfad: &str) -> Option<Grund> {
     let Some((ordner, stufe)) = regeln.fuer_datei(pfad) else { return Some(Grund::OhneRegel) };
+    if pfad.rsplit('/').next().is_some_and(|name| name.starts_with('.')) {
+        return Some(Grund::Versteckt);
+    }
     match stufe {
         Stufe::Ausgeschlossen => return Some(Grund::Ausgeschlossen),
-        Stufe::Voll if formate::klasse(endung) == Klasse::Ignoriert => return Some(Grund::Typ),
         _ => {}
     }
     // Ordner zwischen dem Ordner der Regel und der Datei
@@ -2116,7 +2114,7 @@ mod tests {
         let inhalt = pdf::Inhalt {
             seiten: vec![pdf::Seite { nr: 1, text: "Rechnung über zwölf Euro".into(), bildanteil: 0.0 }],
             erstellt: Some("D:20190304120000".into()),
-            grob: false,
+            hinweis: None,
         };
         r.inhalt_speichern(id, 100, 10, &Ok(inhalt)).unwrap();
         id
@@ -2186,16 +2184,19 @@ mod tests {
         let mut regeln = Regeln::voll(&["A"]);
         regeln.setzen("A/x", Some(Stufe::Ausgeschlossen)).unwrap();
         regeln.setzen("M", Some(Stufe::Metadaten)).unwrap();
-        assert_eq!(grund_der_regel(&regeln, "A/a.pdf", "pdf"), None);
-        assert_eq!(grund_der_regel(&regeln, "A/tief/unten/a.zip", "zip"), None);
-        assert_eq!(grund_der_regel(&regeln, "A/x/a.pdf", "pdf"), Some(Grund::Ausgeschlossen));
-        assert_eq!(grund_der_regel(&regeln, "B/a.pdf", "pdf"), Some(Grund::OhneRegel));
-        assert_eq!(grund_der_regel(&regeln, "A/main.rs", "rs"), Some(Grund::Typ));
-        assert_eq!(grund_der_regel(&regeln, "A/p/node_modules/q/a.md", "md"), Some(Grund::Bibliothek));
-        assert_eq!(grund_der_regel(&regeln, "A/p/.git/a.txt", "txt"), Some(Grund::Bibliothek));
-        assert_eq!(grund_der_regel(&regeln, "M/lied.xyz", "xyz"), None);
+        assert_eq!(grund_der_regel(&regeln, "A/a.pdf"), None);
+        assert_eq!(grund_der_regel(&regeln, "A/tief/unten/a.zip"), None);
+        assert_eq!(grund_der_regel(&regeln, "A/x/a.pdf"), Some(Grund::Ausgeschlossen));
+        assert_eq!(grund_der_regel(&regeln, "B/a.pdf"), Some(Grund::OhneRegel));
+        // Quelltext fällt seit v0.1.5 nicht mehr wegen seines Typs heraus,
+        // versteckte Dateien schon
+        assert_eq!(grund_der_regel(&regeln, "A/main.rs"), None);
+        assert_eq!(grund_der_regel(&regeln, "M/.localized"), Some(Grund::Versteckt));
+        assert_eq!(grund_der_regel(&regeln, "A/p/node_modules/q/a.md"), Some(Grund::Bibliothek));
+        assert_eq!(grund_der_regel(&regeln, "A/p/.git/a.txt"), Some(Grund::Bibliothek));
+        assert_eq!(grund_der_regel(&regeln, "M/lied.xyz"), None);
         // eine Datei, die so heißt wie eine Bibliothek, ist keine
-        assert_eq!(grund_der_regel(&regeln, "A/build", "pdf"), None);
+        assert_eq!(grund_der_regel(&regeln, "A/build"), None);
     }
 
     #[test]

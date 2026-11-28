@@ -41,6 +41,8 @@ export default function Suchfeld({ filter, onChange, kompakt, angaben }: Props) 
   const [mehr, setMehr] = useState(false);
   /** Gruppe, deren einzelne Endungen aufgeklappt sind */
   const [offen, setOffen] = useState<string | null>(null);
+  /** Suche in den einzelnen Endungen einer langen Gruppe (v0.1.5) */
+  const [typSuche, setTypSuche] = useState("");
   const eingabe = useRef<HTMLInputElement>(null);
 
   useEffect(() => eingabe.current?.focus(), []);
@@ -73,6 +75,14 @@ export default function Suchfeld({ filter, onChange, kompakt, angaben }: Props) 
   const typTeil = (endungen: string[]) => !typAktiv(endungen) && endungen.some((e) => filter.endungen.includes(e));
   const anzahlVon = (e: string) => vorhanden.find((v) => v.wert === e)?.anzahl ?? 0;
   const aufgeklappt = gruppen.find((g) => g.name === offen && g.endungen.length > 1);
+  // Einzelne Endungen nach Anzahl, häufigste zuerst. Lange Gruppen wie
+  // „Sonstige“ bekommen ein Suchfeld (v0.1.5)
+  const MIT_SUCHE = 12;
+  const einzeln = aufgeklappt
+    ? [...aufgeklappt.endungen]
+        .sort((a, b) => anzahlVon(b) - anzahlVon(a) || a.localeCompare(b))
+        .filter((e) => e.includes(typSuche.trim().toLowerCase()))
+    : [];
   const typUmschalten = (endungen: string[]) =>
     setze(
       "endungen",
@@ -171,7 +181,10 @@ export default function Suchfeld({ filter, onChange, kompakt, angaben }: Props) 
                   {g.endungen.length > 1 && (
                     <button
                       className={`chip chip--klein chip--rechts ${offen === g.name ? "chip--offen" : ""}`}
-                      onClick={() => setOffen(offen === g.name ? null : g.name)}
+                      onClick={() => {
+                        setOffen(offen === g.name ? null : g.name);
+                        setTypSuche("");
+                      }}
                       title="Einzelne Dateitypen"
                       aria-expanded={offen === g.name}
                     >
@@ -184,17 +197,37 @@ export default function Suchfeld({ filter, onChange, kompakt, angaben }: Props) 
               ))}
             </div>
             {aufgeklappt && (
-              <div className="chips chips--einzeln">
-                {aufgeklappt.endungen.map((e) => (
-                  <button
-                    key={e}
-                    className={`chip chip--klein ${filter.endungen.includes(e) ? "chip--aktiv" : ""}`}
-                    onClick={() => typUmschalten([e])}
-                  >
-                    {e.toUpperCase()}
-                    <span className="chip__anzahl">{alsZahl(anzahlVon(e))}</span>
-                  </button>
-                ))}
+              <div className="einzeln">
+                {aufgeklappt.endungen.length > MIT_SUCHE && (
+                  <input
+                    className="einzeln__suche"
+                    type="text"
+                    value={typSuche}
+                    placeholder={`${alsZahl(aufgeklappt.endungen.length)} Dateitypen durchsuchen …`}
+                    spellCheck={false}
+                    autoCorrect="off"
+                    onChange={(e) => setTypSuche(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        e.stopPropagation();
+                        setTypSuche("");
+                      }
+                    }}
+                  />
+                )}
+                <div className="chips chips--einzeln">
+                  {einzeln.map((e) => (
+                    <button
+                      key={e}
+                      className={`chip chip--klein ${filter.endungen.includes(e) ? "chip--aktiv" : ""}`}
+                      onClick={() => typUmschalten([e])}
+                    >
+                      {e.toUpperCase()}
+                      <span className="chip__anzahl">{alsZahl(anzahlVon(e))}</span>
+                    </button>
+                  ))}
+                  {einzeln.length === 0 && <span className="leise">Kein Dateityp passt.</span>}
+                </div>
               </div>
             )}
           </div>

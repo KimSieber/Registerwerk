@@ -303,11 +303,11 @@ export default function Verwaltung({ eingebettet = false }: { eingebettet?: bool
           {stand.inhalt.fehler_liste.length > 0 && (
             <FehlerListe anzahl={stand.inhalt.fehler} liste={stand.inhalt.fehler_liste} />
           )}
-          {stand.inhalt.grob_liste.length > 0 && (
+          {stand.inhalt.hinweis_liste.length > 0 && (
             <FehlerListe
-              anzahl={stand.inhalt.grob}
-              liste={stand.inhalt.grob_liste}
-              titel={(n) => `${alsZahl(n)} ${n === 1 ? "Datei" : "Dateien"} nur grob gelesen`}
+              anzahl={stand.inhalt.hinweise}
+              liste={stand.inhalt.hinweis_liste}
+              titel={(n) => `${alsZahl(n)} ${n === 1 ? "Datei" : "Dateien"} mit Hinweis`}
             />
           )}
         </section>
@@ -616,6 +616,11 @@ function InhaltMeldung({ e }: { e: InhaltErgebnis }) {
         {e.fehler > 0 && (
           <>
             , <b>{alsZahl(e.fehler)} mit Fehler</b>
+          </>
+        )}
+        {e.hinweise > 0 && (
+          <>
+            , <b>{alsZahl(e.hinweise)} mit Hinweis</b>
           </>
         )}
         {e.nur_online > 0 && <>, {alsZahl(e.nur_online)} nur online übergangen</>}.

@@ -267,8 +267,6 @@ button.stufenwahl__knopf--eigene:hover { color: #fff; }
 }
 .betroffen__pfad { font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
 .betroffen__seiten { flex: none; color: var(--text-leise); font-variant-numeric: tabular-nums; }
-.betroffen__endungen { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 0 0 6px; font-size: 12px; }
-.betroffen__endungen span { padding: 0 7px; border: 1px solid var(--rand); border-radius: 6px; }
 .betroffen__fuss { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12.5px; }
 .lauf__betroffen summary { cursor: pointer; }
 .lauf__betroffen .betroffen { margin-top: 8px; }
